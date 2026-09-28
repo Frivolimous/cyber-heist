@@ -24,11 +24,16 @@ npm run typecheck
 
 ## Playing the sandbox
 
-- Click a player on the left to sit at their workstation. Their credentials, private info,
-  personal activity log and messages are on the right.
-- Pick a function, confirm the 4-digit code (auto-filled from a credential you hold), press Run.
-  You can type any code: that is how guessing and using someone else's credential works.
-- **Ground truth (spoilers)** at the bottom shows who really did what next to what the logs say.
+- The **yellow bar** at the top is sandbox tooling. Everything below it is the player screen.
+- You start as Jeremy, who has **master access** (a whole-system credential for every system).
+  Switch seats with **Viewing as**. Each seat keeps its own open windows.
+- The player screen is an employee sidebar plus a simulated desktop. Click a system to open a
+  window, then a module, then a function. Windows can be moved, resized, minimized, maximized and
+  navigated with back/forward or the address bar (e.g. `10.0.0.30/settlement/settle`).
+- On a function page, confirm the 4-digit code (auto-filled from a credential you hold) and press
+  Run. You can type any code: that is how guessing and using someone else's credential works.
+- **My workstation** in the taskbar holds your profile, credentials, activity log and messages.
+- **Ground truth** in the yellow bar shows who really did what next to what the logs say.
 - **Auto-process routine payments** is a debug bot that settles low-risk NPC payments so a single
   tester is not buried in paperwork. Turn it off for a stricter game. Risky payments are always left
   for humans.

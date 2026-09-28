@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyAction, createGame, getPlayerView, tick } from './index';
+import { applyAction, createGame, ENCRYPTION_ENABLED, getPlayerView, grantMasterAccess, SYSTEMS, tick } from './index';
 import type { Action, ActionResult, GameConfig, GameState, Player, RoleId, SystemId } from './index';
 
 const NAMES = ['Jeremy', 'Sarah', 'Mike', 'David', 'Lisa', 'Anna', 'Omar', 'Priya', 'Chen', 'Rosa'];
@@ -127,7 +127,15 @@ test('a valid credential without the right scope is denied and attributed to its
   assert.equal(sim.lastLog(), `${pb.name}'s credential was denied on Settlement`);
 });
 
-test('encryption locks a module until every layer code is supplied; bypass strips it and alerts', () => {
+test('encryption is disabled: the Firewall offers no encryption functions', () => {
+  const sim = new Sim();
+  const [admin] = sim.byRole('SYSTEMS_ADMIN');
+  sim.at(10);
+  const r = sim.run(admin.id, sim.code(admin.id, 'SECURITY', 'FIREWALL'), 'SECURITY', 'FIREWALL', 'ADD_ENCRYPTION', { target: 'SECURITY.MASTER_LOG', code: '7777' });
+  assert.equal(r.ok, false);
+});
+
+test('encryption locks a module until every layer code is supplied; bypass strips it and alerts', { skip: !ENCRYPTION_ENABLED && 'encryption disabled' }, () => {
   const sim = new Sim();
   const [admin] = sim.byRole('SYSTEMS_ADMIN');
   const [analyst] = sim.byRole('SECURITY_ANALYST');
@@ -374,3 +382,47 @@ test('a player view never contains other players\' secrets', () => {
     if (p.allegiance !== me.allegiance) assert.ok(!json.includes(p.objective), 'the other side\'s objective leaked');
   }
 });
+
+test('master access reaches every system', () => {
+  const sim = new Sim();
+  grantMasterAccess(sim.s, 'p0');
+  assert.equal(getPlayerView(sim.s, 'p0').systems.length, SYSTEMS.length);
+  for (const sys of SYSTEMS) {
+    const code = sim.code('p0', sys.id, null);
+    const read = sys.modules.flatMap((m) => m.fns.map((f) => ({ m, f }))).find((x) => x.f.permission === 'READ');
+    if (read) assert.ok(sim.run('p0', code, sys.id, read.m.id, read.f.id).ok, sys.id);
+  }
+});
+
+test("another player's workstation unlocks only with one of their codes, and leaves a trace", () => {
+  const sim = new Sim();
+  const [visitor, target] = [sim.s.players.p1, sim.s.players.p2];
+  sim.at(5);
+  const found = sim.do({ type: 'CONNECT', playerId: visitor.id, address: target.ip });
+  assert.ok(found.ok);
+  assert.equal(found.workstation, target.id);
+
+  // A valid code that belongs to someone else does not open the workstation.
+  const wrong = sim.do({ type: 'ACCESS_WORKSTATION', playerId: visitor.id, targetId: target.id, code: sim.code(visitor.id, ...firstCred(sim, visitor.id)) });
+  assert.equal(wrong.message, 'Access denied.');
+  assert.equal(sim.s.logs.at(-1)!.kind, 'WORKSTATION_DENIED');
+  assert.deepEqual(getPlayerView(sim.s, visitor.id).remote, {});
+
+  const targetCode = sim.code(target.id, ...firstCred(sim, target.id));
+  assert.ok(sim.do({ type: 'ACCESS_WORKSTATION', playerId: visitor.id, targetId: target.id, code: targetCode }).ok);
+  assert.equal(sim.lastLog(), `${target.name} logged in to their workstation (${target.ip})`);
+  assert.ok(sim.s.players[target.id].activity.at(-1)!.text.includes(visitor.ip), 'owner sees where it came from');
+  const remote = getPlayerView(sim.s, visitor.id).remote[target.id];
+  assert.equal(remote.name, target.name);
+  assert.ok(remote.credentials.some((c) => c.code === targetCode));
+
+  // Revoking the credential that was used closes the session.
+  const credId = Object.values(sim.s.credentials).find((c) => c.code === targetCode)!.id;
+  sim.s.credentials[credId].status = 'REVOKED';
+  assert.deepEqual(getPlayerView(sim.s, visitor.id).remote, {});
+});
+
+function firstCred(sim: Sim, pid: string): [SystemId, string | null] {
+  const c = Object.values(sim.s.credentials).find((x) => x.owner === pid)!;
+  return [c.system, c.module];
+}

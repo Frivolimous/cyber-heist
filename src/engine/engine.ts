@@ -99,6 +99,9 @@ export function applyAction(state: GameState, action: Action, now: number): { st
     case 'CONNECT':
       result = connect(s, p, action.address);
       break;
+    case 'ACCESS_WORKSTATION':
+      result = accessWorkstation(s, p, action.targetId, action.code);
+      break;
     default:
       result = fail('Unknown action.');
   }
@@ -242,7 +245,10 @@ function sendMessage(s: GameState, p: Player, toId: string, text: string): Actio
 function connect(s: GameState, p: Player, address: string): ActionResult {
   const t = gameTime(s);
   if (p.lockedUntil > t) return fail(`Workstation locked for ${Math.ceil(p.lockedUntil - t)}s.`);
-  if ((address ?? '').trim() !== s.hiddenHost) return fail('No route to host.');
+  const addr = (address ?? '').trim();
+  const station = Object.values(s.players).find((x) => x.ip === addr);
+  if (station) return { ok: true, message: `Workstation ${addr} found.`, workstation: station.id };
+  if (addr !== s.hiddenHost) return fail('No route to host.');
   const first = !p.knownSystems.includes('BLACKHAT_DB');
   if (first) p.knownSystems.push('BLACKHAT_DB');
   const entry = addLog(s, {
@@ -255,4 +261,45 @@ function connect(s: GameState, p: Player, address: string): ActionResult {
   flagHiddenTraffic(s, entry);
   note(p, t, `Connected to ${s.hiddenHost}.`);
   return ok(`Connected to ${s.hiddenHost}. It now appears in your terminal, but every module needs a credential.`);
+}
+
+/**
+ * Log in to another player's workstation with one of THAT player's credential codes (any scope).
+ * Success is logged under the credential owner's name, so the Master Log reads as if they logged in
+ * themselves; the owner's personal log records the source IP.
+ */
+function accessWorkstation(s: GameState, p: Player, targetId: string, code: string): ActionResult {
+  const t = gameTime(s);
+  if (p.lockedUntil > t) return fail(`Workstation locked for ${Math.ceil(p.lockedUntil - t)}s after repeated failed attempts.`);
+  const target = s.players[targetId];
+  if (!target) return fail('No route to host.');
+  if (target.id === p.id) return fail('That is your own workstation.');
+  const c = (code ?? '').trim();
+  if (!/^\d{4}$/.test(c)) return fail('Enter a 4-digit code.');
+
+  const cred = findCredentialByCode(s, c);
+  if (!cred || cred.owner !== target.id || cred.status !== 'ACTIVE') {
+    const actor = cred ? cred.owner : 'UNKNOWN';
+    const message = `Failed login to ${target.name}'s workstation`;
+    const entry = addLog(s, { actor, kind: 'WORKSTATION_DENIED', message, sourceIp: p.ip, actualPlayerId: p.id });
+    addAlert(s, 'WORKSTATION_DENIED', message, entry.id);
+    note(p, t, `FAILED: code ${c} on ${target.name}'s workstation (${target.ip})`);
+    registerFailure(s, p);
+    return fail('Access denied.');
+  }
+
+  p.failStreak = 0;
+  p.remoteAccess = p.remoteAccess.filter((g) => g.playerId !== target.id);
+  p.remoteAccess.push({ playerId: target.id, credentialId: cred.id });
+  if (!p.heldCredentialIds.includes(cred.id)) p.heldCredentialIds.push(cred.id);
+  addLog(s, {
+    actor: target.id,
+    kind: 'WORKSTATION_ACCESS',
+    message: `${target.name} logged in to their workstation (${target.ip})`,
+    sourceIp: p.ip,
+    actualPlayerId: p.id,
+  });
+  note(target, t, `Your workstation was accessed from ${p.ip}.`);
+  note(p, t, `Logged in to ${target.name}'s workstation (${target.ip}) using credential ${cred.id}.`);
+  return ok(`Access granted to ${target.name}'s workstation.`);
 }

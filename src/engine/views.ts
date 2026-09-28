@@ -4,7 +4,37 @@ import { ROLES, SYSTEMS } from './catalog';
 import type { SystemDef } from './catalog';
 import { fmtClock, gameTime, nameOf } from './core';
 import { credScopeText } from './handlers';
-import type { Allegiance, GameState, InfoPacket, PlayerId, RoleId, SystemId, Winner } from './types';
+import type { Allegiance, GameState, InfoPacket, Player, PlayerId, RoleId, SystemId, Winner } from './types';
+
+/** Everything on one workstation: the owner's own screen, or someone else's once logged in to it. */
+export interface WorkstationView {
+  id: PlayerId;
+  name: string;
+  role: RoleId;
+  roleLabel: string;
+  allegiance: Allegiance;
+  objective: string;
+  motivation: string;
+  ip: string;
+  bankAccount: string;
+  lockedForSec: number;
+  packets: InfoPacket[];
+  knownSystems: SystemId[];
+  credentials: {
+    id: string;
+    code: string;
+    ownerName: string;
+    own: boolean;
+    scope: string;
+    status: string;
+    system: SystemId;
+    module: string | null;
+    fn: string | null;
+    permission: 'READ' | 'WRITE';
+  }[];
+  activity: { time: string; text: string }[];
+  messages: { time: string; fromName: string; toName: string; text: string; incoming: boolean }[];
+}
 
 export interface PlayerView {
   gameId: string;
@@ -16,42 +46,62 @@ export interface PlayerView {
   endReason: string | null;
   processedNpc: number;
   whiteTarget: number;
-  me: {
-    id: PlayerId;
-    name: string;
-    role: RoleId;
-    roleLabel: string;
-    allegiance: Allegiance;
-    objective: string;
-    motivation: string;
-    ip: string;
-    bankAccount: string;
-    lockedForSec: number;
-    packets: InfoPacket[];
-    knownSystems: SystemId[];
-    credentials: {
-      id: string;
-      code: string;
-      ownerName: string;
-      own: boolean;
-      scope: string;
-      status: string;
-      system: SystemId;
-      module: string | null;
-      fn: string | null;
-      permission: 'READ' | 'WRITE';
-    }[];
-    activity: { time: string; text: string }[];
-    messages: { time: string; fromName: string; toName: string; text: string; incoming: boolean }[];
-  };
+  me: WorkstationView;
+  /** Other workstations this player is logged in to (only while the credential used is still active). */
+  remote: Record<PlayerId, WorkstationView>;
   players: { id: PlayerId; name: string; roleLabel: string }[];
   systems: SystemDef[]; // only systems this player knows about
+}
+
+function workstationView(s: GameState, p: Player): WorkstationView {
+  const t = gameTime(s);
+  const time = (x: number): string => fmtClock(s.config, x);
+  return {
+    id: p.id,
+    name: p.name,
+    role: p.role,
+    roleLabel: ROLES[p.role].label,
+    allegiance: p.allegiance,
+    objective: p.objective,
+    motivation: p.motivation,
+    ip: p.ip,
+    bankAccount: p.bankAccount,
+    lockedForSec: Math.max(0, Math.ceil(p.lockedUntil - t)),
+    packets: p.packets,
+    knownSystems: p.knownSystems,
+    credentials: p.heldCredentialIds.map((id) => {
+      const cr = s.credentials[id];
+      return {
+        id,
+        code: cr.code,
+        ownerName: nameOf(s, cr.owner),
+        own: cr.owner === p.id,
+        scope: credScopeText(cr),
+        status: cr.status,
+        system: cr.system,
+        module: cr.module,
+        fn: cr.fn,
+        permission: cr.permission,
+      };
+    }),
+    activity: p.activity.map((a) => ({ time: time(a.t), text: a.text })),
+    messages: p.messages.map((m) => ({
+      time: time(m.t),
+      fromName: nameOf(s, m.from),
+      toName: nameOf(s, m.to),
+      text: m.text,
+      incoming: m.to === p.id,
+    })),
+  };
 }
 
 export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
   const p = s.players[playerId];
   const t = gameTime(s);
-  const time = (x: number): string => fmtClock(s.config, x);
+  const remote: Record<PlayerId, WorkstationView> = {};
+  for (const g of p.remoteAccess) {
+    if (s.credentials[g.credentialId]?.status === 'ACTIVE') remote[g.playerId] = workstationView(s, s.players[g.playerId]);
+  }
   return {
     gameId: s.id,
     clock: fmtClock(s.config, t),
@@ -62,43 +112,8 @@ export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
     endReason: s.endReason,
     processedNpc: s.totals.processedNpc,
     whiteTarget: s.config.whiteTarget,
-    me: {
-      id: p.id,
-      name: p.name,
-      role: p.role,
-      roleLabel: ROLES[p.role].label,
-      allegiance: p.allegiance,
-      objective: p.objective,
-      motivation: p.motivation,
-      ip: p.ip,
-      bankAccount: p.bankAccount,
-      lockedForSec: Math.max(0, Math.ceil(p.lockedUntil - t)),
-      packets: p.packets,
-      knownSystems: p.knownSystems,
-      credentials: p.heldCredentialIds.map((id) => {
-        const cr = s.credentials[id];
-        return {
-          id,
-          code: cr.code,
-          ownerName: nameOf(s, cr.owner),
-          own: cr.owner === p.id,
-          scope: credScopeText(cr),
-          status: cr.status,
-          system: cr.system,
-          module: cr.module,
-          fn: cr.fn,
-          permission: cr.permission,
-        };
-      }),
-      activity: p.activity.map((a) => ({ time: time(a.t), text: a.text })),
-      messages: p.messages.map((m) => ({
-        time: time(m.t),
-        fromName: nameOf(s, m.from),
-        toName: nameOf(s, m.to),
-        text: m.text,
-        incoming: m.to === p.id,
-      })),
-    },
+    me: workstationView(s, p),
+    remote,
     players: s.playerOrder.map((id) => ({ id, name: s.players[id].name, roleLabel: ROLES[s.players[id].role].label })),
     systems: SYSTEMS.filter((sys) => p.knownSystems.includes(sys.id)),
   };

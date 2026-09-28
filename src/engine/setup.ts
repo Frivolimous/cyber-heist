@@ -1,6 +1,6 @@
 // Builds a fresh game: roles, allegiances, credentials, bank data and private info packets.
 
-import { DEFAULT_CONFIG, HIDDEN_HOST, ROLES, ROLE_ORDER, SYSTEMS } from './catalog';
+import { DEFAULT_CONFIG, ENCRYPTION_ENABLED, HIDDEN_HOST, ROLES, ROLE_ORDER, SYSTEMS } from './catalog';
 import { addLog, keyOf, money, nextId } from './core';
 import { createCredential } from './credentials';
 import { spawnNpc } from './bank';
@@ -122,6 +122,7 @@ export function createGame(o: NewGameOptions): GameState {
       failStreak: 0,
       lockedUntil: 0,
       lastTraceAt: -9999,
+      remoteAccess: [],
     };
     const mins = Math.round(config.durationSec / 60);
     p.objective =
@@ -148,6 +149,16 @@ export function createGame(o: NewGameOptions): GameState {
   return s;
 }
 
+/** Sandbox/testing: give one player a whole-system WRITE credential for every system, hidden host included. */
+export function grantMasterAccess(s: GameState, playerId: string): void {
+  const p = s.players[playerId];
+  for (const sys of SYSTEMS) {
+    const cred = createCredential(s, { owner: p.id, system: sys.id, module: null, permission: 'WRITE', issuedBy: null });
+    p.heldCredentialIds.push(cred.id);
+    if (!p.knownSystems.includes(sys.id)) p.knownSystems.push(sys.id);
+  }
+}
+
 function dealPackets(s: GameState): void {
   const c = s.config;
   const blacks = s.playerOrder.map((id) => s.players[id]).filter((p) => p.allegiance === 'BLACK');
@@ -163,7 +174,7 @@ function dealPackets(s: GameState): void {
       `Traffic keeps reaching ${s.hiddenHost}, a host that Employee Records cannot explain.`,
       `Traces only work on log entries younger than ${c.traceMaxAgeSec}s, and each trace has a ${c.traceCooldownSec}s cooldown.`,
       `${c.lockoutAfterFails} failed attempts in a row lock a workstation for ${c.lockoutSec}s.`,
-      'Bypassing encryption in the Firewall raises an alert in Intrusion Detection.',
+      ...(ENCRYPTION_ENABLED ? ['Bypassing encryption in the Firewall raises an alert in Intrusion Detection.'] : []),
       'The Master Log stops recording while it is offline. Log ids keep counting, so gaps show.',
       'Employee Records list the registered workstation IP of every employee.',
     ],

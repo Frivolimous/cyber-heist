@@ -162,6 +162,7 @@ export interface Player {
   failStreak: number;
   lockedUntil: number;
   lastTraceAt: number;
+  remoteAccess: { playerId: PlayerId; credentialId: string }[]; // other workstations this player has logged in to
 }
 
 export interface GameState {
@@ -220,10 +221,17 @@ export interface ConnectAction {
   playerId: PlayerId;
   address: string;
 }
-export type Action = ExecuteAction | ShareCredentialAction | SendMessageAction | ConnectAction;
+export interface AccessWorkstationAction {
+  type: 'ACCESS_WORKSTATION';
+  playerId: PlayerId;
+  targetId: PlayerId;
+  code: string;
+}
+export type Action = ExecuteAction | ShareCredentialAction | SendMessageAction | ConnectAction | AccessWorkstationAction;
 
 export interface ActionResult {
   ok: boolean;
   message: string;
   lines?: string[];
+  workstation?: PlayerId; // CONNECT: the address belongs to this player's workstation
 }

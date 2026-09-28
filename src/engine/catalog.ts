@@ -31,6 +31,7 @@ export interface ModuleDef {
 export interface SystemDef {
   id: SystemId;
   label: string;
+  address: string; // network address typed into a window's address bar
   hidden?: boolean;
   modules: ModuleDef[];
 }
@@ -51,18 +52,27 @@ const ben: ParamSpec = { name: 'beneficiaryId', label: 'Beneficiary', kind: 'tex
 
 export const HIDDEN_HOST = '10.66.6.6';
 
+/** Encryption layers (Firewall add/remove/bypass + layer codes on every function) are switched off for now. */
+export const ENCRYPTION_ENABLED = false;
+
 export const SYSTEMS: SystemDef[] = [
   {
     id: 'SECURITY',
     label: 'Security Systems',
+    address: '10.0.0.10',
     modules: [
       {
         id: 'FIREWALL',
         label: 'Firewall',
         fns: [
-          fn('ADD_ENCRYPTION', 'Add encryption layer', 'WRITE', 'Lock a module behind a 4-digit code.', [target, code4]),
-          fn('REMOVE_ENCRYPTION', 'Remove encryption layer', 'WRITE', 'Remove a layer. You must know its code.', [target, code4]),
-          fn('BYPASS_ENCRYPTION', 'Bypass encryption', 'WRITE', 'Strip all layers from a module. Raises an alert.', [target]),
+          // Encryption layers are disabled: re-add these to bring them back (handlers and checks still exist).
+          ...(ENCRYPTION_ENABLED
+            ? [
+                fn('ADD_ENCRYPTION', 'Add encryption layer', 'WRITE', 'Lock a module behind a 4-digit code.', [target, code4]),
+                fn('REMOVE_ENCRYPTION', 'Remove encryption layer', 'WRITE', 'Remove a layer. You must know its code.', [target, code4]),
+                fn('BYPASS_ENCRYPTION', 'Bypass encryption', 'WRITE', 'Strip all layers from a module. Raises an alert.', [target]),
+              ]
+            : []),
           fn('SET_MODULE_STATUS', 'Set module online/offline', 'WRITE', 'Take a module offline or bring it back.', [
             target,
             { name: 'status', label: 'Status', kind: 'select', options: ['ONLINE', 'OFFLINE'] },
@@ -99,6 +109,7 @@ export const SYSTEMS: SystemDef[] = [
   {
     id: 'CLIENT_DATA',
     label: 'Client Data',
+    address: '10.0.0.20',
     modules: [
       {
         id: 'CUSTOMER_RECORDS',
@@ -142,6 +153,7 @@ export const SYSTEMS: SystemDef[] = [
   {
     id: 'TRANSACTIONS',
     label: 'Transaction Processing',
+    address: '10.0.0.30',
     modules: [
       {
         id: 'PAYMENT_QUEUE',
@@ -184,6 +196,7 @@ export const SYSTEMS: SystemDef[] = [
   {
     id: 'BLACKHAT_DB',
     label: 'Unregistered host',
+    address: HIDDEN_HOST,
     hidden: true,
     modules: [
       {

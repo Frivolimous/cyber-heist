@@ -42,14 +42,27 @@ of "potential targets for fraudulent transactions").
 
 ## Security systems
 
-- Encryption is per **module** (not per system or function yet). Every layer code must be supplied.
-  The Firewall itself cannot be encrypted or taken offline (avoids unrecoverable soft-locks).
-- Bypass strips all layers and raises an alert. Any role holding Firewall WRITE can do it.
+- **Encryption layers are disabled** (`ENCRYPTION_ENABLED = false` in `catalog.ts`): the Firewall has no
+  add/remove/bypass functions and function pages ask for no layer codes. The engine code remains.
+  When enabled: encryption is per **module**, every layer code must be supplied, the Firewall itself
+  cannot be encrypted, and bypass strips all layers and raises an alert.
+- The Firewall itself cannot be taken offline (avoids unrecoverable soft-locks).
 - A module taken offline rejects all use. While the **Master Log** is offline nothing is recorded but
   log ids keep counting, so the gap is visible.
 - **Trace**: reveals the source IP of one log entry. Entry must be under 3 minutes old, 30s cooldown
   per player. Employee Records list every registered IP, so a trace can identify a person. That is
   strong on purpose; the analyst's role could itself be a Black Hat who lies about the result.
+
+## Workstations
+
+- Every player's workstation IP is an address. Typing it into a window's address bar shows a locked
+  login page. Any **active** credential owned by that player (any scope) logs you in; anything else is
+  "Access denied.", logged, alerted and counts toward the lockout, like any other bad code.
+- Logged in, you see their whole workstation read-only: profile, objective, private info, every
+  credential they hold with codes, their activity log and messages. The session lasts until the
+  credential you used is revoked.
+- Trace: the Master Log records "<owner> logged in to their workstation", named after the credential's
+  owner, which is always the workstation's owner. Their personal activity log records the visitor's IP.
 
 ## Hidden host (Black Hat Database)
 
