@@ -24,6 +24,7 @@ const ROSTER = NAMES.map((name, i) => ({ id: `p${i}`, name }));
 const MASTER_SEAT = ROSTER[0].id; // this seat gets whole-system credentials for every system
 const TICK_MS = 250;
 const TASKBAR_H = 44;
+const TERMINAL_LINES = 100;
 
 type Line = { cls: string; text: string };
 type Route =
@@ -48,7 +49,10 @@ interface Win {
   addr: string; // address bar text (may be a draft the player is typing)
   sized: boolean; // the player resized it by hand, so stop auto-fitting
   form: Record<string, string>;
-  out: Line[];
+  out: Line[]; // terminal: kept while the window stays on one system, last 100 lines
+  termSystem: SystemId | null; // the system the terminal is logged in to
+  notice: Line[]; // one-off notices on workstation pages
+  liveEnd?: number; // live monitor: w.out length right after its last block (so the next refresh can replace it)
 }
 
 // ---- Sandbox state ----------------------------------------------------------------
@@ -154,7 +158,12 @@ function renderTruth(): void {
     .join('\n');
   const txs = s.transactions
     .slice(-25)
-    .map((x) => `${x.id} ${money(x.amount).padStart(11)} ${x.status.padEnd(12)} ${x.origin.padEnd(6)} to ${s.beneficiaries[x.beneficiaryId].name} ${x.settledTo ?? ''} ${x.fraud ? 'FRAUD' : ''}`)
+    .map((x) => `${x.id} ${money(x.amount).padStart(11)} ${x.status.padEnd(12)} ${x.origin.padEnd(6)} from ${x.customerId} ${x.originAccount} to ${x.beneficiaryId} ${x.settledTo ?? ''} ${x.fraud ? 'FRAUD' : ''}`)
+    .join('\n');
+  const who = (id: string | null): string => (id === null || id === 'SYSTEM' ? 'SYSTEM' : (s.players[id]?.name ?? id));
+  const history = s.transactions
+    .slice(-8)
+    .map((x) => [`${x.id}`, ...x.history.map((e) => `  [${t(e.t)}] ${e.action.padEnd(12)} records: ${who(e.by).padEnd(8)} truth: ${who(e.actualPlayerId).padEnd(8)} ${e.detail ?? ''}`)].join('\n'))
     .join('\n');
   const bn = s.blacknet.map((m) => `[${t(m.t)}] ${m.alias} (really ${s.players[m.ownerId].name}): ${m.text}`).join('\n');
   const targets = s.targets.map((x) => `${x.account} ${x.status}`).join('   ');
@@ -164,6 +173,7 @@ function renderTruth(): void {
     <h4>People</h4><pre>${esc(people)}</pre>
     <h4>Player activity: what the log says vs who did it</h4><pre>${esc(logs || 'No player activity yet.')}</pre>
     <h4>Payments</h4><pre>${esc(txs)}</pre>
+    <h4>Payment history (last 8)</h4><pre>${esc(history)}</pre>
     <h4>Blacknet</h4><pre>${esc(bn || 'No Blacknet posts.')}</pre>`;
 }
 
@@ -172,7 +182,7 @@ function renderStatus(): void {
   const v = view();
   const ended = game.status === 'ENDED';
   const banner = ended
-    ? `<div class="banner ${game.winner === 'WHITE' ? 'white' : 'black'}">${game.winner === 'WHITE' ? 'White Hats win' : 'Black Hats win'}. ${esc(game.endReason)}</div>`
+    ? `<div class="banner ${game.winner === 'WHITE' ? 'white' : game.winner === 'BLACK' ? 'black' : 'none'}">${game.winner === 'WHITE' ? 'White Hats win' : game.winner === 'BLACK' ? 'Black Hats win' : 'Everybody loses'}. ${esc(game.endReason)}</div>`
     : '';
   $('status').innerHTML = `
     <div class="who"><b>${esc(v.me.name)}</b><span>${esc(v.me.roleLabel)}</span>
@@ -241,6 +251,14 @@ function routeAddress(r: Route): string {
   return a;
 }
 
+/** Your best access to a module from the active credentials you hold (yours or shared with you). */
+function moduleAccess(v: PlayerView, system: string, module: string): 'WRITE' | 'READ' | 'NONE' {
+  const covering = v.me.credentials.filter((c) => c.status === 'ACTIVE' && c.system === system && (c.module === null || c.module === module));
+  if (covering.some((c) => c.permission === 'WRITE')) return 'WRITE';
+  return covering.length ? 'READ' : 'NONE';
+}
+const ACCESS_TEXT = { WRITE: 'Read & write', READ: 'Read only', NONE: 'No access' } as const;
+
 function winTitle(w: Win): string {
   if (w.kind === 'personal') return 'My workstation';
   const r = route(w);
@@ -272,10 +290,15 @@ function openWindow(kind: Win['kind'], first?: Route): Win {
     sized: false,
     form: {},
     out: [],
+    termSystem: null,
+    notice: [],
   };
   list.push(win);
-  renderWin(win);
-  fitWin(win);
+  if (first) showRoute(win); // renders, fits, and opens the terminal session
+  else {
+    renderWin(win);
+    fitWin(win);
+  }
   markFocus();
   renderTaskbar();
   return win;
@@ -330,7 +353,13 @@ function navigate(w: Win, r: Route): void {
 function showRoute(w: Win): void {
   const r = route(w);
   w.addr = r ? routeAddress(r) : '';
-  w.out = [];
+  w.notice = [];
+  // The terminal survives moving around one system; entering a different system starts a fresh session.
+  if (r && 'system' in r && r.system !== w.termSystem) {
+    const sys = findSystem(r.system)!;
+    w.termSystem = r.system;
+    w.out = [{ cls: 'hs', text: `[${fmtClock(game.config, view().t)}] Logged in to ${sys.label} (${sys.address})` }];
+  }
   delete w.form.credSel;
   renderWin(w);
   fitWin(w);
@@ -447,8 +476,11 @@ function browserHtml(w: Win): string {
     crumbs = `<div class="crumbs">${parts.join('<i>/</i>')}</div>`;
     if (r.kind === 'system') {
       body = `<div class="tiles">${sys.modules
-        .map((m) => `<button class="tile" data-act="wgo:${w.id}:${sys.id}:${m.id}"><b>${esc(m.label)}</b><small>${m.fns.length} function${m.fns.length === 1 ? '' : 's'}</small></button>`)
-        .join('')}</div>`;
+        .map((m) => {
+          const a = moduleAccess(view(), sys.id, m.id);
+          return `<button class="tile ${a === 'NONE' ? 'locked' : ''}" data-act="wgo:${w.id}:${sys.id}:${m.id}"><b>${esc(m.label)}</b><i class="perm ${a}">${ACCESS_TEXT[a]}</i></button>`;
+        })
+        .join('')}</div>${terminalHtml(w)}`;
     } else if (r.kind === 'module' && MODULE_PAGES[`${r.system}.${r.module}`]) {
       body = modulePageHtml(w, r);
     } else if (r.kind === 'module') {
@@ -459,7 +491,7 @@ function browserHtml(w: Win): string {
             <span><b>${esc(f.label)}</b><small>${esc(f.description)}</small></span>
             <i class="perm ${f.permission}">${f.permission === 'WRITE' ? 'Write' : 'Read'}</i></button>`,
         )
-        .join('')}</div>`;
+        .join('')}</div>${terminalHtml(w)}`;
     } else {
       body = fnHtml(w, r);
     }
@@ -527,9 +559,12 @@ function credLabel(c: Cred): string {
  * With no such credentials the first option is "No credentials granted". Only "Manual code" makes the
  * code box editable. Starts on the first credential `prefer` accepts (else the first listed).
  */
-function credentialFields(w: Win, v: PlayerView, applies: (c: Cred) => boolean, prefer?: (c: Cred) => boolean): string {
+function credentialFields(w: Win, v: PlayerView, applies: (c: Cred) => boolean, prefer?: (c: Cred) => boolean, openKey?: string): string {
   const list = v.me.credentials.filter((c) => c.status === 'ACTIVE' && applies(c));
-  const opts: [string, string][] = [...(list.length ? list.map((c): [string, string] => [c.id, credLabel(c)]) : [['none', 'No credentials granted'] as [string, string]]), ['manual', 'Manual code']];
+  const open = openKey !== undefined && v.openModules.includes(openKey);
+  const opts: [string, string][] = [
+    ...(open ? [['open', 'No code needed (security is off)'] as [string, string]] : []),
+    ...(list.length ? list.map((c): [string, string] => [c.id, credLabel(c)]) : [['none', 'No credentials granted'] as [string, string]]), ['manual', 'Manual code']];
   if (!opts.some(([id]) => id === w.form.credSel)) w.form.credSel = (prefer && list.find(prefer)?.id) || opts[0][0];
   const sel = w.form.credSel;
   const manual = sel === 'manual';
@@ -542,8 +577,9 @@ function credentialFields(w: Win, v: PlayerView, applies: (c: Cred) => boolean, 
     </div>`;
 }
 
+/** The window's terminal: persists across one system's pages, with a Clear button. */
 function terminalHtml(w: Win): string {
-  return `<div class="out" aria-live="polite">${w.out.map((l) => `<div class="${l.cls}">${esc(l.text)}</div>`).join('') || '<div class="dim">Output appears here.</div>'}</div>`;
+  return `<section class="mod-sec term"><h3>Terminal <button type="button" class="term-clear" data-act="wclear:${w.id}">Clear</button></h3><div class="out" aria-live="polite">${w.out.map((l) => `<div class="${l.cls}">${esc(l.text)}</div>`).join('') || '<div class="dim">Output appears here.</div>'}</div></section>`;
 }
 
 function fnHtml(w: Win, r: Extract<Route, { kind: 'fn' }>): string {
@@ -590,53 +626,361 @@ function execute(w: Win, system: SystemId, module: string, fn: string, params: R
   };
   const res = applyAction(game, action, vNow);
   game = res.state;
-  w.out.push({ cls: 'cmd', text: `> ${def?.label ?? fn}` }, { cls: res.result.ok ? 'ok' : 'bad', text: res.result.message });
+  w.out.push({ cls: 'cmd', text: `[${findModule(system, module)?.label ?? module}] > ${def?.label ?? fn}` }, { cls: res.result.ok ? 'ok' : 'bad', text: res.result.message });
   for (const line of res.result.lines ?? []) w.out.push({ cls: 'row', text: line });
-  if (w.out.length > 300) w.out.splice(0, w.out.length - 300);
+  if (w.out.length > TERMINAL_LINES) w.out.splice(0, w.out.length - TERMINAL_LINES);
   renderWin(w);
   refresh();
   return res.result.ok;
 }
 
+/** Redraw just the terminal (not the whole window), keeping the scroll at the bottom if it was there. */
+function renderTerminal(w: Win): void {
+  const out = winEl(w)?.querySelector<HTMLElement>('.out');
+  if (!out) return;
+  const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 8;
+  out.innerHTML = w.out.map((l) => `<div class="${l.cls}">${esc(l.text)}</div>`).join('');
+  if (atBottom) out.scrollTop = out.scrollHeight;
+}
+
+/**
+ * Master Log live monitor: once a second, re-read the log quietly (the engine only allows this after a logged
+ * read) and replace the previous output block, unless something else was printed after it.
+ */
+function tickMonitors(): void {
+  for (const w of wins()) {
+    const r = route(w);
+    if (w.min || !r || r.kind !== 'module' || r.system !== 'SECURITY' || r.module !== 'MASTER_LOG' || w.form['p:monitor'] !== 'YES') continue;
+    const res = applyAction(
+      game,
+      { type: 'EXECUTE', playerId: selected, code: (w.form.code ?? '').trim(), system: 'SECURITY', module: 'MASTER_LOG', fn: 'VIEW_LOG', params: { show: w.form['p:logFilter'] ?? 'PLAYERS' }, quiet: true },
+      vNow,
+    );
+    game = res.state;
+    if (!res.result.ok) {
+      w.form['p:monitor'] = 'NO';
+      w.out.push({ cls: 'bad', text: `Auto-update stopped: ${res.result.message}` });
+      renderWin(w);
+      continue;
+    }
+    const block: Line[] = [{ cls: 'cmd', text: '[Master Log] > View log (live)' }, { cls: 'ok', text: res.result.message }, ...(res.result.lines ?? []).map((text) => ({ cls: 'row', text }))];
+    // Replace the previous live block if it is still the last thing in the terminal.
+    const start = w.liveEnd !== undefined && w.liveEnd === w.out.length ? w.out.map((l) => l.cls).lastIndexOf('cmd') : w.out.length;
+    w.out.splice(start, w.out.length - start, ...block);
+    if (w.out.length > TERMINAL_LINES) w.out.splice(0, w.out.length - TERMINAL_LINES);
+    w.liveEnd = w.out.length;
+    renderTerminal(w);
+  }
+}
+setInterval(tickMonitors, 1000);
+
 // ---- Module pages: one screen per module (credential, commands, terminal) ------------------------
 // Modules listed here skip the function layer. The rest still show a list of functions.
 
 type ModuleRoute = Extract<Route, { kind: 'module' }>;
+// Building blocks for command cards. A card with inputs is a <form>: Enter runs its first button.
+const card = (title: string, perm: 'READ' | 'WRITE', body: string, form?: string): string => {
+  const tag = form ? 'form' : 'div';
+  return `<${tag} class="cmd-card" ${form ? `data-mform="${form}"` : ''}>
+    <div class="cmd-head"><b>${title}</b><i class="perm ${perm}">${perm === 'WRITE' ? 'Write' : 'Read'}</i></div>
+    <div class="cmd-row">${body}</div>
+  </${tag}>`;
+};
+const input = (w: Win, name: string, label: string, placeholder: string, grow = false, full = false): string =>
+  `<label class="field ${grow ? 'grow' : ''} ${full ? 'full' : ''}"><span>${label}</span><input data-f="p:${name}" value="${esc(w.form[`p:${name}`] ?? '')}" placeholder="${placeholder}" autocomplete="off" size="8"></label>`;
+/** Low / Medium / High, nothing preselected so Enter cannot file a score by accident. */
+const scorePicker = (w: Win): string =>
+  `<fieldset class="field full seg"><span>Score</span><div class="seg-opts">${['LOW', 'MEDIUM', 'HIGH']
+    .map(
+      (s) =>
+        `<label class="seg-opt ${s}"><input type="radio" name="score-${w.id}" data-f="p:score" value="${s}" ${w.form['p:score'] === s ? 'checked' : ''}><span>${s[0] + s.slice(1).toLowerCase()}</span></label>`,
+    )
+    .join('')}</div></fieldset>`;
+/** A dropdown for command cards. Starts on the first option; the choice sticks for the window. */
+const select = (w: Win, name: string, label: string, options: { value: string; label: string }[], full = false): string => {
+  const key = `p:${name}`;
+  if (!options.some((o) => o.value === w.form[key])) w.form[key] = options[0]?.value ?? '';
+  return `<label class="field grow ${full ? 'full' : ''}"><span>${label}</span><select data-f="${key}">${options
+    .map((o) => `<option value="${esc(o.value)}" ${o.value === w.form[key] ? 'selected' : ''}>${esc(o.label)}</option>`)
+    .join('')}</select></label>`;
+};
+/** A YES / NO checkbox for command cards. */
+const checkbox = (w: Win, name: string, label: string): string =>
+  `<label class="check full"><input type="checkbox" data-f="p:${name}" ${w.form[`p:${name}`] === 'YES' ? 'checked' : ''}> ${label}</label>`;
+/** Groups buttons onto their own line under a full-width field. */
+const btns = (html: string): string => `<div class="cmd-btns">${html}</div>`;
+/** A button that runs `cmd`. Inside a form card it submits (so Enter picks the first one). */
+const btn = (w: Win, cmd: string, label: string, style = '', submit = false): string =>
+  submit
+    ? `<button class="cmd-btn ${style}" type="submit" data-cmd="${cmd}">${label}</button>`
+    : `<button class="cmd-btn ${style}" type="button" data-act="mcmd:${w.id}:${cmd}">${label}</button>`;
+
+/**
+ * Run a command whose typed inputs must be entered fresh each time: on success the `clear` fields are emptied.
+ */
+function runFresh(w: Win, system: SystemId, module: string, fn: string, params: Record<string, string>, clear: string[]): void {
+  if (execute(w, system, module, fn, params)) {
+    for (const k of clear) w.form[`p:${k}`] = '';
+    renderWin(w);
+  }
+}
+const txParam = (w: Win): Record<string, string> => ({ txId: w.form['p:txId'] ?? '' });
+/** Read card for a stage: "what's waiting for me?" and "what did I just do?". */
+const viewCard = (w: Win, title: string, pendingLabel: string): string =>
+  card(title, 'READ', btn(w, 'view:PENDING', pendingLabel) + btn(w, 'view:ALL', 'All', 'alt'));
+
 const MODULE_PAGES: Record<string, { commands: (w: Win) => string; run: (w: Win, cmd: string, arg?: string) => void }> = {
+  'SECURITY.FIREWALL': {
+    commands: (w) => {
+      // Every module the player knows, except the Firewall itself and the hidden host (not the bank's to control).
+      const mods = view()
+        .systems.filter((sys) => !sys.hidden)
+        .flatMap((sys) => sys.modules.filter((m) => !(sys.id === 'SECURITY' && m.id === 'FIREWALL')).map((m) => ({ value: `${sys.id}.${m.id}`, label: `${sys.label} / ${m.label}` })));
+      const confirming = w.form['p:revConfirm'] === 'YES';
+      const revoke = confirming
+        ? `<p class="warn full">This action is irreversible. After a ${game.config.revokeCountdownSec}s countdown, <b>${esc(w.form['p:revAddr'] ?? '')}</b> loses all access permanently (a workstation's owner also loses every credential). It can only be cancelled from the Firewall before then.</p>` +
+          btns(btn(w, 'revokeConfirm', 'Confirm: revoke all access', 'danger') + btn(w, 'revokeBack', 'Back', 'alt'))
+        : input(w, 'revAddr', 'Address', 'workstation or system', true, true) + btns(btn(w, 'revokeAsk', 'Revoke all access…', 'danger', true));
+      return (
+        card('View firewall status', 'READ', btn(w, 'view', 'Status, blocks and revocations')) +
+        card(
+          'Control a module',
+          'WRITE',
+          select(w, 'target', 'Module', mods, true) +
+            btns(
+              btn(w, 'module:OFFLINE', 'Take offline', 'danger', true) +
+                btn(w, 'module:ONLINE', 'Bring online', 'alt', true) +
+                btn(w, 'security:OFF', 'Security off', 'danger', true) +
+                btn(w, 'security:ON', 'Security on', 'alt', true),
+            ),
+          `${w.id}:module:OFFLINE`,
+        ) +
+        card(
+          `Block an address (${game.config.blockSec}s)`,
+          'WRITE',
+          input(w, 'blockAddr', 'Address', 'workstation or system', true, true) + btns(btn(w, 'block', 'Block', 'danger', true) + btn(w, 'unblock', 'Unblock', 'alt', true)),
+          `${w.id}:block`,
+        ) +
+        card('Revoke all access', 'WRITE', revoke, confirming ? undefined : `${w.id}:revokeAsk`) +
+        card('Cancel a revocation', 'WRITE', input(w, 'revId', 'Revocation', 'R1', true, true) + btns(btn(w, 'cancelRev', 'Cancel it', '', true)), `${w.id}:cancelRev`)
+      );
+    },
+    run: (w, cmd, arg) => {
+      const f = (k: string): string => w.form[`p:${k}`] ?? '';
+      const fw = (fn: string, params: Record<string, string>, clear: string[] = []) => runFresh(w, 'SECURITY', 'FIREWALL', fn, params, clear);
+      if (cmd === 'view') execute(w, 'SECURITY', 'FIREWALL', 'VIEW_STATUS', {});
+      else if (cmd === 'module') execute(w, 'SECURITY', 'FIREWALL', 'SET_MODULE_STATUS', { target: f('target'), status: arg ?? '' });
+      else if (cmd === 'security') execute(w, 'SECURITY', 'FIREWALL', 'SET_SECURITY', { target: f('target'), security: arg ?? '' });
+      else if (cmd === 'block') fw('BLOCK_ADDRESS', { address: f('blockAddr') }, ['blockAddr']);
+      else if (cmd === 'unblock') fw('UNBLOCK_ADDRESS', { address: f('blockAddr') }, ['blockAddr']);
+      else if (cmd === 'cancelRev') fw('CANCEL_REVOCATION', { revocationId: f('revId') }, ['revId']);
+      else if (cmd === 'revokeAsk' && f('revAddr').trim()) {
+        w.form['p:revConfirm'] = 'YES';
+        renderWin(w);
+      } else if (cmd === 'revokeBack') {
+        w.form['p:revConfirm'] = 'NO';
+        renderWin(w);
+      } else if (cmd === 'revokeConfirm') {
+        w.form['p:revConfirm'] = 'NO';
+        fw('REVOKE_ALL_ACCESS', { address: f('revAddr') }, ['revAddr']);
+        renderWin(w);
+      }
+    },
+  },
+  'SECURITY.MASTER_LOG': {
+    commands: (w) =>
+      card(
+        'View log',
+        'READ',
+        btn(w, 'view:PLAYERS', 'Player activity') + btn(w, 'view:ALL', 'Everything', 'alt') + btn(w, 'view:ALERTS', 'Alerts', 'alt') + checkbox(w, 'monitor', 'Auto-update every second (only opening the view is logged)'),
+      ) +
+      card('Trace a log entry', 'WRITE', input(w, 'logId', 'Log entry', 'L12 or 12', true, true) + btns(btn(w, 'trace', 'Trace', '', true)), `${w.id}:trace`),
+    run: (w, cmd, arg) => {
+      if (cmd === 'view') {
+        w.form['p:logFilter'] = arg ?? w.form['p:logFilter'] ?? 'PLAYERS';
+        execute(w, 'SECURITY', 'MASTER_LOG', 'VIEW_LOG', { show: w.form['p:logFilter'] });
+        w.liveEnd = w.out.length; // the block just printed is the one a live monitor keeps replacing
+      } else runFresh(w, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: w.form['p:logId'] ?? '' }, ['logId']);
+    },
+  },
+  'SECURITY.EMPLOYEE_RECORDS': {
+    commands: (w) => card('View employees', 'READ', btn(w, 'view', 'All employees')),
+    run: (w) => execute(w, 'SECURITY', 'EMPLOYEE_RECORDS', 'VIEW_EMPLOYEES', {}),
+  },
+  'SECURITY.PERMISSIONS': {
+    commands: (w) => {
+      const v = view();
+      const people = v.players.map((p) => ({ value: p.id, label: `${p.name} (${p.roleLabel})` }));
+      const scopes = v.systems.filter((sys) => !sys.hidden).flatMap((sys) => [
+        { value: `${sys.id}.*`, label: `All of ${sys.label}` },
+        ...sys.modules.map((m) => ({ value: `${sys.id}.${m.id}`, label: `${sys.label} / ${m.label}` })),
+      ]);
+      const access = [
+        { value: 'READ', label: 'Read only' },
+        { value: 'WRITE', label: 'Read & write' },
+      ];
+      return (
+        card('View credentials', 'READ', btn(w, 'view:ACTIVE', 'Active') + btn(w, 'view:ALL', 'All, incl. revoked', 'alt')) +
+        card('Revoke a credential', 'WRITE', input(w, 'credentialId', 'Credential', 'C12 or 12', true, true) + btns(btn(w, 'revoke', 'Revoke', 'danger', true)), `${w.id}:revoke`) +
+        card(
+          'Issue a credential',
+          'WRITE',
+          select(w, 'owner', 'Issue to', people, true) +
+            select(w, 'scope', 'Access to', scopes, true) +
+            select(w, 'permission', 'Permission', access, true) +
+            btns(btn(w, 'create', 'Issue credential', '', true)),
+          `${w.id}:create`,
+        )
+      );
+    },
+    run: (w, cmd, arg) => {
+      const f = (k: string): string => w.form[`p:${k}`] ?? '';
+      if (cmd === 'view') execute(w, 'SECURITY', 'PERMISSIONS', 'VIEW_PERMISSIONS', { show: arg ?? 'ACTIVE' });
+      else if (cmd === 'revoke') runFresh(w, 'SECURITY', 'PERMISSIONS', 'REVOKE_CREDENTIAL', { credentialId: f('credentialId') }, ['credentialId']);
+      else execute(w, 'SECURITY', 'PERMISSIONS', 'CREATE_CREDENTIAL', { owner: f('owner'), scope: f('scope'), permission: f('permission') });
+    },
+  },
+  'CLIENT_DATA.CUSTOMER_RECORDS': {
+    commands: (w) =>
+      card('View customers', 'READ', btn(w, 'view:MINE', 'My customers') + btn(w, 'view:ALL', 'All customers', 'alt')) +
+      card(
+        'Add account',
+        'WRITE',
+        input(w, 'addCust', 'Customer', 'CU1') +
+          input(w, 'addAcct', 'Account', '12345', true) +
+          input(w, 'addReq', 'Request (optional)', 'REQ-1') +
+          checkbox(w, 'addPrimary', 'Make it their primary account') +
+          btns(btn(w, 'add', 'Add account', '', true)),
+        `${w.id}:add`,
+      ) +
+      card(
+        'Set primary account',
+        'WRITE',
+        input(w, 'priCust', 'Customer', 'CU1') +
+          input(w, 'priAcct', 'Account', '12345', true) +
+          input(w, 'priReq', 'Request (optional)', 'REQ-1') +
+          btns(btn(w, 'primary', 'Set primary', '', true)),
+        `${w.id}:primary`,
+      ) +
+      card(
+        'Remove account',
+        'WRITE',
+        input(w, 'remCust', 'Customer', 'CU1') +
+          input(w, 'remAcct', 'Account', '12345', true) +
+          input(w, 'remReq', 'Request (optional)', 'REQ-1') +
+          btns(btn(w, 'remove', 'Remove account', 'danger', true)),
+        `${w.id}:remove`,
+      ),
+    run: (w, cmd, arg) => {
+      const f = (k: string): string => w.form[`p:${k}`] ?? '';
+      const mod = (fn: string, params: Record<string, string>, clear: string[]) => runFresh(w, 'CLIENT_DATA', 'CUSTOMER_RECORDS', fn, params, clear);
+      if (cmd === 'view') execute(w, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS', { show: arg ?? 'MINE' });
+      else if (cmd === 'add')
+        mod('ADD_ACCOUNT', { customerId: f('addCust'), account: f('addAcct'), makePrimary: f('addPrimary') || 'NO', requestId: f('addReq') }, ['addCust', 'addAcct', 'addReq', 'addPrimary']);
+      else if (cmd === 'primary') mod('SET_PRIMARY', { customerId: f('priCust'), account: f('priAcct'), requestId: f('priReq') }, ['priCust', 'priAcct', 'priReq']);
+      else if (cmd === 'remove') mod('REMOVE_ACCOUNT', { customerId: f('remCust'), account: f('remAcct'), requestId: f('remReq') }, ['remCust', 'remAcct', 'remReq']);
+    },
+  },
+  'CLIENT_DATA.VERIFICATION': {
+    commands: (w) =>
+      card('View verification queue', 'READ', btn(w, 'view:PENDING', 'Pending verification') + btn(w, 'view:ALL', 'All', 'alt')) +
+      card(
+        'Investigate changes',
+        'READ',
+        input(w, 'target', 'Customer or account', 'CU3 or 12345', true, true) + btns(btn(w, 'investigate', 'Show change history', 'alt', true)),
+        `${w.id}:investigate`,
+      ) +
+      card('Verify a change', 'WRITE', input(w, 'changeId', 'Change', 'CH-1 or 1', true, true) + btns(btn(w, 'verify', 'Verify', '', true)), `${w.id}:verify`),
+    run: (w, cmd, arg) => {
+      if (cmd === 'view') execute(w, 'CLIENT_DATA', 'VERIFICATION', 'VIEW_VERIFICATION', { show: arg ?? 'PENDING' });
+      else if (cmd === 'investigate') runFresh(w, 'CLIENT_DATA', 'VERIFICATION', 'INVESTIGATE_CHANGES', { target: w.form['p:target'] ?? '' }, ['target']);
+      else runFresh(w, 'CLIENT_DATA', 'VERIFICATION', 'VERIFY_CHANGE', { changeId: w.form['p:changeId'] ?? '' }, ['changeId']);
+    },
+  },
+  'CLIENT_DATA.CLIENT_REQUESTS': {
+    commands: (w) =>
+      card('View requests', 'READ', btn(w, 'view:OPEN', 'Open requests') + btn(w, 'view:ALL', 'All requests', 'alt')) +
+      card(
+        'Archive a request',
+        'WRITE',
+        input(w, 'requestId', 'Request', 'REQ-1 or 1', true, true) +
+          input(w, 'reason', 'Reason', 'Why close it without acting?', true, true) +
+          btns(btn(w, 'archive', 'Archive', 'danger', true)),
+        `${w.id}:archive`,
+      ),
+    run: (w, cmd, arg) => {
+      if (cmd === 'view') execute(w, 'CLIENT_DATA', 'CLIENT_REQUESTS', 'VIEW_REQUESTS', { show: arg ?? 'OPEN' });
+      else runFresh(w, 'CLIENT_DATA', 'CLIENT_REQUESTS', 'ARCHIVE_REQUEST', { requestId: w.form['p:requestId'] ?? '', reason: w.form['p:reason'] ?? '' }, ['requestId', 'reason']);
+    },
+  },
   'TRANSACTIONS.PAYMENT_QUEUE': {
-    commands: (w) => `
-      <div class="cmd-card">
-        <div class="cmd-head"><b>View queue</b><i class="perm READ">Read</i></div>
-        <div class="cmd-row">
-          <button class="cmd-btn" data-act="mcmd:${w.id}:view:ACTIVE">Pending payments</button>
-          <button class="cmd-btn alt" data-act="mcmd:${w.id}:view:ALL">All payments</button>
-        </div>
-      </div>
-      <form class="cmd-card" data-mform="${w.id}:create">
-        <div class="cmd-head"><b>Create payment</b><i class="perm WRITE">Write</i></div>
-        <div class="cmd-row">
-          <label class="field"><span>Beneficiary</span><input data-f="p:beneficiaryId" value="${esc(w.form['p:beneficiaryId'] ?? '')}" placeholder="B1" autocomplete="off" size="6"></label>
-          <label class="field grow"><span>Amount</span><input data-f="p:amount" value="${esc(w.form['p:amount'] ?? '')}" placeholder="1,000,000 or 1m" autocomplete="off"></label>
-          <button class="cmd-btn" type="submit">Create</button>
-        </div>
-      </form>`,
+    commands: (w) =>
+      card('View queue', 'READ', btn(w, 'view:ACTIVE', 'Pending payments') + btn(w, 'view:ALL', 'All payments', 'alt')) +
+      card(
+        'Create payment',
+        'WRITE',
+        input(w, 'originAccount', 'Originator account', '12345') +
+          input(w, 'beneficiaryId', 'Beneficiary', 'CU1') +
+          input(w, 'amount', 'Amount', '1,000,000 or 1m', true) +
+          input(w, 'requestId', 'Request (optional)', 'REQ-1') +
+          btn(w, 'create', 'Create', '', true),
+        `${w.id}:create`,
+      ),
     run: (w, cmd, arg) => {
       if (cmd === 'view') execute(w, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'VIEW_QUEUE', { show: arg ?? 'ACTIVE' });
-      else if (cmd === 'amount') {
-        w.form['p:amount'] = arg ?? '';
-        renderWin(w);
-      } else if (cmd === 'create') {
+      else if (cmd === 'create') {
         const amount = parseAmount(w.form['p:amount'] ?? '');
-        const created = execute(w, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'CREATE_TRANSACTION', {
-          beneficiaryId: w.form['p:beneficiaryId'] ?? '',
-          amount: amount === null ? '' : String(amount),
-        });
         // Every payment needs its amount typed fresh.
-        if (created) {
-          w.form['p:amount'] = '';
-          renderWin(w);
-        }
+        runFresh(w, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'CREATE_TRANSACTION', { originAccount: w.form['p:originAccount'] ?? '', beneficiaryId: w.form['p:beneficiaryId'] ?? '', amount: amount === null ? '' : String(amount), requestId: w.form['p:requestId'] ?? '' }, ['amount', 'requestId']);
       }
+    },
+  },
+  'TRANSACTIONS.RISK_CHECK': {
+    commands: (w) =>
+      viewCard(w, 'View risk queue', 'Pending check') +
+      card(
+        'Score risk',
+        'WRITE',
+        input(w, 'txId', 'Transaction', 'TX-0001 or 1', true, true) +
+          scorePicker(w) +
+          input(w, 'reason', 'Reason', 'Why this score?', true, true) +
+          btns(btn(w, 'check', 'Submit score', '', true)),
+        `${w.id}:check`,
+      ),
+    run: (w, cmd, arg) => {
+      if (cmd === 'view') execute(w, 'TRANSACTIONS', 'RISK_CHECK', 'VIEW_RISK_QUEUE', { show: arg ?? 'PENDING' });
+      else runFresh(w, 'TRANSACTIONS', 'RISK_CHECK', 'RUN_RISK_CHECK', { ...txParam(w), score: w.form['p:score'] ?? '', reason: w.form['p:reason'] ?? '' }, ['txId', 'score', 'reason']);
+    },
+  },
+  'TRANSACTIONS.AUTHORIZATION': {
+    commands: (w) =>
+      viewCard(w, 'View authorization queue', 'Pending authorization') +
+      card(
+        'Decide on a payment',
+        'WRITE',
+        input(w, 'txId', 'Transaction', 'TX-0001 or 1', true, true) +
+          input(w, 'reason', 'Reason', 'Required to hold or reject', true, true) +
+          btns(btn(w, 'APPROVE', 'Approve', '', true) + btn(w, 'HOLD', 'Hold', 'alt', true) + btn(w, 'REJECT', 'Reject', 'danger', true)),
+        `${w.id}:APPROVE`,
+      ),
+    run: (w, cmd, arg) => {
+      if (cmd === 'view') execute(w, 'TRANSACTIONS', 'AUTHORIZATION', 'VIEW_AUTH_QUEUE', { show: arg ?? 'PENDING' });
+      else runFresh(w, 'TRANSACTIONS', 'AUTHORIZATION', cmd, { ...txParam(w), reason: w.form['p:reason'] ?? '' }, ['txId', 'reason']);
+    },
+  },
+  'TRANSACTIONS.SETTLEMENT': {
+    commands: (w) =>
+      viewCard(w, 'View settlement queue', 'Awaiting settlement') +
+      card(
+        'Pay out or claw back',
+        'WRITE',
+        input(w, 'txId', 'Transaction', 'TX-0001 or 1', true, true) +
+          btns(btn(w, 'SETTLE', 'Settle', '', true) + btn(w, 'REVERSE', 'Reverse', 'danger', true)),
+        `${w.id}:SETTLE`,
+      ),
+    run: (w, cmd, arg) => {
+      if (cmd === 'view') execute(w, 'TRANSACTIONS', 'SETTLEMENT', 'VIEW_SETTLEMENT', { show: arg ?? 'PENDING' });
+      else runFresh(w, 'TRANSACTIONS', 'SETTLEMENT', cmd, txParam(w), ['txId']);
     },
   },
 };
@@ -658,9 +1002,10 @@ function modulePageHtml(w: Win, r: ModuleRoute): string {
       (c) => c.system === r.system && (c.module === null || c.module === r.module),
       // Prefer one that allows everything on this module.
       (c) => c.permission === 'WRITE' && c.fn === null,
+      `${r.system}.${r.module}`,
     )}</section>
     <section class="mod-sec"><h3>Commands</h3><div class="cmds">${page.commands(w)}</div></section>
-    <section class="mod-sec term"><h3>Terminal</h3>${terminalHtml(w)}</section>`;
+    ${terminalHtml(w)}`;
 }
 
 // ---- Workstation screens: your own (My workstation) or someone else's once logged in ------------
@@ -718,7 +1063,7 @@ function workstationHtml(w: Win, ws: WorkstationView, current: Tab, remote: bool
   const act = (id: Tab): string => (remote ? `wtab:${w.id}:${id}` : `tab:${id}`);
   return `<div class="tabs" role="tablist">${TABS
     .map(([id, label]) => `<button role="tab" aria-selected="${current === id}" class="${current === id ? 'on' : ''}" data-act="${act(id)}">${label}</button>`)
-    .join('')}</div><div class="wbody">${w.out.map((l) => `<div class="notice ${l.cls}">${esc(l.text)}</div>`).join('')}${body}</div>`;
+    .join('')}</div><div class="wbody">${w.notice.map((l) => `<div class="notice ${l.cls}">${esc(l.text)}</div>`).join('')}${body}</div>`;
 }
 
 function personalHtml(w: Win): string {
@@ -743,7 +1088,7 @@ function remoteHtml(w: Win, r: Extract<Route, { kind: 'workstation' }>): string 
       <p class="hint">${esc(r.address)}. Log in with one of ${esc(name)}'s credential codes.</p>
       ${credentialFields(w, v, (c) => c.ownerName === name)}
       <button class="run" data-act="wunlock:${w.id}">Log in</button>
-      ${w.out.map((l) => `<div class="notice ${l.cls}">${esc(l.text)}</div>`).join('')}
+      ${w.notice.map((l) => `<div class="notice ${l.cls}">${esc(l.text)}</div>`).join('')}
     </div></div>`;
 }
 
@@ -752,7 +1097,7 @@ function unlock(w: Win): void {
   if (!r || r.kind !== 'workstation') return;
   const res = applyAction(game, { type: 'ACCESS_WORKSTATION', playerId: selected, targetId: r.playerId, code: (w.form.code ?? '').trim() }, vNow);
   game = res.state;
-  w.out = res.result.ok ? [] : [{ cls: 'bad', text: res.result.message }];
+  w.notice = res.result.ok ? [] : [{ cls: 'bad', text: res.result.message }];
   w.form.manualCode = '';
   w.form.wtab = 'profile';
   renderWin(w);
@@ -772,7 +1117,7 @@ function renderPersonal(force = false): void {
 function doShare(w: Win, credId: string): void {
   const r = applyAction(game, { type: 'SHARE_CREDENTIAL', playerId: selected, credentialId: credId, toPlayerId: w.form.shareTo }, vNow);
   game = r.state;
-  w.out = [{ cls: r.result.ok ? 'ok' : 'bad', text: r.result.message }];
+  w.notice = [{ cls: r.result.ok ? 'ok' : 'bad', text: r.result.message }];
   refresh();
   renderPersonal(true);
 }
@@ -781,7 +1126,7 @@ function doSend(w: Win): void {
   const r = applyAction(game, { type: 'SEND_MESSAGE', playerId: selected, toPlayerId: w.form.msgTo, text: w.form.msgText ?? '' }, vNow);
   game = r.state;
   if (r.result.ok) w.form.msgText = '';
-  w.out = r.result.ok ? [] : [{ cls: 'bad', text: r.result.message }];
+  w.notice = r.result.ok ? [] : [{ cls: 'bad', text: r.result.message }];
   refresh();
   renderPersonal(true);
 }
@@ -900,6 +1245,12 @@ app.addEventListener('click', (e) => {
         else navigate(w, { kind: 'system', system });
       }
       break;
+    case 'wclear':
+      if (w) {
+        w.out = [];
+        renderWin(w);
+      }
+      break;
     case 'wrun':
       if (w) run(w);
       break;
@@ -919,7 +1270,7 @@ app.addEventListener('click', (e) => {
       break;
     case 'tab':
       tab = args[0] as Tab;
-      if (hostWin) hostWin.out = [];
+      if (hostWin) hostWin.notice = [];
       renderPersonal(true);
       renderTaskbar();
       break;
@@ -936,10 +1287,13 @@ app.addEventListener('submit', (e) => {
   const form = e.target as HTMLElement;
   if (form.dataset.mform) {
     e.preventDefault();
-    const [id, cmd] = form.dataset.mform.split(':');
+    const [id, ...formCmd] = form.dataset.mform.split(':');
+    // The button that was pressed decides the command; Enter uses the form's default.
+    // "cmd" or "cmd:arg", from the button that was pressed (Enter uses the form's default).
+    const [cmd, arg] = ((e as SubmitEvent).submitter?.dataset.cmd ?? formCmd.join(':')).split(':');
     const mw = winById(Number(id));
     const r = mw && route(mw);
-    if (mw && r?.kind === 'module') MODULE_PAGES[`${r.system}.${r.module}`]?.run(mw, cmd);
+    if (mw && r?.kind === 'module') MODULE_PAGES[`${r.system}.${r.module}`]?.run(mw, cmd, arg);
     return;
   }
   const w = winById(Number(form.dataset.addr));
@@ -961,7 +1315,11 @@ app.addEventListener('input', (e) => {
       if (el.value === 'manual') winEl(w)?.querySelector<HTMLInputElement>('[data-f="code"]')?.focus({ preventScroll: true });
     } else if (key === 'code') {
       if (w.form.credSel === 'manual') w.form.manualCode = w.form.code = el.value;
-    } else w.form[key] = el.value;
+    } else w.form[key] = el instanceof HTMLInputElement && el.type === 'checkbox' ? (el.checked ? 'YES' : 'NO') : el.value;
+    if (key === 'p:monitor' && w.form[key] === 'YES') {
+      const r = route(w);
+      if (r?.kind === 'module') MODULE_PAGES[`${r.system}.${r.module}`]?.run(w, 'view');
+    }
     return;
   }
   switch (key) {

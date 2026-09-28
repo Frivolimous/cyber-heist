@@ -51,6 +51,8 @@ export interface PlayerView {
   remote: Record<PlayerId, WorkstationView>;
   players: { id: PlayerId; name: string; roleLabel: string }[];
   systems: SystemDef[]; // only systems this player knows about
+  /** Modules whose security is off (SYSTEM.MODULE): usable without a code. */
+  openModules: string[];
 }
 
 function workstationView(s: GameState, p: Player): WorkstationView {
@@ -116,5 +118,6 @@ export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
     remote,
     players: s.playerOrder.map((id) => ({ id, name: s.players[id].name, roleLabel: ROLES[s.players[id].role].label })),
     systems: SYSTEMS.filter((sys) => p.knownSystems.includes(sys.id)),
+    openModules: Object.entries(s.modules).filter(([, m]) => m.open).map(([k]) => k),
   };
 }

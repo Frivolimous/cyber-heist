@@ -32,7 +32,7 @@ export interface GameConfig {
   npcMaxAmount: number;
   maxManualAmount: number; // largest payment a player can create by hand
   largeAmount: number; // risk check flags payments above this
-  recentModifySec: number; // risk check flags beneficiaries edited this recently
+  recentModifySec: number; // hidden risk assessment flags primary accounts changed this recently
   reversalWindowSec: number; // how long a settled payment can be reversed
   traceMaxAgeSec: number; // TRACE only works on log entries this young
   traceCooldownSec: number;
@@ -41,6 +41,30 @@ export interface GameConfig {
   clockStart: number; // seconds after midnight shown as the in-game start time
   autoProcess: boolean; // DEBUG: a bot settles NPC payments that pass the risk check
   autoProcessDelaySec: number;
+  requestIntervalSec: number; // one client request every N seconds
+  requestChangeShare: number; // share of requests that ask for an account change instead of a payment (0..1)
+  blockSec: number; // how long a Firewall block lasts
+  revokeCountdownSec: number; // how long anyone has to cancel a "revoke all access"
+}
+
+/** A Firewall block on an address (a workstation IP or a system address). */
+export interface Block {
+  address: string;
+  until: number | null; // game seconds; null = permanent (after "revoke all access")
+  byOwner: PlayerId;
+  actualPlayerId: PlayerId;
+}
+
+/** "Revoke all access" for an address: runs when the countdown ends unless someone cancels it. */
+export interface Revocation {
+  id: string; // R1
+  address: string;
+  startedAt: number;
+  executeAt: number;
+  byOwner: PlayerId;
+  actualPlayerId: PlayerId;
+  status: 'PENDING' | 'DONE' | 'CANCELLED';
+  cancelledBy: PlayerId | null; // credential owner who cancelled it (from the Firewall)
 }
 
 export interface Credential {
@@ -58,6 +82,7 @@ export interface Credential {
 
 export interface ModuleState {
   status: 'ONLINE' | 'OFFLINE';
+  open: boolean; // security switched off in the Firewall: no code needed, use is logged as Anonymous
   encryption: string[]; // layer codes; ALL must be supplied to use the module
 }
 
@@ -80,37 +105,89 @@ export interface Alert {
   logId: string | null;
 }
 
+/** A change to a customer's accounts. `byOwner` is what the records show; `actualPlayerId` is the truth. */
+export interface AccountChange {
+  id: string; // CH-1: what Verification refers to
+  customerId: string;
+  t: number;
+  action: 'ADD_ACCOUNT' | 'SET_PRIMARY' | 'REMOVE_ACCOUNT';
+  account: string;
+  previousPrimary: string; // primary account just before this change
+  byOwner: PlayerId;
+  actualPlayerId: PlayerId;
+  verified: boolean; // every change waits in the Verification queue until someone verifies it
+  verifiedBy: PlayerId | null; // credential owner
+  verifiedAt: number | null;
+}
+
+/**
+ * Everyone the bank deals with is a customer (CU1..). Payments come FROM any of a customer's accounts and
+ * are paid TO a customer's primary account, whichever it is at settlement time.
+ */
 export interface Customer {
   id: string;
   name: string;
-  account: string;
+  bankerId: PlayerId | null; // assigned personal banker: their Client Requests go to this player
+  accounts: string[]; // every account on file, oldest first
+  primary: string; // where payments to this customer land
+  originalPrimary: string;
+  lastModifiedAt: number | null;
+  history: AccountChange[];
 }
 
-export interface Beneficiary {
-  id: string;
-  name: string;
-  account: string;
-  originalAccount: string;
-  verified: boolean;
-  lastModifiedAt: number | null;
-  history: { t: number; byOwner: PlayerId; from: string; to: string }[];
+export type RequestKind = 'PAYMENT' | 'ADD_ACCOUNT' | 'ADD_AND_PRIMARY' | 'SET_PRIMARY' | 'REMOVE_ACCOUNT';
+
+/** A message from a customer to their personal banker. */
+export interface ClientRequest {
+  id: string; // REQ-1
+  t: number; // game seconds
+  customerId: string;
+  bankerId: PlayerId | null;
+  kind: RequestKind;
+  text: string; // what the customer wrote, in words (names, not codes)
+  // What is being asked, as data. Never shown to players; kept for checking fulfilment later.
+  payeeId: string | null; // PAYMENT: customer to pay
+  amount: number | null; // PAYMENT
+  originAccount: string | null; // PAYMENT: which of their accounts to pay from
+  account: string | null; // account requests: the account to add / make primary / remove
+  status: 'OPEN' | 'DONE' | 'ARCHIVED';
+  closedAt: number | null;
+  closedBy: PlayerId | null; // credential owner
+  closedByActual: PlayerId | null; // who really did it
+  txId: string | null; // DONE by this payment (payment requests)
+  archiveReason: string | null;
+}
+
+/** One step in a payment's life. `by` is what the records show (credential owner); `actualPlayerId` is the truth. */
+export interface TxEvent {
+  t: number; // game seconds
+  action: 'CREATED' | 'RISK_CHECKED' | 'APPROVED' | 'HELD' | 'REJECTED' | 'SETTLED' | 'REVERSED';
+  by: PlayerId | 'SYSTEM';
+  actualPlayerId: PlayerId | null; // null for SYSTEM
+  detail: string | null;
 }
 
 export interface Transaction {
   id: string;
   amount: number;
-  customerId: string;
-  beneficiaryId: string;
+  customerId: string; // originator (the customer paying)
+  originAccount: string; // which of the originator's accounts it is paid from
+  beneficiaryId: string; // the customer being paid (CU..); paid into their primary account at settlement
   origin: 'NPC' | 'PLAYER';
   createdBy: PlayerId | null;
+  channel: string | null; // automatic payments: where they came in ("Online banking" ...); null for manual ones
   status: TxStatus;
   createdAt: number;
   riskResult: RiskResult | null;
-  riskFlags: string[];
+  riskFlags: string[]; // hidden: the system's own assessment at check time (players never see it)
+  riskReason: string | null; // the reason the player typed with their score
   authorizedBy: PlayerId | null;
   settledAt: number | null;
   settledTo: string | null; // account it was actually paid to
+  debitedFrom: string | null; // originator account it was actually taken from (captured at settlement)
   fraud: boolean; // ground truth: settled into a Black Hat target account
+  history: TxEvent[]; // every step, oldest first
+  requestId: string | null; // the client request this payment was made for, if any
 }
 
 export interface TargetAccount {
@@ -162,6 +239,9 @@ export interface Player {
   failStreak: number;
   lockedUntil: number;
   lastTraceAt: number;
+  failTotal: number; // failed attempts from this workstation, all game (shown in Employee Records)
+  lastActiveAt: number | null; // last time this workstation tried to use a system
+  monitoring: string[]; // READ functions this player has opened with a logged read; only these can refresh quietly
   remoteAccess: { playerId: PlayerId; credentialId: string }[]; // other workstations this player has logged in to
 }
 
@@ -183,13 +263,16 @@ export interface GameState {
   logs: LogEntry[];
   alerts: Alert[];
   customers: Customer[];
-  beneficiaries: Record<string, Beneficiary>;
+  requests: ClientRequest[];
+  blocks: Block[];
+  revocations: Revocation[];
+  lastRequestAt: number; // game seconds
   transactions: Transaction[];
   targets: TargetAccount[];
   blacknet: BlacknetMessage[];
   totals: { processedNpc: number; stolen: number };
   hiddenHost: string;
-  counters: { log: number; alert: number; cred: number; tx: number; msg: number; packet: number };
+  counters: { log: number; alert: number; cred: number; tx: number; msg: number; packet: number; req: number; change: number; revoke: number };
 }
 
 // ---- Actions -------------------------------------------------------------
@@ -203,6 +286,8 @@ export interface ExecuteAction {
   fn: string;
   params?: Record<string, string>;
   encCodes?: string[];
+  /** Live monitor refresh: READ functions only; leaves no Master Log entry or activity note. */
+  quiet?: boolean;
 }
 export interface ShareCredentialAction {
   type: 'SHARE_CREDENTIAL';

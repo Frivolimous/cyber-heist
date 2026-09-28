@@ -5,4 +5,5 @@ export { createGame, grantMasterAccess } from './setup';
 export type { NewGameOptions } from './setup';
 export { getPlayerView } from './views';
 export type { PlayerView, WorkstationView } from './views';
-export { fmtClock, gameTime, money } from './core';
+export { accountVerified, fmtClock, gameTime, money } from './core';
+export { CHANNELS } from './bank';

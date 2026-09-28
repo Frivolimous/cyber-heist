@@ -4,8 +4,9 @@ import { DEFAULT_CONFIG, ENCRYPTION_ENABLED, HIDDEN_HOST, ROLES, ROLE_ORDER, SYS
 import { addLog, keyOf, money, nextId } from './core';
 import { createCredential } from './credentials';
 import { spawnNpc } from './bank';
+import { assignBankers, spawnRequest } from './requests';
 import { pick, randInt, shuffle } from './rng';
-import type { Beneficiary, GameConfig, GameState, InfoPacket, Player, SystemId } from './types';
+import type { GameConfig, GameState, InfoPacket, Player, SystemId } from './types';
 
 export interface NewGameOptions {
   id?: string;
@@ -15,8 +16,14 @@ export interface NewGameOptions {
   config?: Partial<GameConfig>;
 }
 
-const CUSTOMER_NAMES = ['Alder & Finch LLC', 'Marisol Ortega', 'Tanaka Holdings', 'Pryce Dental Group', 'Nadia Volkov', 'Brightwater Logistics'];
-const BENEFICIARY_NAMES = [
+/** Everyone the bank deals with, companies and people alike: all customers (CU1..CU14). */
+const CUSTOMER_NAMES = [
+  'Alder & Finch LLC',
+  'Marisol Ortega',
+  'Tanaka Holdings',
+  'Pryce Dental Group',
+  'Nadia Volkov',
+  'Brightwater Logistics',
   'Northwind Freight',
   'Halcyon Insurance',
   'Redfern Utilities',
@@ -59,16 +66,19 @@ export function createGame(o: NewGameOptions): GameState {
     logs: [],
     alerts: [],
     customers: [],
-    beneficiaries: {},
+    requests: [],
+    blocks: [],
+    revocations: [],
+    lastRequestAt: 0,
     transactions: [],
     targets: [],
     blacknet: [],
     totals: { processedNpc: 0, stolen: 0 },
     hiddenHost: HIDDEN_HOST,
-    counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, packet: 0 },
+    counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, packet: 0, req: 0, change: 0, revoke: 0 },
   };
 
-  for (const sys of SYSTEMS) for (const m of sys.modules) s.modules[keyOf(sys.id, m.id)] = { status: 'ONLINE', encryption: [] };
+  for (const sys of SYSTEMS) for (const m of sys.modules) s.modules[keyOf(sys.id, m.id)] = { status: 'ONLINE', open: false, encryption: [] };
 
   const n = o.players.length;
   const usedAccounts = new Set<string>();
@@ -92,11 +102,10 @@ export function createGame(o: NewGameOptions): GameState {
   const blackIds = new Set(shuffle(s, s.playerOrder).slice(0, blackCount));
 
   // Bank data.
-  s.customers = CUSTOMER_NAMES.map((name, i) => ({ id: `CU${i + 1}`, name, account: newAccount() }));
-  BENEFICIARY_NAMES.forEach((name, i) => {
-    const account = newAccount();
-    const b: Beneficiary = { id: `B${i + 1}`, name, account, originalAccount: account, verified: true, lastModifiedAt: null, history: [] };
-    s.beneficiaries[b.id] = b;
+  // Each customer starts with 1-3 accounts; the first is primary.
+  s.customers = CUSTOMER_NAMES.map((name, i) => {
+    const accounts = Array.from({ length: randInt(s, 1, 3) }, () => newAccount());
+    return { id: `CU${i + 1}`, name, bankerId: null, accounts, primary: accounts[0], originalPrimary: accounts[0], lastModifiedAt: null, history: [] };
   });
   const statuses = ['READY', 'PREPARE', 'ABORT'] as const;
   s.targets = statuses.map((status) => ({ account: newAccount(), status }));
@@ -122,6 +131,9 @@ export function createGame(o: NewGameOptions): GameState {
       failStreak: 0,
       lockedUntil: 0,
       lastTraceAt: -9999,
+      failTotal: 0,
+      lastActiveAt: null,
+      monitoring: [],
       remoteAccess: [],
     };
     const mins = Math.round(config.durationSec / 60);
@@ -142,10 +154,12 @@ export function createGame(o: NewGameOptions): GameState {
     }
   }
 
+  assignBankers(s);
   dealPackets(s);
 
   addLog(s, { actor: 'SYSTEM', kind: 'BOOT', message: 'Bank network online. Shift started.', sourceIp: null, actualPlayerId: null });
   for (let i = 0; i < 3; i++) spawnNpc(s);
+  for (let i = 0; i < 2; i++) spawnRequest(s);
   return s;
 }
 
@@ -162,7 +176,7 @@ export function grantMasterAccess(s: GameState, playerId: string): void {
 function dealPackets(s: GameState): void {
   const c = s.config;
   const blacks = s.playerOrder.map((id) => s.players[id]).filter((p) => p.allegiance === 'BLACK');
-  const bens = shuffle(s, Object.values(s.beneficiaries));
+  const custs = shuffle(s, s.customers);
   const mules = s.targets.map((t) => t.account);
   const dbCred = Object.values(s.credentials).find((cr) => cr.system === 'BLACKHAT_DB' && cr.owner === blacks[0].id);
   const code = dbCred?.code ?? '0000';
@@ -174,23 +188,24 @@ function dealPackets(s: GameState): void {
       `Traffic keeps reaching ${s.hiddenHost}, a host that Employee Records cannot explain.`,
       `Traces only work on log entries younger than ${c.traceMaxAgeSec}s, and each trace has a ${c.traceCooldownSec}s cooldown.`,
       `${c.lockoutAfterFails} failed attempts in a row lock a workstation for ${c.lockoutSec}s.`,
-      ...(ENCRYPTION_ENABLED ? ['Bypassing encryption in the Firewall raises an alert in Intrusion Detection.'] : []),
+      ...(ENCRYPTION_ENABLED ? ['Bypassing encryption in the Firewall raises an alert in the Master Log.'] : []),
       'The Master Log stops recording while it is offline. Log ids keep counting, so gaps show.',
       'Employee Records list the registered workstation IP of every employee.',
+      'IT Specialists can issue credentials in anyone\'s name. New credentials show up in the Permissions module.',
     ],
     CLIENT_DATA: [
-      `Beneficiary ${bens[0].id} (${bens[0].name}) was set up with account ${bens[0].originalAccount}.`,
-      `Beneficiary ${bens[1].id} (${bens[1].name}) was set up with account ${bens[1].originalAccount}.`,
-      `Changing a beneficiary's account un-verifies it. Verifying clears that flag, but risk checks still flag records edited in the last ${Math.round(c.recentModifySec / 60)} minutes.`,
-      'IT Specialists can issue credentials in anyone\'s name. New credentials show up in the Permissions module.',
+      `${custs[0].id} (${custs[0].name}) opened with primary account ${custs[0].originalPrimary}.`,
+      `${custs[1].id} (${custs[1].name}) opened with primary account ${custs[1].originalPrimary}.`,
+      'Every account change (added, removed, or a new primary) waits in the Verification queue until someone verifies it.',
+      'Client Requests can only be read by the customer\'s personal banker, or with a credential for all of Client Data.',
       'Investigate Changes lists every account change together with the credential owner behind it.',
-      'By default only Personal Bankers can edit and verify beneficiaries.',
+      'By default only Personal Bankers can change customers\' accounts and verify them.',
     ],
     TRANSACTIONS: [
-      `Account ${mules[0]} is not registered to any customer, employee or beneficiary.`,
-      `Account ${mules[1]} is not registered to any customer, employee or beneficiary.`,
-      'A payment is settled to whichever account its beneficiary has at that moment, not when it was queued.',
-      `Payments above ${money(c.largeAmount)} are flagged by the risk check.`,
+      `Account ${mules[0]} is not registered to any customer or employee.`,
+      `Account ${mules[1]} is not registered to any customer or employee.`,
+      'A payment is paid into whichever account is the beneficiary\'s primary at the moment it settles, not when it was queued.',
+      'Risk is scored by hand. Approvers see the score, the reason and whose credential gave it.',
       `A settled payment can be reversed for ${c.reversalWindowSec}s.`,
       'Approval needs a completed risk check first.',
     ],

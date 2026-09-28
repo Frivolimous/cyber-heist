@@ -1,11 +1,15 @@
 // The rules engine. Pure with respect to its inputs: applyAction(state, action, now) returns a NEW state.
 // No Firebase, no DOM. Later this exact module runs inside a Cloud Function.
 
-import { findFn } from './catalog';
+import { findFn, findSystem, SYSTEMS } from './catalog';
 import { autoProcess, spawnNpc } from './bank';
+import { spawnRequest } from './requests';
 import {
+  activeBlock,
   addAlert,
   addLog,
+  ANONYMOUS,
+  blockText,
   fail,
   flagHiddenTraffic,
   gameTime,
@@ -37,16 +41,27 @@ export function advanceState(s: GameState, now: number): void {
   const endT = s.config.durationSec;
   const targetT = Math.min(Math.max(0, (now - s.startedAt) / 1000), endT);
 
-  while (s.status === 'RUNNING' && s.lastNpcAt + s.config.npcIntervalSec <= targetT) {
-    s.lastNpcAt += s.config.npcIntervalSec;
-    s.now = Math.max(s.now, s.startedAt + s.lastNpcAt * 1000);
-    spawnNpc(s);
-    if (s.config.autoProcess) autoProcess(s);
-    checkWin(s);
+  // Scheduled arrivals (NPC payments, client requests), handled in time order.
+  while (s.status === 'RUNNING') {
+    const nextNpc = s.lastNpcAt + s.config.npcIntervalSec;
+    const nextReq = s.lastRequestAt + s.config.requestIntervalSec;
+    const next = Math.min(nextNpc, nextReq);
+    if (next > targetT) break;
+    s.now = Math.max(s.now, s.startedAt + next * 1000);
+    if (next === nextNpc) {
+      s.lastNpcAt = nextNpc;
+      spawnNpc(s);
+      if (s.config.autoProcess) autoProcess(s);
+      checkWin(s);
+    } else {
+      s.lastRequestAt = nextReq;
+      spawnRequest(s);
+    }
   }
   if (s.status !== 'RUNNING') return;
 
   s.now = Math.max(s.now, s.startedAt + targetT * 1000);
+  runDueRevocations(s);
   if (s.config.autoProcess) autoProcess(s);
   checkWin(s);
   if (s.status === 'RUNNING' && targetT >= endT) {
@@ -110,6 +125,7 @@ export function applyAction(state: GameState, action: Action, now: number): { st
 }
 
 function registerFailure(s: GameState, p: Player): void {
+  p.failTotal += 1;
   p.failStreak += 1;
   if (p.failStreak >= s.config.lockoutAfterFails) {
     p.failStreak = 0;
@@ -126,19 +142,33 @@ function credCovers(cr: Credential, system: string, module: string, fnId: string
   );
 }
 
+/** Why this workstation cannot reach the network right now, if it cannot. */
+function workstationBlocked(s: GameState, p: Player): string | null {
+  const b = activeBlock(s, p.ip);
+  return b ? `Your workstation is blocked by the firewall ${blockText(s, b)}.` : null;
+}
+
 function execute(s: GameState, p: Player, a: ExecuteAction): ActionResult {
   const t = gameTime(s);
+  const blocked = workstationBlocked(s, p);
+  if (blocked) return fail(blocked);
   if (p.lockedUntil > t) {
     return fail(`Workstation locked for ${Math.ceil(p.lockedUntil - t)}s after repeated failed attempts.`);
   }
   const def = findFn(a.system, a.module, a.fn);
   const handler = HANDLERS[`${a.system}.${a.module}.${a.fn}`];
   if (!def || !handler) return fail('Unknown system, module or function.');
+  const address = findSystem(a.system)?.address ?? '';
+  if (activeBlock(s, address)) return fail('No route to host (blocked by the firewall).');
+  if (!a.quiet) p.lastActiveAt = t;
   const code = (a.code ?? '').trim();
-  if (!/^\d{4}$/.test(code)) return fail('Enter a 4-digit code.');
-
   const label = targetLabel(a.system, a.module);
   const where = `${a.system}.${a.module}.${a.fn}`;
+  const mod = s.modules[keyOf(a.system, a.module)];
+
+  // Security switched off: no code needed, and the records say "Anonymous".
+  if (mod.open && code === '') return run(s, p, a, def, handler, label, openCredential(s, a), anonymous(p), true);
+  if (!/^\d{4}$/.test(code)) return fail('Enter a 4-digit code.');
   const cred = findCredentialByCode(s, code);
 
   // One deliberately uninformative reply for: unknown code / revoked code / code without the right scope.
@@ -165,6 +195,30 @@ function execute(s: GameState, p: Player, a: ExecuteAction): ActionResult {
     note(p, t, `Learned credential ${cred.id} (${owner.name}'s, ${credScopeText(cred)}) by entering its code.`);
   }
 
+  return run(s, p, a, def, handler, label, cred, owner, false);
+}
+
+/** A stand-in credential for open-access use: the whole system, read and write. */
+function openCredential(s: GameState, a: ExecuteAction): Credential {
+  return { id: 'OPEN', owner: ANONYMOUS, code: '', system: a.system, module: null, fn: null, permission: 'WRITE', status: 'ACTIVE', issuedBy: null, createdAt: gameTime(s) };
+}
+/** The "owner" recorded for open-access use. Only its id and name are ever read. */
+const anonymous = (p: Player): Player => ({ ...p, id: ANONYMOUS, name: 'Anonymous' });
+
+/** Runs a function once access is settled (a real credential, or open access). */
+function run(
+  s: GameState,
+  p: Player,
+  a: ExecuteAction,
+  def: NonNullable<ReturnType<typeof findFn>>,
+  handler: (typeof HANDLERS)[string],
+  label: string,
+  cred: Credential,
+  owner: Player,
+  open: boolean,
+): ActionResult {
+  const t = gameTime(s);
+  const where = `${a.system}.${a.module}.${a.fn}`;
   const mod = s.modules[keyOf(a.system, a.module)];
   if (mod.status === 'OFFLINE') return fail(`${label} is offline.`);
 
@@ -187,7 +241,7 @@ function execute(s: GameState, p: Player, a: ExecuteAction): ActionResult {
   const writeAccessLog = (detail?: string): LogEntry => {
     const message = hidden
       ? `${owner.name} connected to an unregistered host`
-      : `${owner.name} ${detail ?? 'accessed ' + label}`;
+      : `${owner.name} ${detail ?? 'accessed ' + label}${open ? ' (open access)' : ''}`;
     const entry = addLog(s, { actor: owner.id, kind: hidden ? 'HIDDEN_ACCESS' : 'ACCESS', message, sourceIp: p.ip, actualPlayerId: p.id });
     if (hidden) flagHiddenTraffic(s, entry);
     return entry;
@@ -210,10 +264,15 @@ function execute(s: GameState, p: Player, a: ExecuteAction): ActionResult {
     },
   };
 
+  // A live monitor may refresh quietly, but only a view this player already opened with a logged read.
+  const monitorKey = `${a.system}.${a.module}.${a.fn}`;
+  const quiet = a.quiet && def.permission === 'READ' && p.monitoring.includes(monitorKey);
   const res = handler(ctx, a.params ?? {});
+  if (quiet && res.ok) return { ok: true, message: res.message, lines: res.lines };
+  if (res.ok && def.permission === 'READ' && !p.monitoring.includes(monitorKey)) p.monitoring.push(monitorKey);
   if (res.ok && !st.logged) st.logged = writeAccessLog(res.logDetail);
 
-  const via = owner.id === p.id ? `your credential ${cred.id}` : `${owner.name}'s credential ${cred.id}`;
+  const via = open ? 'open access (no code)' : owner.id === p.id ? `your credential ${cred.id}` : `${owner.name}'s credential ${cred.id}`;
   note(p, t, `${res.ok ? 'OK' : 'FAILED'}: ${def.label} on ${label} using ${via}${res.ok ? '' : ' - ' + res.message}`);
   return { ok: res.ok, message: res.message, lines: res.lines };
 }
@@ -244,6 +303,10 @@ function sendMessage(s: GameState, p: Player, toId: string, text: string): Actio
 
 function connect(s: GameState, p: Player, address: string): ActionResult {
   const t = gameTime(s);
+  const blocked = workstationBlocked(s, p);
+  if (blocked) return fail(blocked);
+  if (activeBlock(s, (address ?? '').trim())) return fail('No route to host.');
+  p.lastActiveAt = t;
   if (p.lockedUntil > t) return fail(`Workstation locked for ${Math.ceil(p.lockedUntil - t)}s.`);
   const addr = (address ?? '').trim();
   const station = Object.values(s.players).find((x) => x.ip === addr);
@@ -270,6 +333,10 @@ function connect(s: GameState, p: Player, address: string): ActionResult {
  */
 function accessWorkstation(s: GameState, p: Player, targetId: string, code: string): ActionResult {
   const t = gameTime(s);
+  const blocked = workstationBlocked(s, p);
+  if (blocked) return fail(blocked);
+  if (s.players[targetId] && activeBlock(s, s.players[targetId].ip)) return fail('No route to host.');
+  p.lastActiveAt = t;
   if (p.lockedUntil > t) return fail(`Workstation locked for ${Math.ceil(p.lockedUntil - t)}s after repeated failed attempts.`);
   const target = s.players[targetId];
   if (!target) return fail('No route to host.');
@@ -302,4 +369,30 @@ function accessWorkstation(s: GameState, p: Player, targetId: string, code: stri
   note(target, t, `Your workstation was accessed from ${p.ip}.`);
   note(p, t, `Logged in to ${target.name}'s workstation (${target.ip}) using credential ${cred.id}.`);
   return ok(`Access granted to ${target.name}'s workstation.`);
+}
+
+// ---- Firewall revocations ------------------------------------------------------
+
+/** Mutating: carries out every pending "revoke all access" whose countdown has run out. */
+function runDueRevocations(s: GameState): void {
+  const t = gameTime(s);
+  for (const r of s.revocations) {
+    if (r.status !== 'PENDING' || r.executeAt > t) continue;
+    r.status = 'DONE';
+    s.blocks = s.blocks.filter((b) => b.address !== r.address);
+    s.blocks.push({ address: r.address, until: null, byOwner: r.byOwner, actualPlayerId: r.actualPlayerId });
+    const victim = Object.values(s.players).find((p) => p.ip === r.address);
+    if (victim) {
+      for (const cr of Object.values(s.credentials)) if (cr.owner === victim.id) cr.status = 'REVOKED';
+      note(victim, t, 'The firewall revoked all access for your workstation. Your credentials no longer work.');
+    }
+    addLog(s, { actor: 'SYSTEM', kind: 'REVOKED_ALL', message: `Firewall: all access revoked for ${r.address} (${r.id})`, sourceIp: null, actualPlayerId: null });
+    // The nuclear option: cutting off one of the bank's own systems shuts the bank down, and everybody loses.
+    const bankSystem = SYSTEMS.find((sys) => !sys.hidden && sys.address === r.address);
+    if (bankSystem && s.status === 'RUNNING') {
+      s.status = 'ENDED';
+      s.winner = null;
+      s.endReason = `All access to ${bankSystem.label} was revoked and the bank shut down. Nobody wins.`;
+    }
+  }
 }

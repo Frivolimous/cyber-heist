@@ -41,8 +41,9 @@ npm run typecheck
 
 Things worth trying first:
 
-- As a Personal Banker, edit a beneficiary to one of the Target Ledger accounts (see Ground truth),
-  then as an Accounts & Receivables player, risk check, approve and settle a payment to it.
+- As a Personal Banker, add one of the Target Ledger accounts (see Ground truth) to a customer as their
+  primary account, then as an Accounts & Receivables player, risk check, approve and settle a payment
+  to that customer.
 - Type a colleague's code into a function you are not entitled to, then read the Master Log as an
   analyst and Trace the entry.
 - As an IT Specialist, use `Connect to a host` with `10.66.6.6`, then create yourself a credential
@@ -62,6 +63,7 @@ src/engine/
   engine.test.ts  16 tests
 src/sandbox/      UI
 docs/RULES.md     rule decisions, assumptions, tuning knobs
+docs/BACKLOG.md   agreed work not built yet
 ```
 
 To add a mechanic: describe it in `catalog.ts`, add a handler in `handlers.ts`, add a test.
@@ -75,5 +77,4 @@ To add a mechanic: describe it in `catalog.ts`, add a handler in `handlers.ts`, 
    Systems, logs and the hidden host stay server-only; players only see results of their own actions.
    A callable Cloud Function `submitAction` wraps `applyAction`.
 3. Lobby (create / join / host / start), then real multiplayer across devices.
-4. Deferred until the core is fun: Personal Node hacking, fake or deleted logs, credential spoofing,
-   quarantine, neutral players, multiple Black Hat objectives, more roles and departments.
+4. Game features agreed but not built yet, and the deferred list: see [docs/BACKLOG.md](docs/BACKLOG.md).

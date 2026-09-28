@@ -184,7 +184,7 @@ button:disabled { cursor: default; opacity: 0.4; }
 /* module page: credential / commands / terminal */
 .mod-sec { display: grid; gap: 8px; }
 .mod-sec h3 { margin: 0; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
-.mod-sec.term { flex: 1; min-height: 160px; grid-template-rows: auto 1fr; }
+.mod-sec.term { flex: 1; min-height: 230px; grid-template-rows: auto 1fr; }
 .cmds { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
 .cmd-card { display: grid; gap: 10px; align-content: start; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 0; }
 .cmd-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -243,3 +243,30 @@ table.cred .rev { text-decoration: line-through; color: var(--muted); }
   .icons { grid-template-columns: repeat(2, 130px); grid-auto-rows: 130px; gap: 14px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+.cmd-btn.danger { background: #fff; color: var(--black-hat); border-color: #d9a39e; }
+.cmd-btn.danger:hover { background: #fbeceb; }
+.cmd-row .field.full { flex-basis: 100%; }
+.cmd-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+/* risk score picker */
+fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
+.seg-opts { display: flex; gap: 6px; }
+.seg-opt { flex: 1; position: relative; }
+.seg-opt input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.seg-opt span { display: block; text-align: center; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; background: #fff; font-weight: 600; color: var(--muted); }
+.seg-opt input:focus-visible + span { outline: 2px solid var(--gold); outline-offset: 1px; }
+.seg-opt.LOW input:checked + span { background: #dff3ea; border-color: #3c9a73; color: #0f5132; }
+.seg-opt.MEDIUM input:checked + span { background: #fff1d1; border-color: #c98200; color: #6b4500; }
+.seg-opt.HIGH input:checked + span { background: #f7d9d5; border-color: var(--black-hat); color: #5c120c; }
+/* terminal header + session handshake */
+.mod-sec.term h3 { display: flex; align-items: center; justify-content: space-between; }
+.term-clear { font: 600 11px var(--sans); text-transform: none; letter-spacing: 0; background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 1px 10px; color: var(--muted); }
+.term-clear:hover { border-color: var(--win-title); color: var(--win-title); }
+.out .hs { color: var(--term-dim); border-bottom: 1px dashed #2b3a55; padding-bottom: 4px; margin-bottom: 4px; }
+.cmd-row .check { flex-basis: 100%; display: flex; align-items: center; gap: 6px; font-size: 13px; }
+/* module tiles: your access at a glance */
+.tile .perm { justify-self: start; }
+.perm.NONE { background: #eceef2; color: var(--muted); }
+.tile.locked { background: #f1f3f6; border-style: dashed; }
+.tile.locked b { color: var(--muted); }
+.cmd-row .warn { flex-basis: 100%; margin: 0; padding: 8px 10px; border-radius: 4px; background: #f7d9d5; color: #5c120c; font-size: 13px; }
+.banner.none { background: #e3e6ec; color: #22283a; }

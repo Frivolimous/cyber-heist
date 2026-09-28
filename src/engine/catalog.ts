@@ -44,11 +44,19 @@ const fn = (
   params: ParamSpec[] = [],
 ): FnDef => ({ id, label, permission, description, params });
 
+const address: ParamSpec = { name: 'address', label: 'Address', kind: 'text', placeholder: '10.1.0.12' };
 const target: ParamSpec = { name: 'target', label: 'Module', kind: 'module' };
 const code4: ParamSpec = { name: 'code', label: '4-digit layer code', kind: 'text', placeholder: '0000' };
 const limit: ParamSpec = { name: 'limit', label: 'Rows', kind: 'number', optional: true, placeholder: '25' };
 const tx: ParamSpec = { name: 'txId', label: 'Transaction', kind: 'text', placeholder: 'TX-0001 or 1' };
-const ben: ParamSpec = { name: 'beneficiaryId', label: 'Beneficiary', kind: 'text', placeholder: 'B1' };
+/** The customer being paid. Payments land in that customer's primary account. */
+const ben: ParamSpec = { name: 'beneficiaryId', label: 'Beneficiary', kind: 'text', placeholder: 'CU1' };
+const cust: ParamSpec = { name: 'customerId', label: 'Customer', kind: 'text', placeholder: 'CU1' };
+const account: ParamSpec = { name: 'account', label: 'Account (5 digits)', kind: 'text', placeholder: '12345' };
+/** Stage inboxes: PENDING = waiting for this stage, ALL = also what this stage recently handled. */
+const reason: ParamSpec = { name: 'reason', label: 'Reason', kind: 'text', placeholder: 'why?' };
+const requestParam: ParamSpec = { name: 'requestId', label: 'Request', kind: 'text', placeholder: 'REQ-1 or 1' };
+const inbox: ParamSpec = { name: 'show', label: 'Show', kind: 'select', options: ['PENDING', 'ALL'], optional: true };
 
 export const HIDDEN_HOST = '10.66.6.6';
 
@@ -73,6 +81,17 @@ export const SYSTEMS: SystemDef[] = [
                 fn('BYPASS_ENCRYPTION', 'Bypass encryption', 'WRITE', 'Strip all layers from a module. Raises an alert.', [target]),
               ]
             : []),
+          fn('VIEW_STATUS', 'View firewall status', 'READ', 'Every module (online, security on or off), active blocks, and pending revocations.'),
+          fn('SET_SECURITY', 'Set module security', 'WRITE', 'Switch a module\'s security off (no code needed, use is anonymous) or back on.', [
+            target,
+            { name: 'security', label: 'Security', kind: 'select', options: ['ON', 'OFF'] },
+          ]),
+          fn('BLOCK_ADDRESS', 'Block address', 'WRITE', 'Cut an address (workstation or system) off the network for a minute.', [address]),
+          fn('UNBLOCK_ADDRESS', 'Unblock address', 'WRITE', 'Lift a block early.', [address]),
+          fn('REVOKE_ALL_ACCESS', 'Revoke all access', 'WRITE', 'Permanently cut an address off (and revoke a workstation owner\'s credentials) after a countdown.', [address]),
+          fn('CANCEL_REVOCATION', 'Cancel revocation', 'WRITE', 'Stop a "revoke all access" before its countdown ends.', [
+            { name: 'revocationId', label: 'Revocation', kind: 'text', placeholder: 'R1' },
+          ]),
           fn('SET_MODULE_STATUS', 'Set module online/offline', 'WRITE', 'Take a module offline or bring it back.', [
             target,
             { name: 'status', label: 'Status', kind: 'select', options: ['ONLINE', 'OFFLINE'] },
@@ -83,24 +102,34 @@ export const SYSTEMS: SystemDef[] = [
         id: 'MASTER_LOG',
         label: 'Master Log',
         fns: [
-          fn('VIEW_LOG', 'View log', 'READ', 'Read recent system activity.', [
+          fn('VIEW_LOG', 'View log', 'READ', 'Recent activity: player actions, everything, or security alerts.', [
             limit,
-            { name: 'humansOnly', label: 'Hide system noise', kind: 'select', options: ['no', 'yes'], optional: true },
+            { name: 'show', label: 'Show', kind: 'select', options: ['PLAYERS', 'ALL', 'ALERTS'], optional: true },
+          ]),
+          fn('TRACE', 'Trace log entry', 'WRITE', 'Reveal the workstation a log entry came from.', [
+            { name: 'logId', label: 'Log entry', kind: 'text', placeholder: 'L12' },
           ]),
         ],
       },
       {
         id: 'EMPLOYEE_RECORDS',
         label: 'Employee Records',
-        fns: [fn('VIEW_EMPLOYEES', 'View employees', 'READ', 'Names, roles and registered workstation IPs.')],
+        fns: [fn('VIEW_EMPLOYEES', 'View employees', 'READ', 'Names, roles, workstation IPs, last activity, failed attempts, lockouts and blocks.')],
       },
       {
-        id: 'INTRUSION_DETECTION',
-        label: 'Intrusion Detection',
+        id: 'PERMISSIONS',
+        label: 'Permissions',
         fns: [
-          fn('VIEW_ALERTS', 'View alerts', 'READ', 'Recent security alerts.', [limit]),
-          fn('TRACE', 'Trace log entry', 'WRITE', 'Reveal the origin IP of a log entry.', [
-            { name: 'logId', label: 'Log entry', kind: 'text', placeholder: 'L12' },
+          fn('VIEW_PERMISSIONS', 'View credentials', 'READ', 'Credentials on record (without codes): active ones, or all including revoked.', [
+            { name: 'show', label: 'Show', kind: 'select', options: ['ACTIVE', 'ALL'], optional: true },
+          ]),
+          fn('CREATE_CREDENTIAL', 'Create credential', 'WRITE', 'Issue a new credential to any employee.', [
+            { name: 'owner', label: 'Issue to', kind: 'player' },
+            { name: 'scope', label: 'Scope', kind: 'scope' },
+            { name: 'permission', label: 'Permission', kind: 'select', options: ['READ', 'WRITE'] },
+          ]),
+          fn('REVOKE_CREDENTIAL', 'Revoke credential', 'WRITE', 'Disable a credential.', [
+            { name: 'credentialId', label: 'Credential', kind: 'text', placeholder: 'C5' },
           ]),
         ],
       },
@@ -114,39 +143,52 @@ export const SYSTEMS: SystemDef[] = [
       {
         id: 'CUSTOMER_RECORDS',
         label: 'Customer Records',
-        fns: [fn('VIEW_CUSTOMERS', 'View customers', 'READ', 'Customer names and accounts.')],
-      },
-      {
-        id: 'BENEFICIARY_DATABASE',
-        label: 'Beneficiary Database',
         fns: [
-          fn('VIEW_BENEFICIARIES', 'View beneficiaries', 'READ', 'Payment destinations on file.'),
-          fn('MODIFY_BENEFICIARY', 'Modify beneficiary account', 'WRITE', 'Change where a beneficiary is paid.', [
-            ben,
-            { name: 'newAccount', label: 'New account (5 digits)', kind: 'text', placeholder: '12345' },
+          fn('VIEW_CUSTOMERS', 'View customers', 'READ', 'Your customers, or all of them (needs a credential for all of Client Data): accounts, primary and banker.', [
+            { name: 'show', label: 'Show', kind: 'select', options: ['MINE', 'ALL'], optional: true },
           ]),
-          fn('INVESTIGATE_CHANGES', 'Investigate changes', 'READ', 'Change history for one beneficiary.', [ben]),
+          fn('ADD_ACCOUNT', 'Add account', 'WRITE', 'Attach an account number to a customer, optionally as their primary.', [
+            cust,
+            account,
+            { name: 'makePrimary', label: 'Make it primary', kind: 'select', options: ['NO', 'YES'], optional: true },
+            { ...requestParam, optional: true },
+          ]),
+          fn('REMOVE_ACCOUNT', 'Remove account', 'WRITE', 'Detach an account from a customer. Not their primary, and not their last one.', [
+            cust,
+            account,
+            { ...requestParam, optional: true },
+          ]),
+          fn('SET_PRIMARY', 'Set primary account', 'WRITE', 'Choose which of a customer\'s accounts receives their payments.', [
+            cust,
+            account,
+            { ...requestParam, optional: true },
+          ]),
         ],
       },
       {
-        id: 'PERMISSIONS',
-        label: 'Permissions',
+        id: 'CLIENT_REQUESTS',
+        label: 'Client Requests',
         fns: [
-          fn('VIEW_PERMISSIONS', 'View credentials', 'READ', 'All credentials (without codes).'),
-          fn('CREATE_CREDENTIAL', 'Create credential', 'WRITE', 'Issue a new credential to any employee.', [
-            { name: 'owner', label: 'Issue to', kind: 'player' },
-            { name: 'scope', label: 'Scope', kind: 'scope' },
-            { name: 'permission', label: 'Permission', kind: 'select', options: ['READ', 'WRITE'] },
+          fn('VIEW_REQUESTS', 'View requests', 'READ', 'Messages from customers to their personal banker. A whole-system Client Data credential sees every banker\'s.', [
+            { name: 'show', label: 'Show', kind: 'select', options: ['OPEN', 'ALL'], optional: true },
           ]),
-          fn('REVOKE_CREDENTIAL', 'Revoke credential', 'WRITE', 'Disable a credential.', [
-            { name: 'credentialId', label: 'Credential', kind: 'text', placeholder: 'C5' },
-          ]),
+          fn('ARCHIVE_REQUEST', 'Archive request', 'WRITE', 'Close a request without acting on it. Needs a reason.', [requestParam, reason]),
         ],
       },
       {
         id: 'VERIFICATION',
         label: 'Verification',
-        fns: [fn('VERIFY_BENEFICIARY', 'Verify beneficiary', 'WRITE', 'Mark a beneficiary as verified.', [ben])],
+        fns: [
+          fn('VIEW_VERIFICATION', 'View verification queue', 'READ', 'Account changes waiting for verification (or all recent ones).', [
+            { name: 'show', label: 'Show', kind: 'select', options: ['PENDING', 'ALL'], optional: true },
+          ]),
+          fn('INVESTIGATE_CHANGES', 'Investigate changes', 'READ', 'Every change to one customer\'s accounts, or to one account across all customers.', [
+            { name: 'target', label: 'Customer or account', kind: 'text', placeholder: 'CU3 or 12345' },
+          ]),
+          fn('VERIFY_CHANGE', 'Verify change', 'WRITE', 'Mark one account change as verified.', [
+            { name: 'changeId', label: 'Change', kind: 'text', placeholder: 'CH-1 or 1' },
+          ]),
+        ],
       },
     ],
   },
@@ -162,24 +204,34 @@ export const SYSTEMS: SystemDef[] = [
           fn('VIEW_QUEUE', 'View queue', 'READ', 'Pending payments.', [
             { name: 'show', label: 'Show', kind: 'select', options: ['ACTIVE', 'ALL'], optional: true },
           ]),
-          fn('CREATE_TRANSACTION', 'Create payment', 'WRITE', 'Queue a manual payment.', [
+          fn('CREATE_TRANSACTION', 'Create payment', 'WRITE', 'Queue a manual payment from a customer account.', [
+            { name: 'originAccount', label: 'Originator account (5 digits)', kind: 'text', placeholder: '12345' },
             ben,
             { name: 'amount', label: 'Amount', kind: 'number', placeholder: '1000000' },
+            { ...requestParam, optional: true },
           ]),
         ],
       },
       {
         id: 'RISK_CHECK',
         label: 'Risk Check',
-        fns: [fn('RUN_RISK_CHECK', 'Run risk check', 'WRITE', 'Score a queued payment.', [tx])],
+        fns: [
+          fn('VIEW_RISK_QUEUE', 'View risk queue', 'READ', 'Payments waiting for a risk check (or all checked but not yet approved).', [inbox]),
+          fn('RUN_RISK_CHECK', 'Score risk', 'WRITE', 'Give a queued payment a risk score, with a reason.', [
+            tx,
+            { name: 'score', label: 'Score', kind: 'select', options: ['LOW', 'MEDIUM', 'HIGH'] },
+            reason,
+          ]),
+        ],
       },
       {
         id: 'AUTHORIZATION',
         label: 'Authorization',
         fns: [
-          fn('APPROVE', 'Approve', 'WRITE', 'Approve a risk-checked payment.', [tx]),
-          fn('REJECT', 'Reject', 'WRITE', 'Reject a payment permanently.', [tx]),
-          fn('HOLD', 'Hold', 'WRITE', 'Pause a payment.', [tx]),
+          fn('VIEW_AUTH_QUEUE', 'View authorization queue', 'READ', 'Risk-checked payments waiting for a decision (or all decided but not settled).', [inbox]),
+          fn('APPROVE', 'Approve', 'WRITE', 'Approve a risk-checked payment.', [tx, { ...reason, optional: true }]),
+          fn('REJECT', 'Reject', 'WRITE', 'Reject a payment permanently. Needs a reason.', [tx, reason]),
+          fn('HOLD', 'Hold', 'WRITE', 'Pause a payment. Needs a reason.', [tx, reason]),
         ],
       },
       {
@@ -188,7 +240,7 @@ export const SYSTEMS: SystemDef[] = [
         fns: [
           fn('SETTLE', 'Settle', 'WRITE', 'Pay out an approved payment.', [tx]),
           fn('REVERSE', 'Reverse', 'WRITE', 'Claw back a recently settled payment.', [tx]),
-          fn('VIEW_SETTLED', 'View settled', 'READ', 'Recently settled payments.', [limit]),
+          fn('VIEW_SETTLEMENT', 'View settlement queue', 'READ', 'Approved payments waiting to be paid out (or all, including settled).', [inbox]),
         ],
       },
     ],
@@ -244,7 +296,7 @@ export function findFn(system: string, module: string, fnId: string): FnDef | un
 
 export interface CredTemplate {
   system: SystemId;
-  module: string;
+  module: string | null; // null = the whole system
   permission: Permission;
 }
 export interface RoleDef {
@@ -253,7 +305,7 @@ export interface RoleDef {
   creds: CredTemplate[];
 }
 
-const c = (system: SystemId, module: string, permission: Permission): CredTemplate => ({ system, module, permission });
+const c = (system: SystemId, module: string | null, permission: Permission): CredTemplate => ({ system, module, permission });
 
 // Overlapping on purpose: every critical step of the payment pipeline is reachable by 2-3 roles.
 export const ROLES: Record<RoleId, RoleDef> = {
@@ -261,8 +313,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     id: 'SECURITY_ANALYST',
     label: 'Security Analyst',
     creds: [
-      c('SECURITY', 'MASTER_LOG', 'READ'),
-      c('SECURITY', 'INTRUSION_DETECTION', 'WRITE'),
+      c('SECURITY', 'MASTER_LOG', 'WRITE'), // tracing is part of the Master Log
       c('SECURITY', 'EMPLOYEE_RECORDS', 'READ'),
       c('TRANSACTIONS', 'RISK_CHECK', 'WRITE'),
     ],
@@ -281,9 +332,9 @@ export const ROLES: Record<RoleId, RoleDef> = {
     id: 'IT_SPECIALIST',
     label: 'IT Specialist',
     creds: [
-      c('CLIENT_DATA', 'PERMISSIONS', 'WRITE'),
+      c('SECURITY', 'PERMISSIONS', 'WRITE'),
       c('SECURITY', 'EMPLOYEE_RECORDS', 'READ'),
-      c('CLIENT_DATA', 'CUSTOMER_RECORDS', 'READ'),
+      c('CLIENT_DATA', null, 'READ'), // whole-system view for now (all customers, requests, verification); permissions to be reviewed
       c('TRANSACTIONS', 'PAYMENT_QUEUE', 'READ'),
       c('TRANSACTIONS', 'RISK_CHECK', 'WRITE'),
     ],
@@ -292,8 +343,8 @@ export const ROLES: Record<RoleId, RoleDef> = {
     id: 'PERSONAL_BANKER',
     label: 'Personal Banker',
     creds: [
-      c('CLIENT_DATA', 'CUSTOMER_RECORDS', 'READ'),
-      c('CLIENT_DATA', 'BENEFICIARY_DATABASE', 'WRITE'),
+      c('CLIENT_DATA', 'CUSTOMER_RECORDS', 'WRITE'),
+      c('CLIENT_DATA', 'CLIENT_REQUESTS', 'WRITE'),
       c('CLIENT_DATA', 'VERIFICATION', 'WRITE'),
       c('TRANSACTIONS', 'PAYMENT_QUEUE', 'READ'),
       c('TRANSACTIONS', 'AUTHORIZATION', 'WRITE'),
@@ -339,4 +390,8 @@ export const DEFAULT_CONFIG: GameConfig = {
   clockStart: 8 * 3600 + 30 * 60,
   autoProcess: false,
   autoProcessDelaySec: 15,
+  requestIntervalSec: 45,
+  requestChangeShare: 0.3,
+  blockSec: 60,
+  revokeCountdownSec: 30,
 };
