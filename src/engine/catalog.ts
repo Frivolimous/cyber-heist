@@ -114,7 +114,12 @@ export const SYSTEMS: SystemDef[] = [
       {
         id: 'EMPLOYEE_RECORDS',
         label: 'Employee Records',
-        fns: [fn('VIEW_EMPLOYEES', 'View employees', 'READ', 'Names, roles, workstation IPs, last activity, failed attempts, lockouts and blocks.')],
+        fns: [
+          fn('VIEW_EMPLOYEES', 'View employees', 'READ', 'Names, roles, workstation IPs, last activity, failed attempts, lockouts and blocks.'),
+          fn('RESET_LOCKOUT', 'Reset lockout timer', 'WRITE', 'Unlock a locked-out workstation now.', [
+            { name: 'address', label: 'Workstation', kind: 'text', placeholder: '10.1.0.12' },
+          ]),
+        ],
       },
       {
         id: 'PERMISSIONS',
@@ -274,13 +279,32 @@ export const SYSTEMS: SystemDef[] = [
         ],
       },
       {
+        id: 'HOST_LOG',
+        label: 'Host Log',
+        fns: [
+          fn('VIEW_HOST_LOG', 'View host log', 'READ', 'Activity on this host, and alerts when the bank traces it.', [
+            { name: 'show', label: 'Show', kind: 'select', options: ['ALL', 'ALERTS'], optional: true },
+          ]),
+        ],
+      },
+      {
         id: 'CREDENTIAL_CACHE',
         label: 'Credential Cache',
         fns: [fn('VIEW_CACHE', 'View cache', 'READ', 'Credentials of White Hat staff held by operatives.')],
       },
+      // Tool kits: each operative is dealt one or two at random each game. No tools in them yet.
+      { id: 'INFILTRATION', label: 'Infiltration', fns: [] },
+      { id: 'SOCIAL', label: 'Social', fns: [] },
+      { id: 'CLEANUP', label: 'Cleanup', fns: [] },
+      { id: 'ACCESS', label: 'Access', fns: [] },
     ],
   },
 ];
+
+/** Hidden host modules every operative can use. */
+export const HOST_SHARED_MODULES = ['BLACKNET', 'TARGET_LEDGER', 'HOST_LOG', 'CREDENTIAL_CACHE'];
+/** Hidden host tool kits, dealt to operatives at random (more kits than operatives, so some go unused). */
+export const HOST_KITS = ['INFILTRATION', 'SOCIAL', 'CLEANUP', 'ACCESS'];
 
 export function findSystem(id: string): SystemDef | undefined {
   return SYSTEMS.find((s) => s.id === id);
@@ -314,7 +338,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     label: 'Security Analyst',
     creds: [
       c('SECURITY', 'MASTER_LOG', 'WRITE'), // tracing is part of the Master Log
-      c('SECURITY', 'EMPLOYEE_RECORDS', 'READ'),
+      c('SECURITY', 'EMPLOYEE_RECORDS', 'WRITE'),
       c('TRANSACTIONS', 'RISK_CHECK', 'WRITE'),
     ],
   },
@@ -333,7 +357,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     label: 'IT Specialist',
     creds: [
       c('SECURITY', 'PERMISSIONS', 'WRITE'),
-      c('SECURITY', 'EMPLOYEE_RECORDS', 'READ'),
+      c('SECURITY', 'EMPLOYEE_RECORDS', 'WRITE'),
       c('CLIENT_DATA', null, 'READ'), // whole-system view for now (all customers, requests, verification); permissions to be reviewed
       c('TRANSACTIONS', 'PAYMENT_QUEUE', 'READ'),
       c('TRANSACTIONS', 'RISK_CHECK', 'WRITE'),

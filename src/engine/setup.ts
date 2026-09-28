@@ -1,11 +1,11 @@
 // Builds a fresh game: roles, allegiances, credentials, bank data and private info packets.
 
-import { DEFAULT_CONFIG, ENCRYPTION_ENABLED, HIDDEN_HOST, ROLES, ROLE_ORDER, SYSTEMS } from './catalog';
+import { DEFAULT_CONFIG, ENCRYPTION_ENABLED, HIDDEN_HOST, HOST_KITS, HOST_SHARED_MODULES, ROLES, ROLE_ORDER, SYSTEMS } from './catalog';
 import { addLog, keyOf, money, nextId } from './core';
 import { createCredential } from './credentials';
 import { spawnNpc } from './bank';
 import { assignBankers, spawnRequest } from './requests';
-import { pick, randInt, shuffle } from './rng';
+import { pick, rand, randInt, shuffle } from './rng';
 import type { GameConfig, GameState, InfoPacket, Player, SystemId } from './types';
 
 export interface NewGameOptions {
@@ -68,6 +68,7 @@ export function createGame(o: NewGameOptions): GameState {
     customers: [],
     requests: [],
     blocks: [],
+    hostLog: [],
     revocations: [],
     lastRequestAt: 0,
     transactions: [],
@@ -75,7 +76,7 @@ export function createGame(o: NewGameOptions): GameState {
     blacknet: [],
     totals: { processedNpc: 0, stolen: 0 },
     hiddenHost: HIDDEN_HOST,
-    counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, packet: 0, req: 0, change: 0, revoke: 0 },
+    counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, packet: 0, req: 0, change: 0, revoke: 0, host: 0 },
   };
 
   for (const sys of SYSTEMS) for (const m of sys.modules) s.modules[keyOf(sys.id, m.id)] = { status: 'ONLINE', open: false, encryption: [] };
@@ -148,11 +149,15 @@ export function createGame(o: NewGameOptions): GameState {
       p.heldCredentialIds.push(cred.id);
     }
     if (allegiance === 'BLACK') {
-      const cred = createCredential(s, { owner: id, system: 'BLACKHAT_DB', module: null, permission: 'WRITE', issuedBy: null });
-      p.heldCredentialIds.push(cred.id);
+      // Every operative can use the host's shared modules; tool kits are dealt below.
+      for (const module of HOST_SHARED_MODULES) {
+        const cred = createCredential(s, { owner: id, system: 'BLACKHAT_DB', module, permission: 'WRITE', issuedBy: null });
+        p.heldCredentialIds.push(cred.id);
+      }
       p.knownSystems.push('BLACKHAT_DB');
     }
   }
+  dealKits(s);
 
   assignBankers(s);
   dealPackets(s);
@@ -173,12 +178,28 @@ export function grantMasterAccess(s: GameState, playerId: string): void {
   }
 }
 
+/**
+ * Deals the hidden host's tool kits: every operative gets one, then each kit left over has an even chance
+ * of going to a random operative as a second. With more kits than operatives, some go unused.
+ */
+function dealKits(s: GameState): void {
+  const blacks = s.playerOrder.filter((id) => s.players[id].allegiance === 'BLACK');
+  if (!blacks.length) return;
+  const kits = shuffle(s, HOST_KITS);
+  const give = (owner: string, module: string): void => {
+    const cred = createCredential(s, { owner, system: 'BLACKHAT_DB', module, permission: 'WRITE', issuedBy: null });
+    s.players[owner].heldCredentialIds.push(cred.id);
+  };
+  kits.slice(0, blacks.length).forEach((kit, i) => give(blacks[i % blacks.length], kit));
+  for (const kit of kits.slice(blacks.length)) if (rand(s) < 0.5) give(pick(s, blacks), kit);
+}
+
 function dealPackets(s: GameState): void {
   const c = s.config;
   const blacks = s.playerOrder.map((id) => s.players[id]).filter((p) => p.allegiance === 'BLACK');
   const custs = shuffle(s, s.customers);
   const mules = s.targets.map((t) => t.account);
-  const dbCred = Object.values(s.credentials).find((cr) => cr.system === 'BLACKHAT_DB' && cr.owner === blacks[0].id);
+  const dbCred = Object.values(s.credentials).find((cr) => cr.system === 'BLACKHAT_DB' && cr.module === 'BLACKNET' && cr.owner === blacks[0].id);
   const code = dbCred?.code ?? '0000';
   const spy = blacks.length ? pick(s, blacks) : null;
 

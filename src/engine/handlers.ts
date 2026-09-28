@@ -14,6 +14,7 @@ import {
   normChange,
   accountOwner,
   accountVerified,
+  addHostLog,
   activeBlock,
   blockText,
   normCred,
@@ -251,6 +252,16 @@ H['SECURITY.MASTER_LOG.VIEW_LOG'] = (c, q) => {
   return good(`Master Log: ${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}.`, rows);
 };
 
+H['SECURITY.EMPLOYEE_RECORDS.RESET_LOCKOUT'] = (c, q) => {
+  const ip = str(q, 'address');
+  const p = Object.values(c.s.players).find((x) => x.ip === ip);
+  if (!p) return bad('No workstation with that address.');
+  if (p.lockedUntil <= c.t) return bad(`${ip} is not locked out.`);
+  p.lockedUntil = 0;
+  p.failStreak = 0;
+  return good(`${ip} (${p.name}) is unlocked.`, undefined, `reset the lockout on ${ip} (${p.name})`);
+};
+
 /** Per workstation: last activity (from the machine, not the credential), failed attempts, lockout and firewall block. */
 H['SECURITY.EMPLOYEE_RECORDS.VIEW_EMPLOYEES'] = (c) => {
   const rows = c.s.playerOrder.flatMap((id) => {
@@ -307,7 +318,12 @@ H['SECURITY.MASTER_LOG.TRACE'] = (c, q) => {
   c.actor.lastTraceAt = c.t;
   if (!e.sourceIp) return good(`Trace ${e.id}: system event, no workstation origin.`, undefined, `ran a trace on ${e.id}`);
   // Hidden host traffic is relayed: a trace only returns one true partial clue, picked at random.
-  if (e.kind === 'HIDDEN_ACCESS') return good(`Trace ${e.id}: routed through a relay. ${relayClue(c, e)}`, undefined, `ran a trace on ${e.id}`);
+  if (e.kind === 'HIDDEN_ACCESS') {
+    const clue = relayClue(c, e);
+    // The host notices: operatives see who traced it and what the bank learned.
+    addHostLog(c.s, `Relay entry ${e.id} was traced by ${c.owner.name}. The bank learned: ${clue}`, true);
+    return good(`Trace ${e.id}: routed through a relay. ${clue}`, undefined, `ran a trace on ${e.id}`);
+  }
   return good(`Trace ${e.id}: origin workstation ${e.sourceIp}`, undefined, `ran a trace on ${e.id}`);
 };
 
@@ -857,6 +873,16 @@ H['BLACKHAT_DB.TARGET_LEDGER.SET_TARGET_STATUS'] = (c, q) => {
   if (status !== 'READY' && status !== 'PREPARE' && status !== 'ABORT') return bad('Status must be READY, PREPARE or ABORT.');
   tg.status = status;
   return good(`${tg.account} is now ${status}.`);
+};
+
+/** ALL: everything on the host's own log; ALERTS: only the moments an operative was exposed. */
+H['BLACKHAT_DB.HOST_LOG.VIEW_HOST_LOG'] = (c, q) => {
+  const alertsOnly = str(q, 'show') === 'ALERTS';
+  const rows = c.s.hostLog
+    .filter((h) => !alertsOnly || h.alert)
+    .slice(-30)
+    .map((h) => `[${fmtClock(c.s.config, h.t)}] ${h.id.padEnd(4)} ${h.alert ? '!! ' : ''}${h.message}`);
+  return good(`Host log (${alertsOnly ? 'alerts' : 'all'}): ${rows.length}.`, rows.length ? rows : ['Nothing here.']);
 };
 
 H['BLACKHAT_DB.CREDENTIAL_CACHE.VIEW_CACHE'] = (c) => {

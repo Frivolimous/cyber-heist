@@ -99,6 +99,14 @@ export interface LogEntry {
   activity?: string;
 }
 
+/** The hidden host's own log, readable by operatives (and by anyone who gets into the host). */
+export interface HostLogEntry {
+  id: string; // H1
+  t: number;
+  message: string;
+  alert: boolean; // an operative has been exposed (e.g. the bank traced a relay entry)
+}
+
 export interface Alert {
   id: string;
   t: number;
@@ -267,6 +275,7 @@ export interface GameState {
   customers: Customer[];
   requests: ClientRequest[];
   blocks: Block[];
+  hostLog: HostLogEntry[];
   revocations: Revocation[];
   lastRequestAt: number; // game seconds
   transactions: Transaction[];
@@ -274,7 +283,7 @@ export interface GameState {
   blacknet: BlacknetMessage[];
   totals: { processedNpc: number; stolen: number };
   hiddenHost: string;
-  counters: { log: number; alert: number; cred: number; tx: number; msg: number; packet: number; req: number; change: number; revoke: number };
+  counters: { log: number; alert: number; cred: number; tx: number; msg: number; packet: number; req: number; change: number; revoke: number; host: number };
 }
 
 // ---- Actions -------------------------------------------------------------

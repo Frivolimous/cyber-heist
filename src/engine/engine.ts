@@ -7,6 +7,7 @@ import { spawnRequest } from './requests';
 import {
   activeBlock,
   addAlert,
+  addHostLog,
   addLog,
   ANONYMOUS,
   blockText,
@@ -174,7 +175,7 @@ function execute(s: GameState, p: Player, a: ExecuteAction): ActionResult {
   // One deliberately uninformative reply for: unknown code / revoked code / code without the right scope.
   const deny = (actor: string, kind: string, message: string, reason: string): ActionResult => {
     // On the hidden host even a failure only shows up as nameless "Unknown server activity".
-    if (a.system === 'BLACKHAT_DB') hiddenActivity(s, p, 'failed login attempt');
+    if (a.system === 'BLACKHAT_DB') hiddenActivity(s, p, 'failed login attempt', 'Failed login attempt');
     else {
       const entry = addLog(s, { actor, kind, message, sourceIp: p.ip, actualPlayerId: p.id });
       addAlert(s, kind, message, entry.id);
@@ -244,7 +245,10 @@ function run(
   const hidden = a.system === 'BLACKHAT_DB';
   const writeAccessLog = (detail?: string): LogEntry => {
     // The hidden host leaves only a cryptic system entry (shown under "Everything"); tracing it gives a partial answer.
-    if (hidden) return hiddenActivity(s, p, HIDDEN_ACTIVITY[a.fn] ?? def.label.toLowerCase());
+    if (hidden) {
+      const activity = HIDDEN_ACTIVITY[a.fn] ?? def.label.toLowerCase();
+      return hiddenActivity(s, p, activity, `${owner.name}: ${activity}`);
+    }
     const message = `${owner.name} ${detail ?? 'accessed ' + label}${open ? ' (open access)' : ''}`;
     return addLog(s, { actor: owner.id, kind: 'ACCESS', message, sourceIp: p.ip, actualPlayerId: p.id });
   };
@@ -316,7 +320,7 @@ function connect(s: GameState, p: Player, address: string): ActionResult {
   if (addr !== s.hiddenHost) return fail('No route to host.');
   const first = !p.knownSystems.includes('BLACKHAT_DB');
   if (first) p.knownSystems.push('BLACKHAT_DB');
-  hiddenActivity(s, p, 'connected to the server');
+  hiddenActivity(s, p, 'connected to the server', 'Unknown workstation connected to the server');
   note(p, t, `Connected to ${s.hiddenHost}.`);
   return ok(`Connected to ${s.hiddenHost}. It now appears in your terminal, but every module needs a credential.`);
 }
@@ -393,9 +397,11 @@ function runDueRevocations(s: GameState): void {
 }
 
 /** Any contact with the hidden host: a nameless system entry plus a (throttled) alert that names the address. */
-function hiddenActivity(s: GameState, p: Player, activity: string): LogEntry {
+function hiddenActivity(s: GameState, p: Player, activity: string, hostMessage: string): LogEntry {
   const entry = addLog(s, { actor: 'SYSTEM', kind: 'HIDDEN_ACCESS', message: 'Unknown server activity', sourceIp: p.ip, actualPlayerId: p.id, activity });
   flagHiddenTraffic(s, entry);
+  // The host keeps its own record, named after the host credential's owner.
+  addHostLog(s, hostMessage);
   return entry;
 }
 
@@ -406,4 +412,5 @@ const HIDDEN_ACTIVITY: Record<string, string> = {
   VIEW_TARGETS: 'viewed the target ledger',
   SET_TARGET_STATUS: 'changed a target\'s status',
   VIEW_CACHE: 'viewed the credential cache',
+  VIEW_HOST_LOG: 'viewed the host log',
 };

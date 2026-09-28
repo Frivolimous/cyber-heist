@@ -123,3 +123,8 @@ export function activeBlock(s: GameState, address: string): Block | undefined {
 export function blockText(s: GameState, b: Block): string {
   return b.until === null ? 'permanently' : `for ${Math.ceil(b.until - gameTime(s))}s`;
 }
+
+/** Adds an entry to the hidden host's own log. */
+export function addHostLog(s: GameState, message: string, alert = false): void {
+  s.hostLog.push({ id: nextId(s, 'host', 'H'), t: gameTime(s), message, alert });
+}

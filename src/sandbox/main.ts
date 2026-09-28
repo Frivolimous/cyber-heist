@@ -478,7 +478,8 @@ function browserHtml(w: Win): string {
     } else if (MODULE_PAGES[`${r.system}.${r.module}`]) {
       body = modulePageHtml(w, r);
     } else {
-      body = `<p class="hint">This module has no page yet.</p>${terminalHtml(w)}`;
+      const empty = findModule(r.system, r.module)?.fns.length === 0;
+      body = `<p class="hint">${empty ? 'No tools in this kit yet.' : 'This module has no page yet.'}</p>${terminalHtml(w)}`;
     }
   }
   return `${nav}${crumbs}<div class="wbody">${body}</div>`;
@@ -687,6 +688,20 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       else runFresh(w, 'BLACKHAT_DB', 'TARGET_LEDGER', 'SET_TARGET_STATUS', { account: w.form['p:account'] ?? '', status: arg ?? '' }, ['account']);
     },
   },
+  'BLACKHAT_DB.HOST_LOG': {
+    commands: (w) =>
+      card(
+        'View host log',
+        'READ',
+        btn(w, 'view:ALL', 'Everything') + btn(w, 'view:ALERTS', 'Alerts', 'alt') + checkbox(w, 'monitor', 'Auto-update every second (only opening the view is logged)'),
+      ),
+    run: (w, _cmd, arg) => {
+      w.form['p:hostFilter'] = arg ?? w.form['p:hostFilter'] ?? 'ALL';
+      execute(w, 'BLACKHAT_DB', 'HOST_LOG', 'VIEW_HOST_LOG', { show: w.form['p:hostFilter'] });
+      w.liveEnd = w.out.length;
+    },
+    monitor: (w) => ({ fn: 'VIEW_HOST_LOG', params: { show: w.form['p:hostFilter'] ?? 'ALL' } }),
+  },
   'BLACKHAT_DB.CREDENTIAL_CACHE': {
     commands: (w) => card('View cache', 'READ', btn(w, 'view', 'Compromised credentials')),
     run: (w) => execute(w, 'BLACKHAT_DB', 'CREDENTIAL_CACHE', 'VIEW_CACHE', {}),
@@ -766,8 +781,13 @@ const MODULE_PAGES: Record<string, ModulePage> = {
     monitor: (w) => ({ fn: 'VIEW_LOG', params: { show: w.form['p:logFilter'] ?? 'PLAYERS' } }),
   },
   'SECURITY.EMPLOYEE_RECORDS': {
-    commands: (w) => card('View employees', 'READ', btn(w, 'view', 'All employees')),
-    run: (w) => execute(w, 'SECURITY', 'EMPLOYEE_RECORDS', 'VIEW_EMPLOYEES', {}),
+    commands: (w) =>
+      card('View employees', 'READ', btn(w, 'view', 'All employees')) +
+      card('Reset a lockout', 'WRITE', input(w, 'lockAddr', 'Workstation', '10.1.0.12', true, true) + btns(btn(w, 'reset', 'Unlock now', '', true)), `${w.id}:reset`),
+    run: (w, cmd) => {
+      if (cmd === 'view') execute(w, 'SECURITY', 'EMPLOYEE_RECORDS', 'VIEW_EMPLOYEES', {});
+      else runFresh(w, 'SECURITY', 'EMPLOYEE_RECORDS', 'RESET_LOCKOUT', { address: w.form['p:lockAddr'] ?? '' }, ['lockAddr']);
+    },
   },
   'SECURITY.PERMISSIONS': {
     commands: (w) => {

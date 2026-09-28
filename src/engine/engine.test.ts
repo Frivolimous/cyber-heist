@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { accountVerified, applyAction, CHANNELS, createGame, ENCRYPTION_ENABLED, getPlayerView, grantMasterAccess, SYSTEMS, tick } from './index';
+import { accountVerified, applyAction, CHANNELS, createGame, ENCRYPTION_ENABLED, getPlayerView, grantMasterAccess, HOST_KITS, HOST_SHARED_MODULES, SYSTEMS, tick } from './index';
 import type { Action, ActionResult, GameConfig, GameState, Player, RoleId, SystemId } from './index';
 
 const NAMES = ['Jeremy', 'Sarah', 'Mike', 'David', 'Lisa', 'Anna', 'Omar', 'Priya', 'Chen', 'Rosa'];
@@ -309,7 +309,7 @@ test('hidden host: guarded by credentials, discoverable through alerts, reachabl
   const [analyst] = sim.byRole('SECURITY_ANALYST');
   const [it] = sim.byRole('IT_SPECIALIST');
   const white = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE' && p.id !== analyst.id && p.id !== it.id)!;
-  const dbCode = sim.code(black.id, 'BLACKHAT_DB', null);
+  const dbCode = sim.code(black.id, 'BLACKHAT_DB', 'BLACKNET');
 
   sim.at(30);
   assert.ok(sim.run(black.id, dbCode, 'BLACKHAT_DB', 'BLACKNET', 'POST_MESSAGE', { text: 'target B3 is ready', alias: 'ghost' }).ok);
@@ -899,7 +899,7 @@ test('firewall: blocking an address for a minute, and unblocking it early', () =
   // The hidden host can be blocked too, which cuts the operatives off Blacknet.
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
   assert.ok(fwRun('BLOCK_ADDRESS', sim.s.hiddenHost).ok);
-  assert.match(sim.run(black.id, sim.code(black.id, 'BLACKHAT_DB', null), 'BLACKHAT_DB', 'BLACKNET', 'READ_MESSAGES').message, /No route to host/);
+  assert.match(sim.run(black.id, sim.code(black.id, 'BLACKHAT_DB', 'BLACKNET'), 'BLACKHAT_DB', 'BLACKNET', 'READ_MESSAGES').message, /No route to host/);
 });
 
 test('revoking all access to a bank system shuts the bank down: everybody loses', () => {
@@ -989,7 +989,6 @@ test('hidden host: failures are also "Unknown server activity", and traces give 
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
   const [analyst] = sim.byRole('SECURITY_ANALYST');
   const logCode = sim.code(analyst.id, 'SECURITY', 'MASTER_LOG');
-  const dbCode = sim.code(black.id, 'BLACKHAT_DB', null);
   sim.at(5);
 
   // A failed code on the host names nobody, but still counts toward the lockout.
@@ -1005,11 +1004,68 @@ test('hidden host: failures are also "Unknown server activity", and traces give 
   // Many traces: every kind of clue shows up, and every clue is true.
   const kinds = new Set<string>();
   for (let i = 0; i < 40; i++) {
-    sim.run(black.id, dbCode, 'BLACKHAT_DB', i % 2 ? 'TARGET_LEDGER' : 'BLACKNET', i % 2 ? 'VIEW_TARGETS' : 'READ_MESSAGES');
+    const module = i % 2 ? 'TARGET_LEDGER' : 'BLACKNET';
+    sim.run(black.id, sim.code(black.id, 'BLACKHAT_DB', module), 'BLACKHAT_DB', module, i % 2 ? 'VIEW_TARGETS' : 'READ_MESSAGES');
     const e = sim.s.logs.at(-1)!;
     const msg = sim.run(analyst.id, logCode, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: e.id }).message;
     assert.ok(clueIsTrue(sim, msg, e), msg);
     kinds.add(msg.includes('within') ? 'range' : msg.includes('one of two') ? 'pair' : msg.includes("server's IP") ? 'server' : 'activity');
   }
   assert.deepEqual([...kinds].sort(), ['activity', 'pair', 'range', 'server']);
+});
+
+test('hidden host kits: every operative gets the shared modules and at least one kit; some kits go unused', () => {
+  for (const seed of [1, 2, 3, 4, 5]) {
+    const sim = new Sim({}, seed);
+    const blacks = Object.values(sim.s.players).filter((p) => p.allegiance === 'BLACK');
+    const hostCreds = (pid: string) => Object.values(sim.s.credentials).filter((c) => c.owner === pid && c.system === 'BLACKHAT_DB');
+    const dealt = new Set<string>();
+    for (const b of blacks) {
+      const modules = hostCreds(b.id).map((c) => c.module!);
+      for (const m of HOST_SHARED_MODULES) assert.ok(modules.includes(m), `${b.name} can use ${m}`);
+      const kits = modules.filter((m) => HOST_KITS.includes(m));
+      assert.ok(kits.length >= 1 && kits.length <= 2, `${b.name} has ${kits.length} kits`);
+      assert.ok(hostCreds(b.id).every((c) => c.module !== null), 'no whole-host credentials');
+      kits.forEach((k) => dealt.add(k));
+    }
+    assert.ok(dealt.size >= blacks.length && dealt.size <= HOST_KITS.length);
+  }
+});
+
+test('Host Log: activity on the host by credential owner, and alerts when the bank traces it', () => {
+  const sim = new Sim({ traceCooldownSec: 0 });
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const host = (module: string) => sim.code(black.id, 'BLACKHAT_DB', module);
+  const hostLog = (show: string) => sim.run(black.id, host('HOST_LOG'), 'BLACKHAT_DB', 'HOST_LOG', 'VIEW_HOST_LOG', { show }).lines!;
+  sim.at(3);
+  sim.run(black.id, host('BLACKNET'), 'BLACKHAT_DB', 'BLACKNET', 'POST_MESSAGE', { text: 'hello', alias: 'ghost' });
+  assert.ok(hostLog('ALL').some((l) => l.endsWith(`${black.name}: posted on Blacknet`)), 'named after the host credential owner');
+  assert.deepEqual(hostLog('ALERTS'), ['Nothing here.']);
+
+  // The bank traces the relay entry: the host log shows who traced it and what they learned.
+  const relay = sim.s.logs.filter((l) => l.kind === 'HIDDEN_ACCESS').at(-1)!;
+  const trace = sim.run(analyst.id, sim.code(analyst.id, 'SECURITY', 'MASTER_LOG'), 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: relay.id });
+  const alerts = hostLog('ALERTS');
+  assert.equal(alerts.length, 1);
+  assert.ok(alerts[0].includes(`!! Relay entry ${relay.id} was traced by ${analyst.name}. The bank learned: `), alerts[0]);
+  assert.ok(alerts[0].endsWith(trace.message.split('routed through a relay. ')[1]), 'same clue the bank got');
+});
+
+test('Employee Records: reset a lockout', () => {
+  const sim = new Sim();
+  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const [pb] = sim.byRole('PERSONAL_BANKER');
+  const used = new Set(Object.values(sim.s.credentials).map((c) => c.code));
+  const bad = ['0000', '1111', '2222', '3333'].filter((c) => !used.has(c));
+  const records = sim.code(analyst.id, 'SECURITY', 'EMPLOYEE_RECORDS');
+  const reset = () => sim.run(analyst.id, records, 'SECURITY', 'EMPLOYEE_RECORDS', 'RESET_LOCKOUT', { address: pb.ip });
+  sim.at(5);
+  assert.match(reset().message, /is not locked out/);
+  for (let i = 0; i < 3; i++) sim.run(pb.id, bad[i], 'SECURITY', 'MASTER_LOG', 'VIEW_LOG');
+  assert.ok(sim.s.players[pb.id].lockedUntil > 5);
+  const r = reset();
+  assert.ok(r.ok, r.message);
+  assert.equal(sim.lastLog(), `${analyst.name} reset the lockout on ${pb.ip} (${pb.name})`);
+  assert.ok(sim.run(pb.id, sim.code(pb.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS'), 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS').ok, 'unlocked right away');
 });

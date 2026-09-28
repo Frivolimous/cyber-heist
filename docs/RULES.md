@@ -128,6 +128,8 @@ of "potential targets for fraudulent transactions").
   **Trace a log entry**.
 - **Employee Records**: name, role, workstation IP, and per workstation: **last activity** (from the
   machine, not the credential), **failed attempts** (all game), **LOCKED OUT** and **BLOCKED** status.
+  **Reset a lockout** unlocks a workstation at once (needs Employee Records write: Security Analysts and
+  IT Specialists).
 - **Permissions**: view active or all credentials, with readable scopes such as "Read & write ·
   Settlement"; issue a credential; revoke one by id.
 - **Master Log live monitor:** "Auto-update every second" refreshes the view in place. Opening the view is
@@ -182,8 +184,17 @@ of "potential targets for fraudulent transactions").
 
 ## Hidden host (Black Hat Database)
 
-- Address `10.66.6.6`. Black Hats start knowing it and holding a credential for it (assumed: Black
-  Hats do **not** start knowing who the other operatives are; they find each other on Blacknet).
+- Address `10.66.6.6`. Black Hats start knowing it (assumed: Black Hats do **not** start knowing who
+  the other operatives are; they find each other on Blacknet).
+- Host modules: **Blacknet**, **Target Ledger**, **Host Log** and **Credential Cache** are shared: every
+  operative starts with a credential for each. The **tool kits** (Infiltration, Social, Cleanup, Access)
+  are dealt at random each game: every operative gets one, and each kit left over has an even chance of
+  going to a random operative as a second. With more kits than operatives, some go unused. Kits have no
+  tools yet. Operatives can share kit codes like any other credential.
+- **Host Log**: the host's own log, for operatives (and anyone who gets in). It records activity on the
+  host named after the host credential's owner ("Anna: posted on Blacknet"; failed logins and bare
+  connections are unnamed), and raises an alert whenever the bank traces one of the host's "Unknown
+  server activity" entries, naming whose credential ran the trace and the clue the bank got.
 - Every use of the host (and every Connect to its address) writes only a cryptic, nameless system entry,
   **"Unknown server activity"**, visible under the Master Log's **Everything** filter but not **Player
   activity**. Quiet live-monitor refreshes write nothing. It also raises an alert (Master Log > Alerts),

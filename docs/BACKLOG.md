@@ -29,10 +29,23 @@ Move an item out of here when it ships.
 
 ## Black Hats
 
-- **Scam requests from the hidden host.** Black Hats can send fake Client Requests as an attack.
-- **Log tampering from the hacker terminal**, not from the Master Log (which stays trustworthy):
-  delete an entry (the id gap stays visible, like offline gaps); later maybe re-attribute an entry to
-  another name.
+Agreed 2026-09-28. The Black Hat tool list itself is kept by the designer and not written up here.
+
+- **Tools for the kits.** The kits exist (Infiltration, Social, Cleanup, Access; see RULES.md) but are
+  empty. Each tool is a function in a kit module plus a handler, like the rest of the game.
+- **Balance by exposure, not limits.** No cooldowns and no limited charges. Instead, every Black Hat
+  action raises an alert in the bank's Master Log, and stronger actions reveal more in that alert:
+  - weakest: nothing beyond the usual "Unknown server activity" (traceable for partial clues);
+  - stronger: a partial clue right away (the same kinds a trace gives);
+  - stronger still: one exact fact (the acting operative's workstation IP, or the server's address);
+  - strongest: the operative's exact IP and a working host credential (that operative's own code).
+  What leaks is always about the operative who acted. Tools with a duration pick their exposure level
+  by the duration chosen.
+- **Host Log alerts for exposure.** The Host Log exists; once tools raise exposing bank alerts, the Host
+  Log should also alert the operatives when one of them has been exposed.
+- **Scam requests from the hidden host.** Black Hats can send fake Client Requests.
+- **Log tampering from the hidden host**, not from the Master Log (which stays trustworthy): deleting
+  an entry leaves the id gap visible, like offline gaps.
 
 ## Roles and balance
 
