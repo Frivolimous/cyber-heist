@@ -1,0 +1,20 @@
+{
+  "name": "cyber-heist",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Social deduction bank heist - rules engine and local sandbox",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/engine/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vite": "^5.4.0"
+  }
+}

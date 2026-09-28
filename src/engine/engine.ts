@@ -1,0 +1,258 @@
+// The rules engine. Pure with respect to its inputs: applyAction(state, action, now) returns a NEW state.
+// No Firebase, no DOM. Later this exact module runs inside a Cloud Function.
+
+import { findFn } from './catalog';
+import { autoProcess, spawnNpc } from './bank';
+import {
+  addAlert,
+  addLog,
+  fail,
+  flagHiddenTraffic,
+  gameTime,
+  keyOf,
+  nameOf,
+  nextId,
+  note,
+  ok,
+  targetLabel,
+} from './core';
+import { findCredentialByCode } from './credentials';
+import { credScopeText, HANDLERS } from './handlers';
+import type { Ctx } from './handlers';
+import type {
+  Action,
+  ActionResult,
+  Credential,
+  ExecuteAction,
+  GameState,
+  LogEntry,
+  Player,
+} from './types';
+
+// ---- Time ---------------------------------------------------------------------
+
+/** Mutating: brings the state up to `now` (NPC traffic, auto-processing, win/timeout checks). */
+export function advanceState(s: GameState, now: number): void {
+  if (s.status !== 'RUNNING') return;
+  const endT = s.config.durationSec;
+  const targetT = Math.min(Math.max(0, (now - s.startedAt) / 1000), endT);
+
+  while (s.status === 'RUNNING' && s.lastNpcAt + s.config.npcIntervalSec <= targetT) {
+    s.lastNpcAt += s.config.npcIntervalSec;
+    s.now = Math.max(s.now, s.startedAt + s.lastNpcAt * 1000);
+    spawnNpc(s);
+    if (s.config.autoProcess) autoProcess(s);
+    checkWin(s);
+  }
+  if (s.status !== 'RUNNING') return;
+
+  s.now = Math.max(s.now, s.startedAt + targetT * 1000);
+  if (s.config.autoProcess) autoProcess(s);
+  checkWin(s);
+  if (s.status === 'RUNNING' && targetT >= endT) {
+    s.status = 'ENDED';
+    s.winner = s.config.timeoutWinner;
+    s.endReason = 'Time ran out before either objective was met.';
+  }
+}
+
+/** Pure wrapper around advanceState. */
+export function tick(state: GameState, now: number): GameState {
+  const s = structuredClone(state);
+  advanceState(s, now);
+  return s;
+}
+
+export function checkWin(s: GameState): void {
+  if (s.status !== 'RUNNING') return;
+  if (s.totals.stolen >= s.config.blackTarget) {
+    s.status = 'ENDED';
+    s.winner = 'BLACK';
+    s.endReason = 'The Black Hats diverted enough money.';
+  } else if (s.totals.processedNpc >= s.config.whiteTarget) {
+    s.status = 'ENDED';
+    s.winner = 'WHITE';
+    s.endReason = 'The bank processed its quota of legitimate payments.';
+  }
+}
+
+// ---- Actions ------------------------------------------------------------------
+
+export function applyAction(state: GameState, action: Action, now: number): { state: GameState; result: ActionResult } {
+  const s = structuredClone(state);
+  advanceState(s, now);
+  if (s.status !== 'RUNNING') return { state: s, result: fail('The game is over.') };
+  const p = s.players[action.playerId];
+  if (!p) return { state: s, result: fail('Unknown player.') };
+
+  let result: ActionResult;
+  switch (action.type) {
+    case 'EXECUTE':
+      result = execute(s, p, action);
+      break;
+    case 'SHARE_CREDENTIAL':
+      result = shareCredential(s, p, action.credentialId, action.toPlayerId);
+      break;
+    case 'SEND_MESSAGE':
+      result = sendMessage(s, p, action.toPlayerId, action.text);
+      break;
+    case 'CONNECT':
+      result = connect(s, p, action.address);
+      break;
+    default:
+      result = fail('Unknown action.');
+  }
+  checkWin(s);
+  return { state: s, result };
+}
+
+function registerFailure(s: GameState, p: Player): void {
+  p.failStreak += 1;
+  if (p.failStreak >= s.config.lockoutAfterFails) {
+    p.failStreak = 0;
+    p.lockedUntil = gameTime(s) + s.config.lockoutSec;
+  }
+}
+
+function credCovers(cr: Credential, system: string, module: string, fnId: string, perm: 'READ' | 'WRITE'): boolean {
+  return (
+    cr.system === system &&
+    (cr.module === null || cr.module === module) &&
+    (cr.fn === null || cr.fn === fnId) &&
+    (cr.permission === 'WRITE' || perm === 'READ')
+  );
+}
+
+function execute(s: GameState, p: Player, a: ExecuteAction): ActionResult {
+  const t = gameTime(s);
+  if (p.lockedUntil > t) {
+    return fail(`Workstation locked for ${Math.ceil(p.lockedUntil - t)}s after repeated failed attempts.`);
+  }
+  const def = findFn(a.system, a.module, a.fn);
+  const handler = HANDLERS[`${a.system}.${a.module}.${a.fn}`];
+  if (!def || !handler) return fail('Unknown system, module or function.');
+  const code = (a.code ?? '').trim();
+  if (!/^\d{4}$/.test(code)) return fail('Enter a 4-digit code.');
+
+  const label = targetLabel(a.system, a.module);
+  const where = `${a.system}.${a.module}.${a.fn}`;
+  const cred = findCredentialByCode(s, code);
+
+  // One deliberately uninformative reply for: unknown code / revoked code / code without the right scope.
+  const deny = (actor: string, kind: string, message: string, reason: string): ActionResult => {
+    const entry = addLog(s, { actor, kind, message, sourceIp: p.ip, actualPlayerId: p.id });
+    addAlert(s, kind, message, entry.id);
+    note(p, t, `FAILED (${reason}): code ${code} on ${where}`);
+    registerFailure(s, p);
+    return fail('Access denied.');
+  };
+
+  if (!cred) return deny('UNKNOWN', 'AUTH_FAIL', `Failed authentication attempt on ${label}`, 'no such code');
+  const owner = s.players[cred.owner];
+  if (cred.status === 'REVOKED') {
+    return deny(owner.id, 'AUTH_REVOKED', `Attempt with revoked credential ${cred.id} (${owner.name}) on ${label}`, `revoked credential ${cred.id}`);
+  }
+  if (!credCovers(cred, a.system, a.module, a.fn, def.permission)) {
+    return deny(owner.id, 'AUTH_DENIED', `${owner.name}'s credential was denied on ${label}`, `credential ${cred.id} lacks scope`);
+  }
+
+  // The code worked, so this player now knows (holds) that credential.
+  if (!p.heldCredentialIds.includes(cred.id)) {
+    p.heldCredentialIds.push(cred.id);
+    note(p, t, `Learned credential ${cred.id} (${owner.name}'s, ${credScopeText(cred)}) by entering its code.`);
+  }
+
+  const mod = s.modules[keyOf(a.system, a.module)];
+  if (mod.status === 'OFFLINE') return fail(`${label} is offline.`);
+
+  const given = a.encCodes ?? [];
+  const missing = mod.encryption.filter((layer) => !given.includes(layer));
+  if (missing.length > 0) {
+    const message = `${owner.name} failed to decrypt ${label}`;
+    const entry = addLog(s, { actor: owner.id, kind: 'DECRYPT_FAIL', message, sourceIp: p.ip, actualPlayerId: p.id });
+    addAlert(s, 'DECRYPT_FAIL', message, entry.id);
+    note(p, t, `FAILED (missing layer codes): ${where}`);
+    registerFailure(s, p);
+    const n = mod.encryption.length;
+    return fail(`Module is encrypted (${n} layer${n > 1 ? 's' : ''}). Supply every layer code.`);
+  }
+
+  p.failStreak = 0;
+
+  const st: { logged: LogEntry | null } = { logged: null };
+  const hidden = a.system === 'BLACKHAT_DB';
+  const writeAccessLog = (detail?: string): LogEntry => {
+    const message = hidden
+      ? `${owner.name} connected to an unregistered host`
+      : `${owner.name} ${detail ?? 'accessed ' + label}`;
+    const entry = addLog(s, { actor: owner.id, kind: hidden ? 'HIDDEN_ACCESS' : 'ACCESS', message, sourceIp: p.ip, actualPlayerId: p.id });
+    if (hidden) flagHiddenTraffic(s, entry);
+    return entry;
+  };
+  const ctx: Ctx = {
+    s,
+    actor: p,
+    owner,
+    cred,
+    t,
+    system: a.system,
+    module: a.module,
+    log: (detail) => (st.logged ??= writeAccessLog(detail)),
+    strike: (reason) => {
+      const message = `${owner.name} failed a decryption attempt on ${label}`;
+      const entry = addLog(s, { actor: owner.id, kind: 'DECRYPT_FAIL', message, sourceIp: p.ip, actualPlayerId: p.id });
+      addAlert(s, 'DECRYPT_FAIL', message, entry.id);
+      note(p, t, `FAILED (${reason}): ${where}`);
+      registerFailure(s, p);
+    },
+  };
+
+  const res = handler(ctx, a.params ?? {});
+  if (res.ok && !st.logged) st.logged = writeAccessLog(res.logDetail);
+
+  const via = owner.id === p.id ? `your credential ${cred.id}` : `${owner.name}'s credential ${cred.id}`;
+  note(p, t, `${res.ok ? 'OK' : 'FAILED'}: ${def.label} on ${label} using ${via}${res.ok ? '' : ' - ' + res.message}`);
+  return { ok: res.ok, message: res.message, lines: res.lines };
+}
+
+function shareCredential(s: GameState, p: Player, credentialId: string, toId: string): ActionResult {
+  const t = gameTime(s);
+  const cred = s.credentials[credentialId];
+  if (!cred || !p.heldCredentialIds.includes(cred.id)) return fail('You do not hold that credential.');
+  const to = s.players[toId];
+  if (!to || to.id === p.id) return fail('Pick another employee.');
+  if (to.heldCredentialIds.includes(cred.id)) return fail(`${to.name} already has that credential.`);
+  to.heldCredentialIds.push(cred.id);
+  note(p, t, `Shared credential ${cred.id} (${credScopeText(cred)}) with ${to.name}.`);
+  note(to, t, `${p.name} shared credential ${cred.id} (${nameOf(s, cred.owner)}'s, ${credScopeText(cred)}) with you. Code ${cred.code}.`);
+  return ok(`Shared ${cred.id} with ${to.name}.`);
+}
+
+function sendMessage(s: GameState, p: Player, toId: string, text: string): ActionResult {
+  const to = s.players[toId];
+  const body = (text ?? '').trim().slice(0, 500);
+  if (!to || to.id === p.id) return fail('Pick another employee.');
+  if (!body) return fail('Write a message first.');
+  const m = { id: nextId(s, 'msg', 'M'), t: gameTime(s), from: p.id, to: to.id, text: body };
+  p.messages.push(m);
+  to.messages.push(m);
+  return ok(`Sent to ${to.name}.`);
+}
+
+function connect(s: GameState, p: Player, address: string): ActionResult {
+  const t = gameTime(s);
+  if (p.lockedUntil > t) return fail(`Workstation locked for ${Math.ceil(p.lockedUntil - t)}s.`);
+  if ((address ?? '').trim() !== s.hiddenHost) return fail('No route to host.');
+  const first = !p.knownSystems.includes('BLACKHAT_DB');
+  if (first) p.knownSystems.push('BLACKHAT_DB');
+  const entry = addLog(s, {
+    actor: 'UNKNOWN',
+    kind: 'CONNECT',
+    message: 'Unknown workstation connected to an unregistered host',
+    sourceIp: p.ip,
+    actualPlayerId: p.id,
+  });
+  flagHiddenTraffic(s, entry);
+  note(p, t, `Connected to ${s.hiddenHost}.`);
+  return ok(`Connected to ${s.hiddenHost}. It now appears in your terminal, but every module needs a credential.`);
+}
