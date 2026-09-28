@@ -28,10 +28,12 @@ npm run typecheck
 - You start as Jeremy, who has **master access** (a whole-system credential for every system).
   Switch seats with **Viewing as**. Each seat keeps its own open windows.
 - The player screen is an employee sidebar plus a simulated desktop. Click a system to open a
-  window, then a module, then a function. Windows can be moved, resized, minimized, maximized and
-  navigated with back/forward or the address bar (e.g. `10.0.0.30/settlement/settle`).
-- On a function page, confirm the 4-digit code (auto-filled from a credential you hold) and press
-  Run. You can type any code: that is how guessing and using someone else's credential works.
+  window, then a module (each tile shows your access to it). Windows can be moved, resized,
+  minimized, maximized and navigated with back/forward or the address bar (e.g.
+  `10.0.0.30/settlement`).
+- A module page has three parts: **Credential** (pick one you hold, or "Manual code" to type any
+  code: that is how guessing and using someone else's credential works), **Commands** (cards), and
+  the window's **Terminal**, which keeps its history while you stay in one system.
 - **My workstation** in the taskbar holds your profile, credentials, activity log and messages.
 - **Ground truth** in the yellow bar shows who really did what next to what the logs say.
 - **Auto-process routine payments** is a debug bot that settles low-risk NPC payments so a single

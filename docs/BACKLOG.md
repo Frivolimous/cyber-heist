@@ -3,11 +3,6 @@
 Agreed or discussed work that is not built yet. Rules as they stand today are in [RULES.md](RULES.md).
 Move an item out of here when it ships.
 
-## Next up
-
-- **Hidden host pages.** Blacknet, Target Ledger and Credential Cache still use the old function layer.
-  Convert them to module pages (credential / commands / terminal), then remove the function layer.
-
 ## Bank and customers
 
 - **Customer balances.** Balances per account; settling a payment debits the originator account it was
@@ -41,7 +36,8 @@ Move an item out of here when it ships.
 
 ## Roles and balance
 
-- **Permissions review.** Temporary choices to revisit:
+- **Roles and permissions review** (do this before writing job descriptions). Candidate new role:
+  **Bank Manager**, not designed yet. Temporary choices to revisit:
   - IT Specialists hold a read-only credential for all of Client Data (so they can view every customer).
   - Only Accounts & Receivables can create payments, so bankers need someone else to carry out
     payment requests.
@@ -50,6 +46,25 @@ Move an item out of here when it ships.
     Administrator starts with it.
 - **Timer.** At the end of the clock the Black Hats win by default. With the nuclear option, a losing
   White Hat side may prefer to shut the bank down; check in playtests.
+
+## Under consideration
+
+- **Remove info packets** (the private facts dealt to each player at the start, shown in My workstation >
+  Profile). Not decided yet. Today they are the main source of:
+  - the hidden host's address (two Security facts give it in full) and the digits of one operative's
+    host code;
+  - two customers' original primary accounts and two mule (target) accounts;
+  - one operative's workstation IP and the number of operatives;
+  - rules hints (trace limits, lockouts, verification, risk scoring).
+
+  Without them, the address comes only from trace clues and players; host codes only from guessing,
+  sharing or a Black Hat's workstation. Some rules hints may need another home (e.g. a help page).
+- **Job descriptions** (proposed replacement for info packets; wait for the roles and permissions review): each role gets a job description in
+  My workstation (a "Job" tab): what you do, your tools (the modules you have access to), who you depend
+  on (e.g. bankers need Accounts & Receivables to create payments), and the rules that matter for your
+  job. Black Hats get a separate secret section (objective, hidden host address, how to act unseen); it
+  lives on their workstation, so a White Hat who logs in to it can find it. General rules ("logs name
+  the credential owner") could go in a short shared "How the bank works" section.
 
 ## Deferred (from the original design)
 

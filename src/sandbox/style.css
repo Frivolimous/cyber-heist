@@ -137,13 +137,9 @@ button:disabled { cursor: default; opacity: 0.4; }
 
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 .tile { display: grid; gap: 4px; text-align: left; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 16px 14px; min-height: 84px; align-content: center; }
-.tile:hover, .fnbtn:hover { border-color: var(--win-title); box-shadow: 0 0 0 1px var(--win-title); }
+.tile:hover { border-color: var(--win-title); box-shadow: 0 0 0 1px var(--win-title); }
 .tile b { font-size: 15px; }
 .tile small { color: var(--muted); }
-.fnlist { display: grid; gap: 8px; }
-.fnbtn { display: flex; align-items: center; gap: 12px; justify-content: space-between; text-align: left; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
-.fnbtn span { display: grid; gap: 2px; }
-.fnbtn small { color: var(--muted); }
 .perm { font-style: normal; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 9px; flex: none; }
 .perm.READ { background: #e1ecf7; color: #1f4f80; }
 .perm.WRITE { background: #fbe6c9; color: #7a4a00; }
@@ -154,8 +150,6 @@ button:disabled { cursor: default; opacity: 0.4; }
 .lock .run { justify-self: center; }
 .noroute code { font-family: var(--mono); }
 
-/* function page */
-.fn { display: grid; gap: 10px; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
 .field { display: grid; gap: 3px; }
 .field > span { font-size: 12px; color: var(--muted); }

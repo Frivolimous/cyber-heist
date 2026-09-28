@@ -96,11 +96,11 @@ export const normAccount = (v: string): string | null => {
   return m ? `ACC-${m[1]}` : null;
 };
 
-/** Any traffic to the hidden host raises a (throttled) alert, shown under the Master Log's alerts, that names the host. */
+/** Any traffic to the hidden host raises a (throttled) alert without the address; tracing its log entry gives clues. */
 export function flagHiddenTraffic(s: GameState, entry: LogEntry): void {
   const last = [...s.alerts].reverse().find((a) => a.kind === 'UNREGISTERED_HOST');
   if (!last || gameTime(s) - last.t >= 30) {
-    addAlert(s, 'UNREGISTERED_HOST', `Traffic to unregistered host ${s.hiddenHost} detected`, entry.id);
+    addAlert(s, 'UNREGISTERED_HOST', 'Traffic to an unregistered host detected', entry.id);
   }
 }
 

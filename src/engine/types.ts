@@ -95,6 +95,8 @@ export interface LogEntry {
   // Ground truth. Players only ever learn sourceIp through TRACE.
   sourceIp: string | null;
   actualPlayerId: PlayerId | null;
+  /** Hidden host entries only: what was really done ("posted on Blacknet"); a Trace may reveal it. */
+  activity?: string;
 }
 
 export interface Alert {

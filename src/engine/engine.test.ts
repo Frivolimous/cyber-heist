@@ -313,16 +313,30 @@ test('hidden host: guarded by credentials, discoverable through alerts, reachabl
 
   sim.at(30);
   assert.ok(sim.run(black.id, dbCode, 'BLACKHAT_DB', 'BLACKNET', 'POST_MESSAGE', { text: 'target B3 is ready', alias: 'ghost' }).ok);
-  assert.equal(sim.lastLog(), `${black.name} connected to an unregistered host`);
-  assert.ok(!sim.lastLog().includes(sim.s.hiddenHost), 'the log does not give the address away');
+  // Only a cryptic, nameless system entry: hidden from "Player activity", visible under "Everything".
+  const entry = sim.s.logs.at(-1)!;
+  assert.equal(entry.message, 'Unknown server activity');
+  assert.equal(entry.actor, 'SYSTEM');
+  const logCode = sim.code(analyst.id, 'SECURITY', 'MASTER_LOG');
+  const logView = (show: string) => sim.run(analyst.id, logCode, 'SECURITY', 'MASTER_LOG', 'VIEW_LOG', { show }).lines!.join('\n');
+  assert.ok(!logView('PLAYERS').includes('Unknown server activity'));
+  assert.ok(logView('ALL').split('\n').some((l) => l.includes(entry.id) && l.endsWith('Unknown server activity')));
+  assert.ok(!logView('ALL').includes(black.name), 'nobody is named');
+
+  // Tracing it only gives one true, partial clue.
+  const trace = sim.run(analyst.id, logCode, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: entry.id });
+  assert.ok(trace.message.includes('routed through a relay.'), trace.message);
+  assert.ok(clueIsTrue(sim, trace.message, entry), trace.message);
 
   // A White Hat without a code gets nothing.
   const denied = sim.run(white.id, '0000', 'BLACKHAT_DB', 'BLACKNET', 'READ_MESSAGES');
   assert.equal(denied.ok, false);
 
-  // The Master Log's alerts name the host.
+  // The Master Log's alerts report the traffic but not the address; the alert points at a traceable entry.
   const alerts = sim.run(analyst.id, sim.code(analyst.id, 'SECURITY', 'MASTER_LOG'), 'SECURITY', 'MASTER_LOG', 'VIEW_LOG', { show: 'ALERTS' });
-  assert.ok(alerts.lines!.some((l) => l.includes(sim.s.hiddenHost)));
+  const alert = alerts.lines!.find((l) => l.includes('Traffic to an unregistered host detected'));
+  assert.ok(alert && alert.includes(`(log ${entry.id})`), alerts.lines!.join('\n'));
+  assert.ok(!alerts.lines!.some((l) => l.includes(sim.s.hiddenHost)), 'the address is not given away');
 
   // Knowing the address makes the system appear; a wrong address does not.
   if (!sim.s.players[it.id].knownSystems.includes('BLACKHAT_DB')) {
@@ -950,4 +964,52 @@ test('Employee Records show last activity, failed attempts, lockouts and blocks;
   const alerts = sim.run(analyst.id, sim.code(analyst.id, 'SECURITY', 'MASTER_LOG'), 'SECURITY', 'MASTER_LOG', 'VIEW_LOG', { show: 'ALERTS' }).lines!;
   assert.equal(alerts.filter((l) => l.includes('AUTH_FAIL')).length, 3);
   assert.ok(!SYSTEMS.find((s) => s.id === 'SECURITY')!.modules.some((m) => m.id === 'INTRUSION_DETECTION'));
+});
+
+/** Checks a relay trace against the truth: whichever of the four clue kinds it is, it must be correct. */
+function clueIsTrue(sim: Sim, message: string, entry: { sourceIp: string | null; activity?: string }): boolean {
+  const ip = entry.sourceIp!;
+  const last = Number(ip.split('.').pop());
+  let m = message.match(/The origin workstation is within 10\.1\.0\.(\d+)-(\d+)\./);
+  if (m) return Number(m[2]) - Number(m[1]) === 3 && last >= Number(m[1]) && last <= Number(m[2]);
+  m = message.match(/The origin is one of two workstations: ([\d.]+) or ([\d.]+)\./);
+  if (m) return (m[1] === ip || m[2] === ip) && m[1] !== m[2];
+  m = message.match(/The server's IP address is ([\dx.]+)\./);
+  if (m) {
+    const shown = m[1].split('.');
+    const real = sim.s.hiddenHost.split('.');
+    return shown.filter((p) => p !== 'x').length === 1 && shown.every((p, i) => p === 'x' || p === real[i]);
+  }
+  m = message.match(/Activity performed: (.+)\.$/);
+  return Boolean(m && m[1] === entry.activity);
+}
+
+test('hidden host: failures are also "Unknown server activity", and traces give varied, always-true clues', () => {
+  const sim = new Sim({ traceCooldownSec: 0 });
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const logCode = sim.code(analyst.id, 'SECURITY', 'MASTER_LOG');
+  const dbCode = sim.code(black.id, 'BLACKHAT_DB', null);
+  sim.at(5);
+
+  // A failed code on the host names nobody, but still counts toward the lockout.
+  const before = sim.s.players[black.id].failTotal;
+  const wrongScope = sim.code(analyst.id, 'SECURITY', 'EMPLOYEE_RECORDS'); // a real code with the wrong access
+  assert.equal(sim.run(black.id, wrongScope, 'BLACKHAT_DB', 'BLACKNET', 'READ_MESSAGES').message, 'Access denied.');
+  const failEntry = sim.s.logs.at(-1)!;
+  assert.equal(failEntry.message, 'Unknown server activity');
+  assert.equal(failEntry.activity, 'failed login attempt');
+  assert.ok(!sim.s.logs.some((l) => l.message.includes(analyst.name) && l.message.includes('denied')), 'the code owner is not named');
+  assert.equal(sim.s.players[black.id].failTotal, before + 1);
+
+  // Many traces: every kind of clue shows up, and every clue is true.
+  const kinds = new Set<string>();
+  for (let i = 0; i < 40; i++) {
+    sim.run(black.id, dbCode, 'BLACKHAT_DB', i % 2 ? 'TARGET_LEDGER' : 'BLACKNET', i % 2 ? 'VIEW_TARGETS' : 'READ_MESSAGES');
+    const e = sim.s.logs.at(-1)!;
+    const msg = sim.run(analyst.id, logCode, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: e.id }).message;
+    assert.ok(clueIsTrue(sim, msg, e), msg);
+    kinds.add(msg.includes('within') ? 'range' : msg.includes('one of two') ? 'pair' : msg.includes("server's IP") ? 'server' : 'activity');
+  }
+  assert.deepEqual([...kinds].sort(), ['activity', 'pair', 'range', 'server']);
 });

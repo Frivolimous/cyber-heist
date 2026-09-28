@@ -104,7 +104,7 @@ of "potential targets for fraudulent transactions").
 ## Security systems
 
 - **Encryption layers are disabled** (`ENCRYPTION_ENABLED = false` in `catalog.ts`): the Firewall has no
-  add/remove/bypass functions and function pages ask for no layer codes. The engine code remains.
+  add/remove/bypass functions and no page asks for layer codes. The engine code remains.
   When enabled: encryption is per **module**, every layer code must be supplied, the Firewall itself
   cannot be encrypted, and bypass strips all layers and raises an alert.
 - The Firewall itself cannot be taken offline (avoids unrecoverable soft-locks).
@@ -124,7 +124,7 @@ of "potential targets for fraudulent transactions").
     When it runs, the address is blocked permanently, and a workstation's owner loses every credential.
     It cannot be undone.
 - **Master Log**: filters **Player activity**, **Everything**, **Alerts** (failed codes, revoked or
-  out-of-scope attempts, failed workstation logins, traffic to the unregistered host naming its address);
+  out-of-scope attempts, failed workstation logins, traffic to an unregistered host, without its address);
   **Trace a log entry**.
 - **Employee Records**: name, role, workstation IP, and per workstation: **last activity** (from the
   machine, not the credential), **failed attempts** (all game), **LOCKED OUT** and **BLOCKED** status.
@@ -184,9 +184,21 @@ of "potential targets for fraudulent transactions").
 
 - Address `10.66.6.6`. Black Hats start knowing it and holding a credential for it (assumed: Black
   Hats do **not** start knowing who the other operatives are; they find each other on Blacknet).
-- Every access writes "connected to an unregistered host" to the Master Log (no address) and raises
-  an alert (Master Log > Alerts) that **does** name the address (throttled to one per 30s).
-- White Hats find the address via alerts or info packets, use **Connect** to make the system
+- Every use of the host (and every Connect to its address) writes only a cryptic, nameless system entry,
+  **"Unknown server activity"**, visible under the Master Log's **Everything** filter but not **Player
+  activity**. Quiet live-monitor refreshes write nothing. It also raises an alert (Master Log > Alerts),
+  "Traffic to an unregistered host detected", with **no address** (throttled to one per 30s). The alert
+  points at a log entry that can be traced for clues.
+- Failed code attempts on the host (unknown, revoked, wrong access) also write only "Unknown server
+  activity". They still count toward the lockout and the failed-attempts total in Employee Records.
+- **Tracing** an "Unknown server activity" entry ("routed through a relay.") returns one true but
+  partial clue, chosen at random:
+  - a window of four workstations: "The origin workstation is within 10.1.0.13-16."
+  - a pair, the real one and a random decoy in random order: "one of two workstations: A or B."
+  - one number of the server's address: "The server's IP address is x.66.x.x."
+  - what was done: "Activity performed: posted on Blacknet." (also: read the board, viewed the target
+    ledger, changed a target's status, viewed the credential cache, connected, failed login attempt)
+- White Hats find the address from trace clues (one number of it at a time) or info packets, use **Connect** to make the system
   appear, then need a credential: guess one (info packets leak its digits), get one shared, or find
   one on a Black Hat's workstation. Permissions cannot issue host credentials.
 - Credential Cache lists White Hat credentials held by operatives.

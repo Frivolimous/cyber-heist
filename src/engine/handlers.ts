@@ -24,6 +24,7 @@ import {
   targetLabel,
 } from './core';
 import { createCredential } from './credentials';
+import { pick, rand, randInt } from './rng';
 import { computeRisk, recordTx, reverseTransaction, settleTransaction } from './bank';
 import type { TxActor } from './bank';
 import type { AccountChange, ClientRequest, Credential, Customer, RequestKind, Revocation, GameState, LogEntry, Player, SystemId, Transaction, TxEvent, TxStatus } from './types';
@@ -267,6 +268,35 @@ H['SECURITY.EMPLOYEE_RECORDS.VIEW_EMPLOYEES'] = (c) => {
   return good('Employee Records:', rows);
 };
 
+/**
+ * One true but partial clue about hidden host activity:
+ * a range of four workstations, a pair (real + decoy), one number of the server's address, or what was done.
+ */
+function relayClue(c: Ctx, e: LogEntry): string {
+  const ips = c.s.playerOrder.map((id) => c.s.players[id].ip);
+  const last = (ip: string): number => Number(ip.split('.').pop());
+  const kinds = ['RANGE', 'PAIR', 'SERVER', ...(e.activity ? ['ACTIVITY'] : [])];
+  const kind = pick(c.s, kinds);
+  if (kind === 'RANGE' && ips.length > 4) {
+    const nums = ips.map(last).sort((a, b) => a - b);
+    const lo = nums[0];
+    const hi = nums[nums.length - 1];
+    const real = last(e.sourceIp!);
+    const start = Math.min(Math.max(real - randInt(c.s, 0, 3), lo), hi - 3);
+    const prefix = e.sourceIp!.split('.').slice(0, 3).join('.');
+    return `The origin workstation is within ${prefix}.${start}-${start + 3}.`;
+  }
+  if (kind === 'SERVER') {
+    const parts = c.s.hiddenHost.split('.');
+    const keep = randInt(c.s, 0, parts.length - 1);
+    return `The server's IP address is ${parts.map((p, i) => (i === keep ? p : 'x')).join('.')}.`;
+  }
+  if (kind === 'ACTIVITY') return `Activity performed: ${e.activity}.`;
+  const decoy = pick(c.s, ips.filter((ip) => ip !== e.sourceIp));
+  const pair = rand(c.s) < 0.5 ? [e.sourceIp, decoy] : [decoy, e.sourceIp];
+  return `The origin is one of two workstations: ${pair[0]} or ${pair[1]}.`;
+}
+
 H['SECURITY.MASTER_LOG.TRACE'] = (c, q) => {
   const id = normLog(str(q, 'logId'));
   const e = c.s.logs.find((x) => x.id === id);
@@ -276,6 +306,8 @@ H['SECURITY.MASTER_LOG.TRACE'] = (c, q) => {
   if (c.t - e.t > c.s.config.traceMaxAgeSec) return bad('That entry is too old to trace.');
   c.actor.lastTraceAt = c.t;
   if (!e.sourceIp) return good(`Trace ${e.id}: system event, no workstation origin.`, undefined, `ran a trace on ${e.id}`);
+  // Hidden host traffic is relayed: a trace only returns one true partial clue, picked at random.
+  if (e.kind === 'HIDDEN_ACCESS') return good(`Trace ${e.id}: routed through a relay. ${relayClue(c, e)}`, undefined, `ran a trace on ${e.id}`);
   return good(`Trace ${e.id}: origin workstation ${e.sourceIp}`, undefined, `ran a trace on ${e.id}`);
 };
 
@@ -836,7 +868,7 @@ H['BLACKHAT_DB.CREDENTIAL_CACHE.VIEW_CACHE'] = (c) => {
       const cr = c.s.credentials[id];
       if (!cr || seen.has(id) || c.s.players[cr.owner].allegiance !== 'WHITE') continue;
       seen.add(id);
-      rows.push(`${cr.id.padEnd(4)} ${nameOf(c.s, cr.owner).padEnd(12)} ${scopeText(cr).padEnd(44)} code ${cr.code}  ${cr.status}`);
+      rows.push(`${cr.id.padEnd(4)} ${nameOf(c.s, cr.owner).padEnd(10)} ${scopeLabel(cr).padEnd(44)} code ${cr.code}  ${cr.status}`);
     }
   }
   return good(`Credential Cache: ${rows.length} compromised credential${rows.length === 1 ? '' : 's'}.`, rows);

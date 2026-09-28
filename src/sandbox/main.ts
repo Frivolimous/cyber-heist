@@ -7,7 +7,6 @@ import {
   advanceState,
   applyAction,
   createGame,
-  ENCRYPTION_ENABLED,
   findFn,
   findModule,
   findSystem,
@@ -17,7 +16,7 @@ import {
   money,
   SYSTEMS,
 } from '../engine';
-import type { Action, FnDef, GameState, ParamSpec, PlayerId, PlayerView, SystemId, WorkstationView } from '../engine';
+import type { Action, GameState, PlayerId, PlayerView, SystemId, WorkstationView } from '../engine';
 
 const NAMES = ['Jeremy', 'Sarah', 'Mike', 'David', 'Lisa', 'Anna', 'Omar', 'Priya', 'Chen', 'Rosa'];
 const ROSTER = NAMES.map((name, i) => ({ id: `p${i}`, name }));
@@ -30,7 +29,6 @@ type Line = { cls: string; text: string };
 type Route =
   | { kind: 'system'; system: SystemId }
   | { kind: 'module'; system: SystemId; module: string }
-  | { kind: 'fn'; system: SystemId; module: string; fn: string }
   | { kind: 'workstation'; playerId: PlayerId; address: string }
   | { kind: 'noroute'; address: string; message: string };
 
@@ -247,7 +245,6 @@ function routeAddress(r: Route): string {
   if (r.kind === 'noroute' || r.kind === 'workstation') return r.address;
   let a = findSystem(r.system)?.address ?? '';
   if (r.kind !== 'system') a += '/' + slug(r.module);
-  if (r.kind === 'fn') a += '/' + slug(r.fn);
   return a;
 }
 
@@ -388,10 +385,10 @@ function fitWin(w: Win): void {
   placeWin(w, el);
 }
 
-/** Address bar: "10.0.0.30", "10.0.0.30/settlement" or "10.0.0.30/settlement/settle". */
+/** Address bar: "10.0.0.30" (a system) or "10.0.0.30/settlement" (one of its modules). */
 function goAddress(w: Win): void {
   const raw = w.addr.trim();
-  const [host = '', modSlug, fnSlug] = raw.replace(/^[a-z]+:\/\//i, '').split('/').filter(Boolean);
+  const [host = '', modSlug, extra] = raw.replace(/^[a-z]+:\/\//i, '').split('/').filter(Boolean);
   let sys = SYSTEMS.find((s) => s.address === host);
   if (!sys || !view().me.knownSystems.includes(sys.id)) {
     // Unknown address: ask the network. This is how the hidden host and other workstations are found.
@@ -404,12 +401,10 @@ function goAddress(w: Win): void {
     if (!sys) return;
   }
   const mod = modSlug ? sys.modules.find((m) => slug(m.id) === modSlug) : undefined;
-  const fn = mod && fnSlug ? mod.fns.find((f) => slug(f.id) === fnSlug) : undefined;
-  if ((modSlug && !mod) || (fnSlug && !fn)) {
+  if ((modSlug && !mod) || extra) {
     return navigate(w, { kind: 'noroute', address: raw, message: `${sys.label} has no page at that path.` });
   }
-  if (mod && fn) navigate(w, { kind: 'fn', system: sys.id, module: mod.id, fn: fn.id });
-  else if (mod) navigate(w, { kind: 'module', system: sys.id, module: mod.id });
+  if (mod) navigate(w, { kind: 'module', system: sys.id, module: mod.id });
   else navigate(w, { kind: 'system', system: sys.id });
 }
 
@@ -470,8 +465,7 @@ function browserHtml(w: Win): string {
     const parts = [crumb(sys.label, r.kind === 'system' ? null : `wgo:${w.id}:${sys.id}`)];
     if (r.kind !== 'system') {
       const mod = findModule(r.system, r.module)!;
-      parts.push(crumb(mod.label, r.kind === 'module' ? null : `wgo:${w.id}:${sys.id}:${mod.id}`));
-      if (r.kind === 'fn') parts.push(crumb(findFn(r.system, r.module, r.fn)!.label, null));
+      parts.push(crumb(mod.label, null));
     }
     crumbs = `<div class="crumbs">${parts.join('<i>/</i>')}</div>`;
     if (r.kind === 'system') {
@@ -481,63 +475,13 @@ function browserHtml(w: Win): string {
           return `<button class="tile ${a === 'NONE' ? 'locked' : ''}" data-act="wgo:${w.id}:${sys.id}:${m.id}"><b>${esc(m.label)}</b><i class="perm ${a}">${ACCESS_TEXT[a]}</i></button>`;
         })
         .join('')}</div>${terminalHtml(w)}`;
-    } else if (r.kind === 'module' && MODULE_PAGES[`${r.system}.${r.module}`]) {
+    } else if (MODULE_PAGES[`${r.system}.${r.module}`]) {
       body = modulePageHtml(w, r);
-    } else if (r.kind === 'module') {
-      const mod = findModule(r.system, r.module)!;
-      body = `<div class="fnlist">${mod.fns
-        .map(
-          (f) => `<button class="fnbtn" data-act="wgo:${w.id}:${sys.id}:${mod.id}:${f.id}">
-            <span><b>${esc(f.label)}</b><small>${esc(f.description)}</small></span>
-            <i class="perm ${f.permission}">${f.permission === 'WRITE' ? 'Write' : 'Read'}</i></button>`,
-        )
-        .join('')}</div>${terminalHtml(w)}`;
     } else {
-      body = fnHtml(w, r);
+      body = `<p class="hint">This module has no page yet.</p>${terminalHtml(w)}`;
     }
   }
   return `${nav}${crumbs}<div class="wbody">${body}</div>`;
-}
-
-// ---- Function page (the original terminal form, one per window) -------------------------
-function credCovers(c: PlayerView['me']['credentials'][number], system: string, module: string, fn: string, write: boolean): boolean {
-  return (
-    c.status === 'ACTIVE' &&
-    c.system === system &&
-    (c.module === null || c.module === module) &&
-    (c.fn === null || c.fn === fn) &&
-    (c.permission === 'WRITE' || !write)
-  );
-}
-
-function paramField(spec: ParamSpec, v: PlayerView, form: Record<string, string>): string {
-  const key = `p:${spec.name}`;
-  const label = `<span>${esc(spec.label)}${spec.optional ? ' (optional)' : ''}</span>`;
-  const select = (opts: { value: string; label: string }[]): string => {
-    if (!(key in form) || !opts.some((o) => o.value === form[key])) form[key] = opts[0]?.value ?? '';
-    return `<label class="field">${label}<select data-f="${key}">${opts
-      .map((o) => `<option value="${esc(o.value)}" ${form[key] === o.value ? 'selected' : ''}>${esc(o.label)}</option>`)
-      .join('')}</select></label>`;
-  };
-  switch (spec.kind) {
-    case 'select':
-      return select((spec.options ?? []).map((o) => ({ value: o, label: o })));
-    case 'player':
-      return select(v.players.map((p) => ({ value: p.id, label: `${p.name} (${p.roleLabel})` })));
-    case 'module':
-      return select(
-        v.systems.flatMap((sys) => sys.modules.map((m) => ({ value: `${sys.id}.${m.id}`, label: `${sys.label} / ${m.label}` }))),
-      );
-    case 'scope':
-      return select(
-        v.systems.flatMap((sys) => [
-          { value: `${sys.id}.*`, label: `${sys.label} (whole system)` },
-          ...sys.modules.map((m) => ({ value: `${sys.id}.${m.id}`, label: `${sys.label} / ${m.label}` })),
-        ]),
-      );
-    default:
-      return `<label class="field">${label}<input data-f="${key}" value="${esc(form[key] ?? '')}" placeholder="${esc(spec.placeholder ?? '')}" autocomplete="off"></label>`;
-  }
 }
 
 type Cred = PlayerView['me']['credentials'][number];
@@ -582,35 +526,6 @@ function terminalHtml(w: Win): string {
   return `<section class="mod-sec term"><h3>Terminal <button type="button" class="term-clear" data-act="wclear:${w.id}">Clear</button></h3><div class="out" aria-live="polite">${w.out.map((l) => `<div class="${l.cls}">${esc(l.text)}</div>`).join('') || '<div class="dim">Output appears here.</div>'}</div></section>`;
 }
 
-function fnHtml(w: Win, r: Extract<Route, { kind: 'fn' }>): string {
-  const v = view();
-  const def = findFn(r.system, r.module, r.fn) as FnDef;
-  const params = def.params.map((p) => paramField(p, v, w.form)).join('');
-  return `<div class="fn">
-      <h2>${esc(def.label)} <i class="perm ${def.permission}">${def.permission === 'WRITE' ? 'Write' : 'Read'}</i></h2>
-      <p class="hint">${esc(def.description)}</p>
-      ${credentialFields(
-        w,
-        v,
-        (c) => c.system === r.system && (c.module === null || c.module === r.module),
-        (c) => credCovers(c, r.system, r.module, r.fn, def.permission === 'WRITE'),
-      )}
-      ${params ? `<div class="grid2">${params}</div>` : ''}
-      ${ENCRYPTION_ENABLED ? `<label class="field"><span>Encryption layer codes, only if the module is encrypted (comma separated)</span><input data-f="enc" value="${esc(w.form.enc ?? '')}" autocomplete="off"></label>` : ''}
-      <button class="run" data-act="wrun:${w.id}">Run</button>
-    </div>
-    ${terminalHtml(w)}`;
-}
-
-function run(w: Win): void {
-  const r = route(w);
-  if (!r || r.kind !== 'fn') return;
-  const def = findFn(r.system, r.module, r.fn);
-  const params: Record<string, string> = {};
-  for (const p of def?.params ?? []) params[p.name] = w.form[`p:${p.name}`] ?? '';
-  execute(w, r.system, r.module, r.fn, params);
-}
-
 /** Runs one function with the window's credential code and prints the result to the window's terminal. */
 function execute(w: Win, system: SystemId, module: string, fn: string, params: Record<string, string>): boolean {
   const def = findFn(system, module, fn);
@@ -644,16 +559,18 @@ function renderTerminal(w: Win): void {
 }
 
 /**
- * Master Log live monitor: once a second, re-read the log quietly (the engine only allows this after a logged
- * read) and replace the previous output block, unless something else was printed after it.
+ * Live monitors (Master Log, Blacknet): once a second, re-read quietly (the engine only allows this after a
+ * logged read) and replace the previous output block, unless something else was printed after it.
  */
 function tickMonitors(): void {
   for (const w of wins()) {
     const r = route(w);
-    if (w.min || !r || r.kind !== 'module' || r.system !== 'SECURITY' || r.module !== 'MASTER_LOG' || w.form['p:monitor'] !== 'YES') continue;
+    if (w.min || !r || r.kind !== 'module' || w.form['p:monitor'] !== 'YES') continue;
+    const spec = MODULE_PAGES[`${r.system}.${r.module}`]?.monitor?.(w);
+    if (!spec) continue;
     const res = applyAction(
       game,
-      { type: 'EXECUTE', playerId: selected, code: (w.form.code ?? '').trim(), system: 'SECURITY', module: 'MASTER_LOG', fn: 'VIEW_LOG', params: { show: w.form['p:logFilter'] ?? 'PLAYERS' }, quiet: true },
+      { type: 'EXECUTE', playerId: selected, code: (w.form.code ?? '').trim(), system: r.system, module: r.module, fn: spec.fn, params: spec.params, quiet: true },
       vNow,
     );
     game = res.state;
@@ -663,7 +580,8 @@ function tickMonitors(): void {
       renderWin(w);
       continue;
     }
-    const block: Line[] = [{ cls: 'cmd', text: '[Master Log] > View log (live)' }, { cls: 'ok', text: res.result.message }, ...(res.result.lines ?? []).map((text) => ({ cls: 'row', text }))];
+    const title = `[${findModule(r.system, r.module)?.label ?? r.module}] > ${findFn(r.system, r.module, spec.fn)?.label ?? spec.fn} (live)`;
+    const block: Line[] = [{ cls: 'cmd', text: title }, { cls: 'ok', text: res.result.message }, ...(res.result.lines ?? []).map((text) => ({ cls: 'row', text }))];
     // Replace the previous live block if it is still the last thing in the terminal.
     const start = w.liveEnd !== undefined && w.liveEnd === w.out.length ? w.out.map((l) => l.cls).lastIndexOf('cmd') : w.out.length;
     w.out.splice(start, w.out.length - start, ...block);
@@ -675,7 +593,7 @@ function tickMonitors(): void {
 setInterval(tickMonitors, 1000);
 
 // ---- Module pages: one screen per module (credential, commands, terminal) ------------------------
-// Modules listed here skip the function layer. The rest still show a list of functions.
+// Every module has a page here: its credential, its commands (cards), and the window's terminal.
 
 type ModuleRoute = Extract<Route, { kind: 'module' }>;
 // Building blocks for command cards. A card with inputs is a <form>: Enter runs its first button.
@@ -729,7 +647,50 @@ const txParam = (w: Win): Record<string, string> => ({ txId: w.form['p:txId'] ??
 const viewCard = (w: Win, title: string, pendingLabel: string): string =>
   card(title, 'READ', btn(w, 'view:PENDING', pendingLabel) + btn(w, 'view:ALL', 'All', 'alt'));
 
-const MODULE_PAGES: Record<string, { commands: (w: Win) => string; run: (w: Win, cmd: string, arg?: string) => void }> = {
+interface ModulePage {
+  commands: (w: Win) => string;
+  run: (w: Win, cmd: string, arg?: string) => void;
+  /** A page with a live monitor: the READ function its "auto-update" checkbox refreshes quietly every second. */
+  monitor?: (w: Win) => { fn: string; params: Record<string, string> };
+}
+
+const MODULE_PAGES: Record<string, ModulePage> = {
+  'BLACKHAT_DB.BLACKNET': {
+    commands: (w) =>
+      card('Read messages', 'READ', btn(w, 'view', 'Read the board') + checkbox(w, 'monitor', 'Auto-update every second (only opening the board is logged)')) +
+      card(
+        'Post a message',
+        'WRITE',
+        input(w, 'alias', 'Alias', 'ghost') + input(w, 'text', 'Message', 'say something', true, true) + btns(btn(w, 'post', 'Post', '', true)),
+        `${w.id}:post`,
+      ),
+    run: (w, cmd) => {
+      if (cmd === 'view') {
+        execute(w, 'BLACKHAT_DB', 'BLACKNET', 'READ_MESSAGES', {});
+        w.liveEnd = w.out.length;
+      } else runFresh(w, 'BLACKHAT_DB', 'BLACKNET', 'POST_MESSAGE', { alias: w.form['p:alias'] ?? '', text: w.form['p:text'] ?? '' }, ['text']);
+    },
+    monitor: () => ({ fn: 'READ_MESSAGES', params: {} }),
+  },
+  'BLACKHAT_DB.TARGET_LEDGER': {
+    commands: (w) =>
+      card('View targets', 'READ', btn(w, 'view', 'All target accounts')) +
+      card(
+        'Set a target\'s status',
+        'WRITE',
+        input(w, 'account', 'Account', '12345', true, true) +
+          btns(btn(w, 'status:READY', 'Ready', '', true) + btn(w, 'status:PREPARE', 'Prepare', 'alt', true) + btn(w, 'status:ABORT', 'Abort', 'danger', true)),
+        `${w.id}:status:READY`,
+      ),
+    run: (w, cmd, arg) => {
+      if (cmd === 'view') execute(w, 'BLACKHAT_DB', 'TARGET_LEDGER', 'VIEW_TARGETS', {});
+      else runFresh(w, 'BLACKHAT_DB', 'TARGET_LEDGER', 'SET_TARGET_STATUS', { account: w.form['p:account'] ?? '', status: arg ?? '' }, ['account']);
+    },
+  },
+  'BLACKHAT_DB.CREDENTIAL_CACHE': {
+    commands: (w) => card('View cache', 'READ', btn(w, 'view', 'Compromised credentials')),
+    run: (w) => execute(w, 'BLACKHAT_DB', 'CREDENTIAL_CACHE', 'VIEW_CACHE', {}),
+  },
   'SECURITY.FIREWALL': {
     commands: (w) => {
       // Every module the player knows, except the Firewall itself and the hidden host (not the bank's to control).
@@ -802,6 +763,7 @@ const MODULE_PAGES: Record<string, { commands: (w: Win) => string; run: (w: Win,
         w.liveEnd = w.out.length; // the block just printed is the one a live monitor keeps replacing
       } else runFresh(w, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: w.form['p:logId'] ?? '' }, ['logId']);
     },
+    monitor: (w) => ({ fn: 'VIEW_LOG', params: { show: w.form['p:logFilter'] ?? 'PLAYERS' } }),
   },
   'SECURITY.EMPLOYEE_RECORDS': {
     commands: (w) => card('View employees', 'READ', btn(w, 'view', 'All employees')),
@@ -1239,9 +1201,8 @@ app.addEventListener('click', (e) => {
       break;
     case 'wgo':
       if (w) {
-        const [, system, module, fn] = args as [string, SystemId, string?, string?];
-        if (module && fn) navigate(w, { kind: 'fn', system, module, fn });
-        else if (module) navigate(w, { kind: 'module', system, module });
+        const [, system, module] = args as [string, SystemId, string?];
+        if (module) navigate(w, { kind: 'module', system, module });
         else navigate(w, { kind: 'system', system });
       }
       break;
@@ -1250,9 +1211,6 @@ app.addEventListener('click', (e) => {
         w.out = [];
         renderWin(w);
       }
-      break;
-    case 'wrun':
-      if (w) run(w);
       break;
     case 'mcmd': {
       const r = w && route(w);
