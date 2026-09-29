@@ -1,8 +1,8 @@
 // Builds a fresh game: roles, allegiances, credentials and bank data.
 
-import { DEFAULT_CONFIG, hackerCount, HIDDEN_HOST, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, ROLES, ROLE_ORDER, SYSTEMS } from './catalog';
+import { DEFAULT_CONFIG, hackerCount, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, ROLES, ROLE_ORDER, SYSTEMS } from './catalog';
 import { addLog, keyOf, money } from './core';
-import { createCredential } from './credentials';
+import { createCredential, createWorkstationCredential } from './credentials';
 import { spawnNpc } from './bank';
 import { assignBankers, assignContacts, schedulePhishing, spawnRequest } from './requests';
 import { pick, rand, randInt, shuffle } from './rng';
@@ -147,6 +147,7 @@ export function createGame(o: NewGameOptions): GameState {
     reroutes: [],
     proxies: [],
     cracks: [],
+    unlocks: [],
     alertMuteUntil: 0,
     hostLog: [],
     revocations: [],
@@ -157,8 +158,8 @@ export function createGame(o: NewGameOptions): GameState {
     targets: [],
     blacknet: [],
     totals: { processed: 0, stolen: 0 },
-    hiddenHost: HIDDEN_HOST,
-    counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, req: 0, change: 0, revoke: 0, host: 0, player: 0, crack: 0, notice: 0 },
+    hiddenHost: '', // set below
+    counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, req: 0, change: 0, revoke: 0, host: 0, player: 0, crack: 0, notice: 0, wcred: 0, xcred: 0, unlock: 0 },
   };
 
   for (const sys of SYSTEMS) for (const m of sys.modules) s.modules[keyOf(sys.id, m.id)] = { status: 'ONLINE', open: false, encryption: [] };
@@ -194,6 +195,12 @@ export function createGame(o: NewGameOptions): GameState {
   const statuses = ['READY', 'PREPARE', 'ABORT'] as const;
   s.targets = statuses.map((status) => ({ account: newAccount(), status }));
 
+  // Addresses come from a side stream, so the game's main random sequence is unchanged: workstations get
+  // distinct random numbers in 10.1.0.x, and the host a random address outside the bank's 10.0/10.1 ranges.
+  const net = { rngState: (o.seed ^ 0x51ed270b) | 0 };
+  const hosts = shuffle(net, Array.from({ length: 253 }, (_, k) => k + 2)).slice(0, n);
+  s.hiddenHost = `10.${randInt(net, 32, 254)}.${randInt(net, 0, 255)}.${randInt(net, 2, 254)}`;
+
   // Players.
   for (let i = 0; i < n; i++) {
     const { id, name } = o.players[i];
@@ -205,7 +212,7 @@ export function createGame(o: NewGameOptions): GameState {
       allegiance,
       objective: '',
       motivation: pick(s, allegiance === 'BLACK' ? BLACK_MOTIVATIONS : WHITE_MOTIVATIONS),
-      ip: `10.1.0.${11 + i}`,
+      ip: `10.1.0.${hosts[i]}`,
       bankAccount: newAccount(),
       heldCredentialIds: [],
       knownSystems: ['SECURITY', 'CLIENT_DATA', 'TRANSACTIONS'],
@@ -226,7 +233,7 @@ export function createGame(o: NewGameOptions): GameState {
     p.objective =
       allegiance === 'WHITE'
         ? `Keep the bank running: get ${money(config.whiteTarget)} of customer payments settled within ${mins} minutes, and stop anyone diverting ${money(config.blackTarget)}. Find the Black Hats.`
-        : `Divert ${money(config.blackTarget)} into your Target Ledger accounts within ${mins} minutes. Stay hidden: the logs name the credential, not the hand. There are ${blackCount} operatives in total. Coordinate on Blacknet at ${HIDDEN_HOST}.`;
+        : `Divert ${money(config.blackTarget)} into your Target Ledger accounts within ${mins} minutes. Stay hidden: the logs name the credential, not the hand. There are ${blackCount} operatives in total. Coordinate on Blacknet at ${s.hiddenHost}.`;
     s.players[id] = p;
 
     for (const t of ROLES[p.role].creds) {
@@ -252,6 +259,9 @@ export function createGame(o: NewGameOptions): GameState {
   for (let i = 0; i < 2; i++) spawnRequest(s);
   assignContacts(s, PERSON_CUSTOMERS);
   schedulePhishing(s);
+  // Every workstation's own login, drawn from a side stream so the game's main random sequence is unchanged.
+  const side = { rngState: (s.rngState ^ 0x2545f491) | 0 };
+  for (const id of s.playerOrder) s.players[id].heldCredentialIds.unshift(createWorkstationCredential(s, id, side).id);
   return s;
 }
 

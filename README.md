@@ -30,7 +30,7 @@ npm run typecheck
   their requests and start payments; Accounts & Receivables score risk, verify account changes and
   settle; IT Specialists run the Firewall, logs and credentials; one Bank Manager oversees everything.
   Each player's profile has a job description with their tools and the rules that matter to them.
-- **Black Hats** (a third of the table) have normal jobs as cover, plus a hidden host (`10.66.6.6`) with
+- **Black Hats** (a third of the table) have normal jobs as cover, plus a hidden host (its address changes every game) with
   a message board, a list of mule accounts and tool kits. Stronger tools are easier for the bank to
   trace.
 - **Money:** every account has a balance. Customers are small, mid-sized or wealthy, and a payment the

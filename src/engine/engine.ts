@@ -6,6 +6,7 @@ import { autoProcess, spawnNpc } from './bank';
 import { advanceRequests, spawnRequest } from './requests';
 import {
   activeBlock,
+  systemAddress,
   activeReroute,
   effectiveHost,
   addAlert,
@@ -25,7 +26,7 @@ import {
   targetLabel,
 } from './core';
 import { findCredentialByCode } from './credentials';
-import { advanceCracks, credScopeText, HANDLERS } from './handlers';
+import { advanceCracks, advanceUnlocks, credScopeText, HANDLERS } from './handlers';
 import { canWriteModule, notify, WATCHABLE } from './notify';
 import { checkEnd, closeOfBusiness, endGame, TERMINATED_TEXT } from './ending';
 import { nextArrival } from './pacing';
@@ -71,6 +72,7 @@ export function advanceState(s: GameState, now: number): void {
   s.now = Math.max(s.now, s.startedAt + targetT * 1000);
   runDueRevocations(s);
   advanceCracks(s);
+  advanceUnlocks(s);
   advanceRequests(s);
   if (s.config.autoProcess) autoProcess(s);
   checkWin(s);
@@ -181,7 +183,7 @@ function execute(s: GameState, p: Player, a: ExecuteAction): ActionResult {
   const def = findFn(a.system, a.module, a.fn);
   const handler = HANDLERS[`${a.system}.${a.module}.${a.fn}`];
   if (!def || !handler) return fail('Unknown system, module or function.');
-  const address = findSystem(a.system)?.address ?? '';
+  const address = systemAddress(s, a.system);
   if (activeBlock(s, address)) return fail('No route to host (blocked by the firewall).');
   if (!a.quiet) markActive(s, p, t);
   const code = (a.code ?? '').trim();
@@ -377,7 +379,8 @@ function connect(s: GameState, p: Player, address: string): ActionResult {
 }
 
 /**
- * Log in to another player's workstation with one of THAT player's credential codes (any scope).
+ * Log in to another player's workstation with one of THAT player's workstation credentials: their own
+ * login (W<n>) or one made by Unlock workstation.
  * Success is logged under the credential owner's name, so the Master Log reads as if they logged in
  * themselves; the owner's personal log records the source IP.
  */
@@ -396,7 +399,7 @@ function accessWorkstation(s: GameState, p: Player, targetId: string, code: stri
   if (!/^\d{4}$/.test(c)) return fail('Enter a 4-digit code.');
 
   const cred = findCredentialByCode(s, c);
-  if (!cred || cred.owner !== target.id || cred.status !== 'ACTIVE') {
+  if (!cred || cred.owner !== target.id || cred.system !== 'WORKSTATION' || cred.status !== 'ACTIVE') {
     const actor = cred ? cred.owner : 'UNKNOWN';
     const message = `Failed login to ${target.name}'s workstation`;
     const entry = addLog(s, { actor, kind: 'WORKSTATION_DENIED', message, sourceIp: effectiveIp(s, p, t), actualPlayerId: p.id });
@@ -451,8 +454,8 @@ function runDueRevocations(s: GameState): void {
     let revoked = 0;
     if (victim) {
       for (const cr of Object.values(s.credentials)) {
-        // The unregistered host is not the bank's: its credentials survive.
-        if (cr.owner !== victim.id || cr.status === 'REVOKED' || cr.system === 'BLACKHAT_DB') continue;
+        // The unregistered host is not the bank's: its credentials survive. Workstation logins are not bank credentials either.
+        if (cr.owner !== victim.id || cr.status === 'REVOKED' || cr.system === 'BLACKHAT_DB' || cr.system === 'WORKSTATION') continue;
         cr.status = 'REVOKED';
         revoked++;
       }
@@ -483,6 +486,7 @@ function hiddenActivity(s: GameState, p: Player, activity: string, hostMessage: 
 
 /** How a trace describes what was done on the hidden host. */
 const HIDDEN_ACTIVITY: Record<string, string> = {
+  UNLOCK_WORKSTATION: 'unlocked a workstation',
   READ_MESSAGES: 'read the Blacknet board',
   POST_MESSAGE: 'posted on Blacknet',
   VIEW_TARGETS: 'viewed the target ledger',

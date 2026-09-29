@@ -58,7 +58,6 @@ const reason: ParamSpec = { name: 'reason', label: 'Reason', kind: 'text', place
 const requestParam: ParamSpec = { name: 'requestId', label: 'Request', kind: 'text', placeholder: 'REQ-1 or 1' };
 const inbox: ParamSpec = { name: 'show', label: 'Show', kind: 'select', options: ['PENDING', 'ALL'], optional: true };
 
-export const HIDDEN_HOST = '10.66.6.6';
 
 /** Encryption layers (Firewall add/remove/bypass + layer codes on every function) are switched off for now. */
 export const ENCRYPTION_ENABLED = false;
@@ -256,7 +255,7 @@ export const SYSTEMS: SystemDef[] = [
   {
     id: 'BLACKHAT_DB',
     label: 'Unregistered host',
-    address: HIDDEN_HOST,
+    address: '', // random each game: GameState.hiddenHost (use systemAddress)
     hidden: true,
     modules: [
       {
@@ -381,6 +380,9 @@ export const SYSTEMS: SystemDef[] = [
         label: 'Access',
         fns: [
           fn('CRACK_CODE', 'Code crack', 'WRITE', 'Slowly brute-force a random credential that can reach a module: one digit recovered roughly every 15s (about a minute for all four). Each reveal raises an alert, so defenders can revoke it, block you, or warn the owner.', [target]),
+          fn('UNLOCK_WORKSTATION', 'Unlock workstation', 'WRITE', 'Make a new login credential for another workstation. It takes 30s, and a block on your address or theirs stops it. The new code never shows in Permissions, only as a gap in the credential ids.', [
+            { name: 'target', label: 'Workstation', kind: 'text', placeholder: '10.1.0.12' },
+          ]),
           fn('LOCKOUT_BOMB', 'Lockout bomb', 'WRITE', 'Force failed logins from a workstation until it locks itself out. Pure disruption: knock a defender offline for a while.', [
             { name: 'target', label: 'Workstation', kind: 'text', placeholder: '10.1.0.12' },
           ]),
@@ -537,5 +539,6 @@ export const DEFAULT_CONFIG: GameConfig = {
   phishPerBankerMax: 5,
   blockSec: 60,
   revokeCountdownSec: 30,
+  unlockSec: 30,
   crackRevealSec: 15,
 };

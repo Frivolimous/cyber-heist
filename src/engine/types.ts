@@ -3,7 +3,8 @@
 export type PlayerId = string;
 export type Allegiance = 'WHITE' | 'BLACK';
 export type Winner = Allegiance;
-export type SystemId = 'SECURITY' | 'CLIENT_DATA' | 'TRANSACTIONS' | 'BLACKHAT_DB';
+/** WORKSTATION is not a system on the network: it scopes a workstation login credential (see Credential.fixed). */
+export type SystemId = 'SECURITY' | 'CLIENT_DATA' | 'TRANSACTIONS' | 'BLACKHAT_DB' | 'WORKSTATION';
 export type Permission = 'READ' | 'WRITE';
 export type RoleId = 'PERSONAL_BANKER' | 'ACCOUNTS_RECEIVABLES' | 'IT_SPECIALIST' | 'BANK_MANAGER';
 export type TxStatus =
@@ -52,6 +53,7 @@ export interface GameConfig {
   phishPerBankerMax: number; // ...up to this many
   blockSec: number; // how long a Firewall block lasts
   revokeCountdownSec: number; // how long anyone has to cancel a "revoke all access"
+  unlockSec: number; // Access / Unlock workstation: seconds until the new workstation login is made
   crackRevealSec: number; // Access / Code crack: seconds between digit reveals (4 digits ~= a minute)
 }
 
@@ -108,6 +110,16 @@ export interface CodeCrack {
   done: boolean; // completed, or aborted (credential revoked / source blocked)
 }
 
+/** A running Unlock workstation (Access kit): after a delay the target gets a new workstation credential. */
+export interface WorkstationUnlock {
+  id: string; // U1
+  actorId: PlayerId; // the operative running it
+  targetId: PlayerId; // whose workstation
+  fromIp: string; // the origin as recorded when it started (a proxy during a reroute)
+  doneAt: number; // game seconds
+  done: boolean; // completed, or stopped by a block on either end
+}
+
 export interface Credential {
   id: string;
   owner: PlayerId;
@@ -121,6 +133,8 @@ export interface Credential {
   createdAt: number;
   /** A security credential being revoked: it stays ACTIVE until `at`, and can be cancelled until then. */
   pendingRevoke?: { at: number; byOwner: PlayerId; actualPlayerId: PlayerId } | null;
+  /** The workstation's own login (id W1, W2...): only its owner holds it, and it can never be changed or revoked. */
+  fixed?: boolean;
 }
 
 export interface ModuleState {
@@ -362,6 +376,7 @@ export interface GameState {
   reroutes: Reroute[];
   proxies: Proxy[];
   cracks: CodeCrack[];
+  unlocks: WorkstationUnlock[];
   alertMuteUntil: number; // game seconds: while now < this, tier 1-2 alerts are suppressed (Cleanup / Alert mute)
   hostLog: HostLogEntry[];
   revocations: Revocation[];
@@ -382,7 +397,7 @@ export interface GameState {
    */
   totals: { processed: number; stolen: number };
   hiddenHost: string;
-  counters: { log: number; alert: number; cred: number; tx: number; msg: number; req: number; change: number; revoke: number; host: number; player: number; crack: number; notice: number };
+  counters: { log: number; alert: number; cred: number; tx: number; msg: number; req: number; change: number; revoke: number; host: number; player: number; crack: number; notice: number; wcred: number; xcred: number; unlock: number };
 }
 
 // ---- Actions -------------------------------------------------------------

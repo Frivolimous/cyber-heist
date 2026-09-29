@@ -1,9 +1,12 @@
 // Small helpers shared by the engine, handlers and setup code.
 
-import { findModule } from './catalog';
+import { findModule, findSystem } from './catalog';
 import { randInt } from './rng';
 import { notify } from './notify';
-import type { ActionResult, Alert, Block, Customer, GameState, LogEntry, Player, Reroute } from './types';
+import type { ActionResult, Alert, Block, Customer, GameState, LogEntry, Player, Reroute, SystemId } from './types';
+
+/** A system's network address. The unregistered host's is random each game. */
+export const systemAddress = (s: GameState, id: SystemId): string => (id === 'BLACKHAT_DB' ? s.hiddenHost : (findSystem(id)?.address ?? ''));
 
 export const keyOf = (system: string, module: string): string => `${system}.${module}`;
 
@@ -94,6 +97,8 @@ export const normLog = (v: string): string => {
   return d ? `L${Number(d)}` : v.trim().toUpperCase();
 };
 export const normCred = (v: string): string => {
+  const series = /^\s*([wx])\s*\d+\s*$/i.exec(v); // a workstation login (W) or a host credential (X)
+  if (series) return `${series[1].toUpperCase()}${Number(digits(v))}`;
   const d = digits(v);
   return d ? `C${Number(d)}` : v.trim().toUpperCase();
 };

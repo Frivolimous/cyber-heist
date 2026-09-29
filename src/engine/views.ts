@@ -2,7 +2,7 @@
 
 import { ROLES, SYSTEMS } from './catalog';
 import type { SystemDef } from './catalog';
-import { accountExists, balanceOf, fmtClock, gameTime, nameOf } from './core';
+import { accountExists, balanceOf, fmtClock, gameTime, nameOf, systemAddress } from './core';
 import { credScopeText, proxyUnavailable } from './handlers';
 import { jobDescription } from './jobs';
 import { endSummary } from './ending';
@@ -149,7 +149,7 @@ export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
     me: workstationView(s, p),
     remote,
     players: s.playerOrder.map((id) => ({ id, name: s.players[id].name, roleLabel: ROLES[s.players[id].role].label })),
-    systems: SYSTEMS.filter((sys) => p.knownSystems.includes(sys.id)),
+    systems: SYSTEMS.filter((sys) => p.knownSystems.includes(sys.id)).map((sys) => ({ ...sys, address: systemAddress(s, sys.id) })),
     openModules: Object.entries(s.modules).filter(([, m]) => m.open).map(([k]) => k),
     watching: [...p.watching],
     notifications: p.notifications.map((n) => ({ ...n })),

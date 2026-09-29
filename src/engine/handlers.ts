@@ -37,7 +37,7 @@ import { computeRisk, paymentFor, recordTx, reverseTransaction, settleTransactio
 import type { TxActor } from './bank';
 import { accountRequestText, paymentRequestText, requestReceived, requestTimes } from './requests';
 import { notify } from './notify';
-import type { AccountChange, ClientRequest, CodeCrack, Credential, Customer, Message, RequestKind, Revocation, GameState, LogEntry, Player, RoleId, SystemId, Transaction, TxEvent, TxStatus } from './types';
+import type { AccountChange, ClientRequest, CodeCrack, Credential, Customer, Message, RequestKind, Revocation, GameState, LogEntry, Player, RoleId, SystemId, Transaction, TxEvent, TxStatus, WorkstationUnlock } from './types';
 
 export interface Ctx {
   s: GameState;
@@ -82,7 +82,8 @@ function getTx(c: Ctx, q: Params): Transaction | string {
   return c.s.transactions.find((t) => t.id === id) ?? `No such payment: ${id}.`;
 }
 
-const scopeText = (cr: Credential): string => `${cr.system}.${cr.module ?? '*'}${cr.fn ? '.' + cr.fn : ''} ${cr.permission}`;
+const scopeText = (cr: Credential): string =>
+  cr.system === 'WORKSTATION' ? 'Workstation login' : `${cr.system}.${cr.module ?? '*'}${cr.fn ? '.' + cr.fn : ''} ${cr.permission}`;
 export const credScopeText = scopeText;
 
 const H: Record<string, Handler> = {};
@@ -166,7 +167,7 @@ function networkAddress(c: Ctx, q: Params): string | { error: string } {
   const a = str(q, 'address');
   if (!a) return { error: 'Enter an address.' };
   // Workstations, systems and Infiltration proxies are all on the network (a proxy can be blocked or revoked).
-  const known = Object.values(c.s.players).some((p) => p.ip === a) || SYSTEMS.some((sys) => sys.address === a) || c.s.proxies.some((x) => x.ip === a);
+  const known = Object.values(c.s.players).some((p) => p.ip === a) || SYSTEMS.some((sys) => sys.address && sys.address === a) || a === c.s.hiddenHost || c.s.proxies.some((x) => x.ip === a);
   return known ? a : { error: 'No such address on the network.' };
 }
 
@@ -282,8 +283,13 @@ H['SECURITY.EMPLOYEE_RECORDS.RESET_LOCKOUT'] = (c, q) => {
 };
 
 /** Per workstation: last activity (from the machine, not the credential), failed attempts, lockout and firewall block. */
+/** Sorts addresses numerically, octet by octet (10.1.0.9 before 10.1.0.12). */
+const ipKey = (ip: string): number => ip.split('.').reduce((n, part) => n * 256 + Number(part), 0);
+
 H['SECURITY.EMPLOYEE_RECORDS.VIEW_EMPLOYEES'] = (c) => {
-  const rows = c.s.playerOrder.flatMap((id) => {
+  // In address order, so a planted user sits wherever their address falls rather than at the end.
+  const order = [...c.s.playerOrder].sort((a, b) => ipKey(c.s.players[a].ip) - ipKey(c.s.players[b].ip));
+  const rows = order.flatMap((id) => {
     const p = c.s.players[id];
     const active = p.lastActiveAt === null ? 'never' : `${fmtClock(p.lastActiveAt)} (${ago(c, p.lastActiveAt)})`;
     const flags = [
@@ -301,20 +307,36 @@ H['SECURITY.EMPLOYEE_RECORDS.VIEW_EMPLOYEES'] = (c) => {
 
 /**
  * One true but partial clue about hidden host activity:
- * a range of four workstations, a pair (real + decoy), one number of the server's address, or what was done.
+ * a range of addresses holding four real workstations, a pair (real + decoy), one number of the server's
+ * address, or what was done.
  */
 function relayClue(s: GameState, ip: string, server: string, activity?: string): string {
   const ips = s.playerOrder.map((id) => s.players[id].ip);
   const last = (x: string): number => Number(x.split('.').pop());
   const kinds = ['RANGE', 'PAIR', 'SERVER', ...(activity ? ['ACTIVITY'] : [])];
   const kind = pick(s, kinds);
-  if (kind === 'RANGE' && ips.length > 4) {
-    const nums = ips.map(last).sort((a, b) => a - b);
-    const lo = nums[0];
-    const hi = nums[nums.length - 1];
-    const start = Math.min(Math.max(last(ip) - randInt(s, 0, 3), lo), hi - 3);
+  if (kind === 'RANGE') {
+    // Addresses are random, so the range is as wide as it takes to hold the origin and four real
+    // workstations (the origin counts as one of them unless it is a proxy).
     const prefix = ip.split('.').slice(0, 3).join('.');
-    return `The origin workstation is within ${prefix}.${start}-${start + 3}.`;
+    const real = s.playerOrder.map((id) => s.players[id]).filter((p) => !p.fake && p.ip.startsWith(prefix + '.')).map((p) => last(p.ip));
+    const points = [...new Set([...real, last(ip)])].sort((a, b) => a - b);
+    const at = points.indexOf(last(ip));
+    const windows: [number, number][] = [];
+    for (let a = 0; a <= at; a++) {
+      let count = 0;
+      for (let b = a; b < points.length; b++) {
+        if (real.includes(points[b])) count++;
+        if (count === 4) {
+          if (b >= at) windows.push([points[a], points[b]]);
+          break;
+        }
+      }
+    }
+    if (windows.length) {
+      const [lo, hi] = pick(s, windows);
+      return `The origin workstation is within ${prefix}.${lo}-${hi}.`;
+    }
   }
   if (kind === 'SERVER') {
     const parts = server.split('.');
@@ -456,6 +478,7 @@ H['CLIENT_DATA.CLIENT_REQUESTS.ARCHIVE_REQUEST'] = (c, q) => {
 
 /** "Read & write · Settlement" / "Read only · all of Client Data": how players see a credential's reach. */
 function scopeLabel(cr: Credential): string {
+  if (cr.system === 'WORKSTATION') return 'Workstation login';
   const access = cr.permission === 'WRITE' ? 'Read & write' : 'Read only';
   const where = cr.fn
     ? (findModule(cr.system, cr.module ?? '')?.fns.find((x) => x.id === cr.fn)?.label ?? cr.fn)
@@ -472,8 +495,9 @@ export const isSecurityWrite = (cr: Credential): boolean =>
 H['SECURITY.PERMISSIONS.VIEW_PERMISSIONS'] = (c, q) => {
   const all = str(q, 'show') === 'ALL';
   const rows = Object.values(c.s.credentials)
-    // The unregistered host is not part of the bank: its credentials never appear here.
-    .filter((cr) => cr.system !== 'BLACKHAT_DB')
+    // The unregistered host is not part of the bank: its credentials never appear here. Nor do workstation
+    // logins: an unlocked one shows only as a gap in the C ids (and can still be revoked by id).
+    .filter((cr) => cr.system !== 'BLACKHAT_DB' && cr.system !== 'WORKSTATION')
     .filter((cr) => all || cr.status === 'ACTIVE')
     .map((cr) => {
       const by = cr.issuedBy === null ? 'start of shift' : nameOf(c.s, cr.issuedBy);
@@ -511,6 +535,7 @@ H['SECURITY.PERMISSIONS.CREATE_CREDENTIAL'] = (c, q) => {
 H['SECURITY.PERMISSIONS.REVOKE_CREDENTIAL'] = (c, q) => {
   const cr = c.s.credentials[normCred(str(q, 'credentialId'))];
   if (!cr) return bad('No such credential.');
+  if (cr.fixed) return bad(`${cr.id} is a workstation's own login. It cannot be revoked.`);
   if (cr.status === 'REVOKED') return bad('Already revoked.');
   if (cr.pendingRevoke) return bad(`${cr.id} is already being revoked.`);
   const owner = c.s.players[cr.owner];
@@ -1032,7 +1057,7 @@ function plantUser(s: GameState, name: string, role: RoleId, ip: string): Player
 function addressInUse(s: GameState, ip: string): boolean {
   return (
     Object.values(s.players).some((p) => p.ip === ip) ||
-    SYSTEMS.some((sys) => sys.address === ip) ||
+    SYSTEMS.some((sys) => sys.address && sys.address === ip) ||
     ip === s.hiddenHost ||
     s.proxies.some((x) => x.ip === ip)
   );
@@ -1131,6 +1156,45 @@ H['BLACKHAT_DB.ACCESS.CRACK_CODE'] = (c, q) => {
   const crack: CodeCrack = { id: nextId(c.s, 'crack', 'K'), actorId: c.actor.id, credentialId: cred.id, revealed: 0, nextRevealAt: c.t + c.s.config.crackRevealSec, done: false };
   c.s.cracks.push(crack);
   return good(`Code crack ${crack.id} started on ${cred.id} (${scopeLabel(cred)}). A digit about every ${c.s.config.crackRevealSec}s — watch your activity log.`);
+};
+
+/**
+ * Advances every running Unlock workstation (called from the engine's time loop). A block on either end, the
+ * operative's workstation (real or as recorded) or the target's, stops it; otherwise, when time is up, the
+ * target gets a new workstation credential that only the operative knows about.
+ */
+export function advanceUnlocks(s: GameState): void {
+  const t = gameTime(s);
+  for (const u of s.unlocks) {
+    if (u.done) continue;
+    const actor = s.players[u.actorId];
+    const target = s.players[u.targetId];
+    const blocked = [actor.ip, u.fromIp, target.ip].find((ip) => activeBlock(s, ip));
+    if (blocked) {
+      u.done = true;
+      note(actor, t, `Unlock ${u.id} on ${target.name}'s workstation stopped: ${blocked} was blocked.`);
+      continue;
+    }
+    if (u.doneAt > t) continue;
+    u.done = true;
+    const cred = createCredential(s, { owner: target.id, system: 'WORKSTATION', module: null, permission: 'WRITE', issuedBy: null });
+    actor.heldCredentialIds.push(cred.id);
+    note(actor, u.doneAt, `Unlock ${u.id} complete: ${target.name}'s workstation (${target.ip}) opens with ${cred.id}, code ${cred.code}.`);
+  }
+}
+
+H['BLACKHAT_DB.ACCESS.UNLOCK_WORKSTATION'] = (c, q) => {
+  const ip = str(q, 'target');
+  const target = Object.values(c.s.players).find((p) => p.ip === ip);
+  if (!target) return bad('No workstation with that address.');
+  if (target.id === c.actor.id) return bad('That is your own workstation.');
+  if (activeBlock(c.s, ip)) return bad(`No route to ${ip}.`);
+  if (c.s.unlocks.some((u) => !u.done && u.actorId === c.actor.id && u.targetId === target.id)) return bad(`You are already unlocking ${ip}.`);
+  const sec = c.s.config.unlockSec;
+  const u: WorkstationUnlock = { id: nextId(c.s, 'unlock', 'U'), actorId: c.actor.id, targetId: target.id, fromIp: effectiveIp(c.s, c.actor, c.t), doneAt: c.t + sec, done: false };
+  c.s.unlocks.push(u);
+  exposeEntry(c.s, c.log(), 3, 'WORKSTATION_UNLOCK', `Workstation unlock in progress on ${ip} (${target.name}): a new login completes in ${sec}s`);
+  return good(`Unlock ${u.id} started on ${target.name}'s workstation. The new code arrives in ${sec}s, unless either end is blocked first — watch your activity log.`);
 };
 
 H['BLACKHAT_DB.ACCESS.LOCKOUT_BOMB'] = (c, q) => {

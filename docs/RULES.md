@@ -18,7 +18,7 @@ Decisions marked **assumed** were not in the design brief. Change them in `catal
 - **Timer:** 20 minutes. If it runs out with the bank short of its target (and the Black Hats short of
   theirs, or they would already have won), **both sides lose**.
 - **White Hats** also win **at once** when **every Black Hat is terminated** (see Termination), or when a
-  Firewall "revoke all access" completes on the **unregistered host** (`10.66.6.6`): it is shut down and
+  Firewall "revoke all access" completes on the **unregistered host**: it is shut down and
   the heist is over.
 - **Everybody loses** if a Firewall "revoke all access" completes on one of the bank's own systems
   (Security, Client Data or Transaction Processing): the bank shuts down and the game ends with no
@@ -262,11 +262,16 @@ of "potential targets for fraudulent transactions").
   out-of-scope attempts, failed workstation logins, traffic to an unregistered host, without its address,
   security alerts);
   **Trace a log entry**.
-- **Employee Records**: name, role, workstation IP, and per workstation: **last activity** (from the
+- **Employee Records**: name, role, workstation IP (each workstation gets a random, distinct
+  `10.1.0.x` address every game), listed in address order (so a planted user sits wherever their
+  address falls), and per workstation: **last activity** (from the
   machine, not the credential), **failed attempts** (all game), **LOCKED OUT** and **BLOCKED** status.
   **Reset a lockout** unlocks a workstation at once (needs Employee Records write: IT Specialists).
 - **Permissions**: view active or all credentials, with readable scopes such as "Read & write ·
-  Settlement"; issue a credential; revoke one by id.
+  Settlement"; issue a credential; revoke one by id. Bank credentials are numbered C1, C2... with no
+  gaps at the start of the game: the unregistered host's credentials are a separate series (X1, X2...)
+  and workstation logins another (W1, W2...), neither listed here. A gap in the C ids that appears
+  later is something hidden, e.g. a credential made by Unlock workstation.
   - **Security write** credentials (write access to the Firewall, to Permissions, or to all of Security)
     are not revoked at once: a 30s countdown (`revokeCountdownSec`) starts, the owner is told, and the
     credential keeps working until it ends. Anyone with Permissions write can **Cancel a revocation** by
@@ -394,18 +399,26 @@ Authorization.
 ## Workstations
 
 - Every player's workstation IP is an address. Typing it into a window's address bar shows a locked
-  login page. Any **active** credential owned by that player (any scope) logs you in; anything else is
-  "Access denied.", logged, alerted and counts toward the lockout, like any other bad code.
+  login page. Only a **workstation credential** of that player logs you in; anything else (including
+  their bank codes) is "Access denied.", logged, alerted and counts toward the lockout, like any other bad
+  code.
+- Every player starts with their workstation's own login (id `W1`, `W2`...). It shows only in their own
+  credential list, never in Permissions, and it can never be changed or revoked (Revoke credential
+  refuses it; "revoke all access" and termination leave it alone). Share it, or let it be read off your
+  workstation, and that access is for good.
+- **Access / Unlock workstation** makes another workstation credential (a normal `C` id) that is not
+  listed in Permissions either: it shows only as a gap in the ids, and Revoke credential by id removes it.
 - Logged in, you see their whole workstation read-only: profile, objective, job description (and a Black
   Hat's operative handbook), every
   credential they hold with codes, their activity log and messages. The session lasts until the
-  credential you used is revoked.
+  credential you used is revoked (only possible for an unlocked one).
 - Trace: the Master Log records "<owner> logged in to their workstation", named after the credential's
   owner, which is always the workstation's owner. Their personal activity log records the visitor's IP.
 
 ## Hidden host (Black Hat Database)
 
-- Address `10.66.6.6`. Black Hats start knowing it (assumed: Black Hats do **not** start knowing who
+- Its address is random each game (`10.x.x.x`, never in the bank's `10.0`/`10.1` ranges); it is in every
+  Black Hat's objective. Black Hats start knowing it (assumed: Black Hats do **not** start knowing who
   the other operatives are; they find each other on Blacknet).
 - Host modules: **Blacknet**, **Target Ledger**, **Host Log** and **Credential Cache** are shared: every
   operative starts with a credential for each. The **tool kits** (Infiltration, Social, Cleanup, Access)
@@ -450,6 +463,11 @@ Authorization.
     about every 15s (a minute for all four), each leaving an alert naming the credential and its
     progress. The operative learns the credential when it completes. Revoking the credential or a timed
     block on the operative's workstation stops it.
+  - **Access / Unlock workstation** (3): type a workstation IP. After 30s (`unlockSec`) that player gets a
+    new workstation credential, and only the operative learns its code (in their activity log). The alert
+    names the target's IP. A block on either end, the target or the operative (its real IP or the one
+    recorded when it started, e.g. a proxy), stops it. The new credential is hidden from Permissions but
+    leaves a gap in the C ids, and can be revoked by id.
   - **Access / Lockout bomb** (2): failed logins spoofed from the target's IP trip their lockout. Employee
     Records can reset it.
 - Kit tools have no cooldowns or charges; each is balanced by its **exposure tier**, shown on its button:
@@ -474,9 +492,12 @@ Authorization.
 - **Tracing** an "Unknown server activity" entry ("routed through a relay.") returns one true but
   partial clue, chosen at random (entries from louder kit tools give more: an exact IP or the server's
   address at tier 3, the IP plus a host access code at tier 4):
-  - a window of four workstations: "The origin workstation is within 10.1.0.13-16."
+  - a range of addresses holding four real workstations (planted users don't count; the origin is one of
+    them unless it is a proxy): "The origin workstation is within 10.1.0.37-112." Workstation numbers are
+    random, so the range is as wide as it needs to be. If no such range exists (a proxy off the
+    workstation subnet), a pair is given instead.
   - a pair, the real one and a random decoy in random order: "one of two workstations: A or B."
-  - one number of the server's address: "The server's IP address is x.66.x.x."
+  - one number of the server's address: "The server's IP address is x.143.x.x."
   - what was done: "Activity performed: posted on Blacknet." (also: read the board, viewed the target
     ledger, changed a target's status, viewed the credential cache, connected, failed login attempt)
 - White Hats find the address from trace clues (one number of it at a time, or all of it from a loud

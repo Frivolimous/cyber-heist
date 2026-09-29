@@ -52,7 +52,7 @@ diverts payments already in flight (the core heist). Settling into a Target Ledg
 stolen; otherwise it counts toward the bank target only if `countsForBank` (bank.ts) agrees: automatic
 payments always, manual ones only when they fulfil a linked payment request (same payee and amount).
 
-**Hidden host (`BLACKHAT_DB`, 10.66.6.6).** Its use never names anyone: it writes an "Unknown server
+**Hidden host (`BLACKHAT_DB`, a random address per game: `s.hiddenHost`, read it via `systemAddress`).** Its use never names anyone: it writes an "Unknown server
 activity" `HIDDEN_ACCESS` log entry, and Trace returns only partial clues. Black Hat kit tools are
 balanced by exposure, not cooldowns: `raiseExposure(c, tier)` tags the entry, and tier 2+ raises an
 alert that points at the entry without containing the leak; the trace reveals more the higher the tier.

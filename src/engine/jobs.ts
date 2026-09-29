@@ -30,7 +30,7 @@ function commonRules(c: GameConfig): string[] {
   return [
     'Every log names the owner of the code that was used, not the person who typed it. Anyone holding your code can act as you.',
     `${c.lockoutAfterFails} wrong codes in a row lock your workstation for ${secs(c.lockoutSec)}.`,
-    'Anyone with one of your active codes can log in to your workstation and read everything on it, including your codes.',
+    'Your workstation has its own login code (W): it never changes and cannot be revoked. Anyone who has it can log in to your workstation and read everything on it, including your codes.',
     'Switch on the bell of a page you can write to and it tells you when someone else does something there.',
     "Lose every credential, or have your IP revoked by the Firewall, and you are terminated: the bank's systems refuse you for the rest of the game. The bank wins at once if every Black Hat is terminated.",
   ];

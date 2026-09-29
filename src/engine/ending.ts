@@ -7,8 +7,9 @@ import type { Allegiance, EndKind, GameState, Player, TerminationReason, Winner 
 /** What a terminated player sees on any bank system. */
 export const TERMINATED_TEXT = 'ERROR: Your credentials are invalid.';
 
-/** A player's bank credentials: everything except the unregistered host's. */
-const bankCredentials = (s: GameState, p: Player) => Object.values(s.credentials).filter((cr) => cr.owner === p.id && cr.system !== 'BLACKHAT_DB');
+/** A player's bank credentials: everything except the unregistered host's and workstation logins. */
+const bankCredentials = (s: GameState, p: Player) =>
+  Object.values(s.credentials).filter((cr) => cr.owner === p.id && cr.system !== 'BLACKHAT_DB' && cr.system !== 'WORKSTATION');
 
 function terminationReason(s: GameState, p: Player): TerminationReason | null {
   if (activeBlock(s, p.ip)?.until === null) return 'IP_REVOKED';

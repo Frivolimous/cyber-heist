@@ -61,6 +61,7 @@ interface Win {
   out: Line[]; // terminal: kept while the window stays on one system, last 100 lines
   termSystem: SystemId | null; // the system the terminal is logged in to
   notice: Line[]; // one-off notices on workstation pages
+  scrollEnd?: boolean; // a command just ran: the next render scrolls the page and its terminal to the bottom
   liveEnd?: number; // live monitor: w.out length right after its last block (so the next refresh can replace it)
 }
 
@@ -111,6 +112,7 @@ const ICONS: Record<SystemId, string> = {
   SECURITY: '<path d="M24 5 8 11v11c0 10 7 17 16 21 9-4 16-11 16-21V11z"/><path d="m17 24 5 5 9-10"/>',
   CLIENT_DATA: '<rect x="6" y="10" width="36" height="28" rx="3"/><circle cx="18" cy="22" r="4"/><path d="M11 32c1-4 4-6 7-6s6 2 7 6M29 19h8M29 25h8M29 31h5"/>',
   TRANSACTIONS: '<path d="M8 17h28l-7-7M40 31H12l7 7"/>',
+  WORKSTATION: '<rect x="6" y="9" width="36" height="24" rx="2"/><path d="M18 39h12M24 33v6"/>',
   BLACKHAT_DB: '<path d="M8 30c4-2 10-3 16-3s12 1 16 3M13 28l3-16c1-3 4-3 6-2l2 1 2-1c2-1 5-1 6 2l3 16"/><circle cx="18" cy="36" r="3"/><circle cx="30" cy="36" r="3"/><path d="M21 36h6"/>',
 };
 const icon = (id: SystemId, size = 48): string =>
@@ -300,9 +302,12 @@ function deskSize(): { w: number; h: number } {
   return { w: d.clientWidth, h: d.clientHeight - TASKBAR_H };
 }
 
+/** A system's address as this player's view gives it (the unregistered host's is random each game). */
+const sysAddress = (id: SystemId): string => view().systems.find((s) => s.id === id)?.address ?? findSystem(id)?.address ?? '';
+
 function routeAddress(r: Route): string {
   if (r.kind === 'noroute' || r.kind === 'workstation' || r.kind === 'proxy') return r.address;
-  let a = findSystem(r.system)?.address ?? '';
+  let a = sysAddress(r.system);
   if (r.kind !== 'system') a += '/' + slug(r.module);
   return a;
 }
@@ -415,7 +420,7 @@ function showRoute(w: Win): void {
   if (r && 'system' in r && r.system !== w.termSystem) {
     const sys = findSystem(r.system)!;
     w.termSystem = r.system;
-    w.out = [{ cls: 'hs', text: `[${fmtClock(view().t)}] Logged in to ${sys.label} (${sys.address})` }];
+    w.out = [{ cls: 'hs', text: `[${fmtClock(view().t)}] Logged in to ${sys.label} (${sysAddress(sys.id)})` }];
   }
   delete w.form.credSel;
   renderWin(w);
@@ -449,8 +454,8 @@ function fitWin(w: Win): void {
 function goAddress(w: Win): void {
   const raw = w.addr.trim();
   const [host = '', modSlug, extra] = raw.replace(/^[a-z]+:\/\//i, '').split('/').filter(Boolean);
-  let sys = SYSTEMS.find((s) => s.address === host);
-  if (!sys || !view().me.knownSystems.includes(sys.id)) {
+  let sys = view().systems.find((s) => s.address === host);
+  if (!sys) {
     // Unknown address: ask the network. This is how the hidden host and other workstations are found.
     const r = applyAction(game, { type: 'CONNECT', playerId: selected, address: host }, vNow);
     game = r.state;
@@ -458,7 +463,7 @@ function goAddress(w: Win): void {
     if (!r.result.ok) return navigate(w, { kind: 'noroute', address: raw, message: r.result.message });
     if (r.result.workstation) return navigate(w, { kind: 'workstation', playerId: r.result.workstation, address: host });
     if (r.result.proxy) return navigate(w, { kind: 'proxy', address: host, relaying: r.result.proxy.relaying });
-    sys = SYSTEMS.find((s) => s.address === host);
+    sys = view().systems.find((s) => s.address === host);
     if (!sys) return;
   }
   const mod = modSlug ? sys.modules.find((m) => slug(m.id) === modSlug) : undefined;
@@ -491,9 +496,14 @@ function renderWin(w: Win): void {
   const onHost = !!r && 'system' in r && r.system === 'BLACKHAT_DB';
   el.classList.toggle('host', onHost);
   el.classList.toggle('kit', onHost && r.kind === 'module' && HOST_KITS.includes(r.module));
+  // Redrawing replaces the page, so keep where it was scrolled to (or jump to the bottom after a command).
+  const prevScroll = el.querySelector<HTMLElement>('.wbody')?.scrollTop ?? 0;
   el.innerHTML = titleBar(w) + (w.kind === 'personal' ? personalHtml(w) : browserHtml(w)) + `<div class="grip" data-resize="${w.id}" aria-hidden="true"></div>`;
   const out = el.querySelector('.out');
   if (out) out.scrollTop = out.scrollHeight;
+  const body = el.querySelector<HTMLElement>('.wbody');
+  if (body) body.scrollTop = w.scrollEnd ? body.scrollHeight : prevScroll;
+  w.scrollEnd = false;
 }
 
 function titleBar(w: Win): string {
@@ -565,6 +575,7 @@ type Cred = PlayerView['me']['credentials'][number];
 /** "Yours · Read & write · all of Transaction Processing" */
 function credLabel(c: Cred): string {
   const who = c.own ? 'Yours' : `${c.ownerName}'s`;
+  if (c.system === 'WORKSTATION') return `${who} · Workstation login`;
   const access = c.permission === 'WRITE' ? 'Read & write' : 'Read only';
   const where = c.fn
     ? findFn(c.system, c.module ?? '', c.fn)?.label ?? c.fn
@@ -620,6 +631,7 @@ function execute(w: Win, system: SystemId, module: string, fn: string, params: R
   w.out.push({ cls: 'cmd', text: `[${findModule(system, module)?.label ?? module}] > ${def?.label ?? fn}` }, { cls: res.result.ok ? 'ok' : 'bad', text: res.result.message });
   for (const line of res.result.lines ?? []) w.out.push({ cls: 'row', text: line });
   if (w.out.length > TERMINAL_LINES) w.out.splice(0, w.out.length - TERMINAL_LINES);
+  w.scrollEnd = true;
   renderWin(w);
   refresh();
   return res.result.ok;
@@ -908,12 +920,14 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         .flatMap((sys) => sys.modules.map((m) => ({ value: `${sys.id}.${m.id}`, label: `${sys.label} / ${m.label}` })));
       return (
         card('Code crack', 'WRITE', select(w, 'crackTarget', 'Module', mods, true) + btns(btn(w, 'crack', 'Start crack · noisy per digit', '', true)), `${w.id}:crack`) +
+        card('Unlock workstation', 'WRITE', input(w, 'unlockIp', 'Workstation', '10.1.0.12', true, true) + btns(btn(w, 'unlock', 'Unlock (30s) · loud', 'loud', true)), `${w.id}:unlock`) +
         card('Lockout bomb', 'WRITE', input(w, 'bombIp', 'Workstation', '10.1.0.12', true, true) + btns(btn(w, 'bomb', 'Lock them out · noisy', '', true)), `${w.id}:bomb`)
       );
     },
     run: (w, cmd) => {
       if (cmd === 'crack') execute(w, 'BLACKHAT_DB', 'ACCESS', 'CRACK_CODE', { target: w.form['p:crackTarget'] ?? '' });
       else if (cmd === 'bomb') runFresh(w, 'BLACKHAT_DB', 'ACCESS', 'LOCKOUT_BOMB', { target: w.form['p:bombIp'] ?? '' }, ['bombIp']);
+      else if (cmd === 'unlock') runFresh(w, 'BLACKHAT_DB', 'ACCESS', 'UNLOCK_WORKSTATION', { target: w.form['p:unlockIp'] ?? '' }, ['unlockIp']);
     },
   },
   'SECURITY.FIREWALL': {
@@ -1291,8 +1305,8 @@ function remoteHtml(w: Win, r: Extract<Route, { kind: 'workstation' }>): string 
   return `<div class="wbody"><div class="lock">
       <svg viewBox="0 0 48 48" width="44" height="44" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><rect x="10" y="21" width="28" height="20" rx="3"/><path d="M16 21v-6a8 8 0 0 1 16 0v6"/></svg>
       <h2>${esc(name)}'s workstation</h2>
-      <p class="hint">${esc(r.address)}. Log in with one of ${esc(name)}'s credential codes.</p>
-      ${credentialFields(w, v, (c) => c.ownerName === name)}
+      <p class="hint">${esc(r.address)}. Log in with ${esc(name)}'s workstation code.</p>
+      ${credentialFields(w, v, (c) => c.system === 'WORKSTATION' && c.ownerName === name)}
       <button class="run" data-act="wunlock:${w.id}">Log in</button>
       ${w.notice.map((l) => `<div class="notice ${l.cls}">${esc(l.text)}</div>`).join('')}
     </div></div>`;

@@ -48,8 +48,11 @@ Built, but the numbers or the balance are a first guess.
   Hat, or revoking the unregistered host, wins at once for the White Hats; a wrong IP revocation
   permanently removes a White Hat. A losing White Hat side may prefer to shut the bank down. Watch whether
   any of this is too swingy.
-- **Limits.** The 30-player cap keeps workstation IPs (10.1.0.11 upward) inside one subnet; past 30 also
-  needs more than 42 customer names.
+- **Limits.** Workstation IPs are random in 10.1.0.2-254, so the subnet is not the limit any more; past
+  30 players the game needs more than 42 customer names.
+- **Workstation logins.** A W login can never be revoked, so once it is shared or read off a workstation
+  that access is permanent. Watch whether that feels unfair; a "change your login" action would fix it.
+  Unlock workstation (tier 3, 30s, stopped by a block on either end) is a first guess.
 
 ## Deferred (from the original design)
 
