@@ -5,9 +5,9 @@ Move an item out of here when it ships. Firebase, the lobby and real multiplayer
 
 ## Loose ends in shipped features
 
-- **Online play follow-ups.** Not built yet: players see no "paused" notice when the host pauses; the
-  host cannot see who is connected (Firebase presence); old rooms are never deleted from the database;
-  a player cannot leave a running game; the host cannot also play. Try it across real devices first.
+- **Online play follow-ups.** Not built yet: a player cannot leave a running game; the host cannot also
+  play; a player who closes the tab while waiting in the lobby stays listed. Rooms made before the
+  automatic cleanup (a room index, 2026-09-29) have to be deleted by hand in the Firebase console.
 
 - **Removing planted users.** Infiltration / Create user plants a fake employee, but there is no way to
   remove one: White Hats can only revoke its credentials (which terminates it once it has any).

@@ -32,8 +32,9 @@ does not play, and must keep their tab open until the end (a reload picks up whe
 
 - **Host a game**: the start page's "Open a room" gives a four-letter code. Players open the start page,
   type the code and their name, and wait in the lobby. The host starts once 6 or more are in; roles and
-  sides are dealt at random. The host screen shows the clock, the bank's progress, a Pause button, and the
-  end screen. A player who reloads comes back to their seat.
+  sides are dealt at random. The host screen shows the clock, the bank's progress, who is connected, a
+  Pause button (players see a notice and cannot act until it resumes), and the end screen. A player who
+  reloads comes back to their seat. Rooms older than 12 hours are deleted when anyone opens a new one.
 - **Online sandbox**: the start page's "Online sandbox", or "Go online" in the offline sandbox's yellow
   bar. It is the sandbox (every seat, speed, ground truth) plus a room: "Open a tester screen" opens a
   screen that plays one seat through the network, with its own seat picker.

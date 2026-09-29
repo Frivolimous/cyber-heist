@@ -1,13 +1,15 @@
 // The online game's data layout and the pure helpers both sides use.
 //
+// rooms/{code}        createdAt              every room, so old ones can be found and deleted
 // games/{code}/
-//   meta              { hostUid, dev, status: LOBBY | RUNNING | ENDED, createdAt }
+//   meta              { hostUid, dev, status: LOBBY | RUNNING | ENDED, createdAt, paused }
 //   lobby/{uid}       { name, t }            players waiting to start (written by each player)
 //   seats/{uid}       playerId               who plays which seat (written by the host)
 //   claims/{uid}      playerId               dev rooms only: a tester asks to sit at a seat
 //   actions/{key}     { uid, action }        a player's action, waiting for the host (JSON text)
 //   results/{uid}/{k} ActionResult           the host's answer to that action (JSON text)
 //   views/{pid}/{part} PlayerView, in parts  all that player may see (JSON text per part)
+//   presence/{uid}    true                   while that player's screen is connected
 //   hostState         the full game, so a reloaded host can carry on (JSON text; host only)
 //
 // Values are stored as JSON text wherever the shape is the engine's: the database drops empty arrays and
@@ -23,7 +25,12 @@ export interface RoomMeta {
   dev: boolean;
   status: RoomStatus;
   createdAt: number;
+  /** The host paused the clock: players see a notice, and their actions wait. */
+  paused?: boolean;
 }
+
+/** Rooms older than this are deleted the next time anyone opens a room. A game lasts 20 minutes. */
+export const ROOM_TTL_MS = 12 * 60 * 60 * 1000;
 
 export interface LobbyEntry {
   name: string;

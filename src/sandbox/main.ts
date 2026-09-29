@@ -195,6 +195,7 @@ function serve(db: import('../net/db').Db, code: string): void {
     renderDev();
     renderRail();
   });
+  void hostSession.setPaused(speed === 0);
 }
 
 /** The link that opens a tester screen on this online sandbox. */
@@ -293,7 +294,9 @@ function renderStatus(): void {
   const ended = v.status === 'ENDED';
   const banner = ended && v.end
     ? `<div class="banner ${v.end.winner === 'WHITE' ? 'white' : v.end.winner === 'BLACK' ? 'black' : 'none'}">${esc(v.end.headline)}. ${esc(v.end.text)}${endHidden ? ' <button data-act="endshow">Show results</button>' : ''}</div>`
-    : '';
+    : client?.paused && !ended
+      ? '<div class="banner paused">Paused by the host. The clock is stopped and nothing can be done until the game resumes.</div>'
+      : '';
   $('status').innerHTML = `
     <div class="who"><b>${esc(v.me.name)}</b><span>${esc(v.me.roleLabel)}</span>
       <span class="chip ${v.me.allegiance}">${v.me.allegiance === 'BLACK' ? 'Black Hat' : 'White Hat'}</span>
@@ -1537,6 +1540,7 @@ app.addEventListener('click', (e) => {
       break;
     case 'speed':
       speed = Number(args[0]);
+      if (hostSession && hostSession.paused !== (speed === 0)) void hostSession.setPaused(speed === 0);
       renderDev();
       break;
     case 'skip':
@@ -1798,7 +1802,7 @@ function onRemoteView(): void {
     return;
   }
   const v = client.view;
-  const shape = JSON.stringify({ ...v, t: 0, clock: '', me: { ...v.me, lockedForSec: 0 } });
+  const shape = JSON.stringify({ ...v, t: 0, clock: '', me: { ...v.me, lockedForSec: 0 }, paused: client.paused });
   if (shape === lastShape) {
     updateClock();
     return;

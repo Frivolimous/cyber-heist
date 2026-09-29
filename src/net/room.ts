@@ -3,19 +3,33 @@
 import { createGame, MAX_PLAYERS, MIN_PLAYERS } from '../engine';
 import type { GameState } from '../engine';
 import type { Db } from './db';
-import { cleanName, newRoomCode, roomPath } from './protocol';
+import { cleanName, newRoomCode, ROOM_TTL_MS, roomPath } from './protocol';
 import type { LobbyEntry, RoomMeta } from './protocol';
 
-/** Opens a new room with a code nobody is using. The creator is its host. */
+/** Opens a new room with a code nobody is using. The creator is its host. Old rooms are cleared out first. */
 export async function createRoom(db: Db, dev: boolean): Promise<string> {
+  await sweepRooms(db).catch((e) => console.warn('Could not clear out old rooms', e));
   for (let i = 0; i < 20; i++) {
     const code = newRoomCode();
     if (await db.get(roomPath(code, 'meta'))) continue;
-    const meta: RoomMeta = { hostUid: db.uid, dev, status: dev ? 'RUNNING' : 'LOBBY', createdAt: Date.now() };
+    const now = Date.now();
+    const meta: RoomMeta = { hostUid: db.uid, dev, status: dev ? 'RUNNING' : 'LOBBY', createdAt: now };
     await db.set(roomPath(code, 'meta'), meta);
+    await db.set(`rooms/${code}`, now);
     return code;
   }
   throw new Error('Could not find a free room code.');
+}
+
+/** Deletes every room older than ROOM_TTL_MS. Returns the codes it deleted. */
+export async function sweepRooms(db: Db, now = Date.now()): Promise<string[]> {
+  const rooms = ((await db.get('rooms')) as Record<string, number> | null) ?? {};
+  const old = Object.entries(rooms).filter(([, t]) => typeof t === 'number' && t < now - ROOM_TTL_MS).map(([code]) => code);
+  for (const code of old) {
+    await db.remove(roomPath(code));
+    await db.remove(`rooms/${code}`);
+  }
+  return old;
 }
 
 export async function roomMeta(db: Db, code: string): Promise<RoomMeta | null> {

@@ -8,7 +8,7 @@ import { LocalDb, memoryNetwork } from './db';
 import { ClientSession } from './client';
 import { HostSession } from './host';
 import { joinView, parseAction, roomPath, splitView } from './protocol';
-import { createRoom, joinLobby, startRoom } from './room';
+import { createRoom, joinLobby, startRoom, sweepRooms } from './room';
 
 const NAMES = ['Ana', 'Ben', 'Cal', 'Dee', 'Eve', 'Fay'];
 
@@ -140,3 +140,41 @@ async function startedRoomState(): Promise<{ state: GameState }> {
   const r = await startedRoom();
   return { state: r.state() };
 }
+
+test('pause: players are told, and their actions wait until the host resumes', async () => {
+  const { dbs, code, host, applied } = await startedRoom();
+  const client = new ClientSession(dbs[0], code);
+  client.start();
+  await until(() => !!client.view, 'the view');
+  await host.setPaused(true);
+  await until(() => client.paused, 'the paused flag');
+  const n = applied.length;
+  assert.equal((await client.send({ type: 'SEND_MESSAGE', playerId: 'p1', toPlayerId: 'p2', text: 'hi' })).message, 'The game is paused.');
+  assert.equal(applied.length, n, 'nothing reached the game');
+  await host.setPaused(false);
+  await until(() => !client.paused, 'resumed');
+  assert.ok((await client.send({ type: 'SEND_MESSAGE', playerId: 'p1', toPlayerId: 'p2', text: 'hi' })).ok);
+});
+
+test('presence: the host sees which seats have a connected screen', async () => {
+  const { dbs, code, host } = await startedRoom();
+  const a = new ClientSession(dbs[0], code);
+  a.start();
+  await until(() => host.isOnline('p1'), 'p1 online');
+  assert.equal(host.isOnline('p2'), false, 'nobody has opened p2 yet');
+  assert.deepEqual(host.remoteSeats(), { p1: 1 });
+  a.stop();
+  await until(() => !host.isOnline('p1'), 'p1 gone');
+});
+
+test('cleanup: opening a room deletes rooms older than 12 hours, and only those', async () => {
+  const net = memoryNetwork();
+  const db = new LocalDb('host', net.store, net.hub);
+  const oldCode = await createRoom(db, false);
+  const newCode = await createRoom(db, false);
+  await db.set(`rooms/${oldCode}`, Date.now() - 13 * 60 * 60 * 1000);
+  assert.deepEqual(await sweepRooms(db), [oldCode]);
+  assert.equal(await db.get(roomPath(oldCode, 'meta')), null);
+  assert.equal(await db.get(`rooms/${oldCode}`), null);
+  assert.ok(await db.get(roomPath(newCode, 'meta')), 'a recent room stays');
+});

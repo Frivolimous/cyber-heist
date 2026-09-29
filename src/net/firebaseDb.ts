@@ -3,7 +3,7 @@
 
 import { initializeApp } from 'firebase/app';
 import { browserSessionPersistence, getAuth, setPersistence, signInAnonymously } from 'firebase/auth';
-import { getDatabase, get, onChildAdded, onValue, push, ref, remove, set, update } from 'firebase/database';
+import { getDatabase, get, onChildAdded, onDisconnect, onValue, push, ref, remove, set, update } from 'firebase/database';
 import type { Db, Unsubscribe } from './db';
 import type { FirebaseConfig } from './config';
 
@@ -25,5 +25,17 @@ export async function connectFirebase(config: FirebaseConfig): Promise<Db> {
     remove: (path) => remove(at(path)),
     onValue: (path, cb): Unsubscribe => onValue(at(path), (snap) => cb(snap.val())),
     onChildAdded: (path, cb): Unsubscribe => onChildAdded(at(path), (snap) => cb(snap.key!, snap.val())),
+    presence: (path): Unsubscribe => {
+      // On every (re)connection: have the server remove the mark if we drop, then set it.
+      const off = onValue(at('.info/connected'), (snap) => {
+        if (snap.val() !== true) return;
+        void onDisconnect(at(path)).remove().then(() => set(at(path), true));
+      });
+      return () => {
+        off();
+        void onDisconnect(at(path)).cancel();
+        void remove(at(path));
+      };
+    },
   };
 }

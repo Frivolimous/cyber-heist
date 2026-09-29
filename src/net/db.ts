@@ -20,6 +20,8 @@ export interface Db {
   onValue(path: string, cb: (value: unknown) => void): Unsubscribe;
   /** Called once per child, oldest key first: existing children, then each new one as it arrives. */
   onChildAdded(path: string, cb: (key: string, value: unknown) => void): Unsubscribe;
+  /** Keeps `true` at `path` while this tab is connected; the database removes it when the tab goes. */
+  presence(path: string): Unsubscribe;
 }
 
 // ---- Local implementation -------------------------------------------------------------------
@@ -100,6 +102,18 @@ export class LocalDb implements Db {
       cb(v);
     };
     return this.listen(p, fire);
+  }
+
+  presence(path: string): Unsubscribe {
+    const p = clean(path);
+    void this.set(p, true);
+    // Locally there is no server to notice a closed tab: the tab removes its own mark as it goes.
+    const gone = (): void => void this.set(p, null);
+    if (typeof window !== 'undefined') window.addEventListener('pagehide', gone);
+    return () => {
+      if (typeof window !== 'undefined') window.removeEventListener('pagehide', gone);
+      gone();
+    };
   }
 
   onChildAdded(path: string, cb: (key: string, value: unknown) => void): Unsubscribe {

@@ -25,6 +25,10 @@ export interface HostSnapshot {
 export class HostSession {
   /** uid -> seat. */
   seats: Record<string, PlayerId> = {};
+  /** uids whose screens are connected right now. */
+  online = new Set<string>();
+  /** While paused, players' actions are refused (the host's own, in the sandbox, still go through). */
+  paused = false;
   private published: Record<PlayerId, Record<string, string>> = {};
   private unsubs: Unsubscribe[] = [];
   private status: RoomMeta['status'] | null = null;
@@ -53,6 +57,23 @@ export class HostSession {
       }),
     );
     if (this.dev) this.unsubs.push(this.db.onValue(roomPath(this.code, 'claims'), (v) => this.grantClaims(v as Record<string, string> | null)));
+    this.unsubs.push(
+      this.db.onValue(roomPath(this.code, 'presence'), (v) => {
+        this.online = new Set(Object.keys((v as Record<string, true> | null) ?? {}));
+        this.onSeatsChanged?.();
+      }),
+    );
+  }
+
+  /** Pauses or resumes: players see a notice, and their actions are refused while paused. */
+  setPaused(paused: boolean): Promise<void> {
+    this.paused = paused;
+    return this.db.set(roomPath(this.code, 'meta/paused'), paused);
+  }
+
+  /** Is someone seated at this seat connected right now? */
+  isOnline(pid: PlayerId): boolean {
+    return Object.entries(this.seats).some(([uid, seat]) => seat === pid && this.online.has(uid));
   }
 
   stop(): void {
@@ -70,10 +91,10 @@ export class HostSession {
     this.publish();
   }
 
-  /** Seats taken by other devices: seat -> how many are watching it. */
+  /** Seats played from other screens that are connected now: seat -> how many. */
   remoteSeats(): Record<PlayerId, number> {
     const out: Record<PlayerId, number> = {};
-    for (const pid of Object.values(this.seats)) out[pid] = (out[pid] ?? 0) + 1;
+    for (const [uid, pid] of Object.entries(this.seats)) if (this.online.has(uid)) out[pid] = (out[pid] ?? 0) + 1;
     return out;
   }
 
@@ -85,6 +106,7 @@ export class HostSession {
     const action = pid ? parseAction(v.action, pid) : null;
     if (!pid) result = failResult('You do not have a seat in this game.');
     else if (!action) result = failResult('Unknown action.');
+    else if (this.paused) result = failResult('The game is paused.');
     else {
       try {
         result = this.hooks.apply(action);

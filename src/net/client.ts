@@ -28,7 +28,13 @@ export class ClientSession {
         this.emit();
       }),
       this.db.onValue(roomPath(this.code, `seats/${this.db.uid}`), (v) => this.sit(typeof v === 'string' ? v : null)),
+      this.db.presence(roomPath(this.code, `presence/${this.db.uid}`)),
     );
+  }
+
+  /** The host has paused the game. */
+  get paused(): boolean {
+    return !!this.meta?.paused;
   }
 
   stop(): void {

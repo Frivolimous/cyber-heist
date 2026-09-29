@@ -263,6 +263,7 @@ function runGame(db: Db, code: string, first: GameState, startVNow: number, star
   const save = (): Promise<void> => host.saveSnapshot({ state: s, vNow, speed });
   void save();
   host.start(() => render());
+  void host.setPaused(speed === 0);
   startTicker(250, () => {
     const now = performance.now();
     vNow += (now - last) * speed;
@@ -285,7 +286,8 @@ function runGame(db: Db, code: string, first: GameState, startVNow: number, star
   function render(): void {
     const t = Math.max(0, (s.now - s.startedAt) / 1000);
     const phase = dayPhaseAt(s.config.durationSec, t);
-    const seated = new Set(Object.values(host.seats));
+    const people = s.playerOrder.filter((id) => !s.players[id].fake);
+    const connected = people.filter((id) => host.isOnline(id)).length;
     const end = endSummary(s);
     page(
       `<div class="fac-head"><h2>Game <span class="code">${esc(code)}</span></h2>
@@ -300,17 +302,18 @@ function runGame(db: Db, code: string, first: GameState, startVNow: number, star
               .join('')}</div></section>`
         : `<div class="fac-bar"><i style="width:${Math.min(100, (s.totals.processed / s.config.whiteTarget) * 100)}%"></i></div>
           <p class="play-hint">${money(s.totals.processed)} of ${money(s.config.whiteTarget)} legitimate payments settled.</p>
+          ${speed ? '' : '<p class="fac-paused">Paused: the clock is stopped and players cannot act.</p>'}
           <button class="btn ${speed ? 'alt' : ''}" data-pause>${speed ? 'Pause the game' : 'Resume the game'}</button>`}
-      <h3>Players</h3>
-      <ul class="play-list">${s.playerOrder
-        .filter((id) => !s.players[id].fake)
-        .map((id) => `<li>${esc(s.players[id].name)}${s.players[id].terminated ? ' <small>terminated</small>' : ''}${seated.has(id) ? '' : ' <small>no screen</small>'}</li>`)
+      <h3>Players <small class="play-hint">${connected} of ${people.length} connected</small></h3>
+      <ul class="play-list">${people
+        .map((id) => `<li class="${host.isOnline(id) ? 'on' : 'off'}"><i class="dot" aria-hidden="true"></i>${esc(s.players[id].name)}${host.isOnline(id) ? '' : ' <small>not connected</small>'}${s.players[id].terminated ? ' <small>terminated</small>' : ''}</li>`)
         .join('')}</ul>
       <p class="play-hint">This tab runs the game for everyone: keep it open${end ? '' : ' until the end'}. Players rejoin with ${esc(link({ game: code }))}</p>`,
       true,
     );
     app.querySelector('[data-pause]')?.addEventListener('click', () => {
       speed = speed ? 0 : 1;
+      void host.setPaused(speed === 0);
       void save();
       render();
     });

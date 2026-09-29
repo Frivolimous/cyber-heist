@@ -82,6 +82,7 @@ button:disabled { cursor: default; opacity: 0.4; }
 .banner { grid-column: 1 / -1; border-radius: 4px; padding: 8px 12px; font-weight: 600; }
 .banner.white { background: #d6edf4; color: #0e3d4d; }
 .banner.black { background: #f7d9d5; color: #5c120c; }
+.banner.paused { background: var(--amber-bg); color: #5a3a00; }
 
 .screen-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 210px minmax(0, 1fr); }
 
