@@ -129,7 +129,9 @@ export function createGame(o: NewGameOptions): GameState {
     config,
     status: 'RUNNING',
     winner: null,
+    endKind: null,
     endReason: null,
+    endedAt: null,
     startedAt: o.now,
     now: o.now,
     lastNpcAt: 0,
@@ -143,6 +145,7 @@ export function createGame(o: NewGameOptions): GameState {
     requests: [],
     blocks: [],
     reroutes: [],
+    proxies: [],
     cracks: [],
     alertMuteUntil: 0,
     hostLog: [],
@@ -217,6 +220,7 @@ export function createGame(o: NewGameOptions): GameState {
       remoteAccess: [],
       watching: [],
       notifications: [],
+      terminated: null,
     };
     const mins = Math.round(config.durationSec / 60);
     p.objective =

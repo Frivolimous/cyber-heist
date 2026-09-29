@@ -20,9 +20,10 @@ import {
   ROLE_ORDER,
   ROLES,
   SYSTEMS,
+  TERMINATED_TEXT,
   WATCHABLE,
 } from '../engine';
-import type { Action, GameState, Pace, PlayerId, PlayerView, SystemId, WorkstationView } from '../engine';
+import type { Action, EndMember, EndTeam, GameState, Pace, PlayerId, PlayerView, SystemId, WorkstationView } from '../engine';
 
 const NAMES = ['Jeremy', 'Sarah', 'Mike', 'David', 'Lisa', 'Anna', 'Omar', 'Priya', 'Chen', 'Rosa', 'Tariq', 'Mei', 'Hugo', 'Zara', 'Ivan', 'Nina', 'Kofi', 'Elena', 'Raj', 'Sofia'];
 /** Sandbox seats p0..p(n-1); past the name list, seats are numbered. */
@@ -39,6 +40,7 @@ type Route =
   | { kind: 'system'; system: SystemId }
   | { kind: 'module'; system: SystemId; module: string }
   | { kind: 'workstation'; playerId: PlayerId; address: string }
+  | { kind: 'proxy'; address: string; relaying: boolean }
   | { kind: 'noroute'; address: string; message: string };
 
 interface Win {
@@ -71,6 +73,7 @@ type Tab = 'profile' | 'codes' | 'activity' | 'messages';
 let tab: Tab = 'profile';
 let god = false;
 let truthOpen = false;
+let endHidden = false; // the end screen was put away to look at the desk
 let tickCount = 0;
 let desks: Record<PlayerId, Win[]> = {}; // each seat keeps its own open windows
 let winSeq = 0;
@@ -90,6 +93,7 @@ app.innerHTML = `
           <div id="wins"></div>
           <footer id="taskbar" class="taskbar"></footer>
           <div id="toasts" class="toasts" aria-live="polite"></div>
+          <div id="endscreen" class="endscreen" hidden></div>
         </div>
       </div>
     </section>
@@ -99,10 +103,6 @@ const $ = (id: string): HTMLElement => document.getElementById(id) as HTMLElemen
 
 const esc = (v: unknown): string =>
   String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
-const mmss = (sec: number): string => {
-  const s = Math.max(0, Math.floor(sec));
-  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
-};
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
 const slug = (id: string): string => id.toLowerCase().replace(/_/g, '-');
 const view = (): PlayerView => getPlayerView(game, selected);
@@ -124,6 +124,7 @@ function newGame(seed: number): void {
   game = createGame({ seed, players: roster, now: vNow, config: { autoProcess } });
   grantMasterAccess(game, MASTER_SEAT);
   desks = {};
+  endHidden = false;
   for (const p of roster) {
     seenMessages[p.id] = 0;
     seenNotices[p.id] = 0;
@@ -158,7 +159,7 @@ function renderTruth(): void {
   el.hidden = !truthOpen;
   if (!truthOpen) return;
   const s = game;
-  const t = (x: number): string => fmtClock(s.config, x);
+  const t = (x: number): string => fmtClock(x);
   const people = s.playerOrder
     .map((id) => {
       const p = s.players[id];
@@ -195,29 +196,64 @@ function renderTruth(): void {
 function renderStatus(): void {
   const v = view();
   const ended = game.status === 'ENDED';
-  const banner = ended
-    ? `<div class="banner ${game.winner === 'WHITE' ? 'white' : game.winner === 'BLACK' ? 'black' : 'none'}">${game.winner === 'WHITE' ? 'White Hats win' : game.winner === 'BLACK' ? 'Black Hats win' : 'Everybody loses'}. ${esc(game.endReason)}</div>`
+  const banner = ended && v.end
+    ? `<div class="banner ${v.end.winner === 'WHITE' ? 'white' : v.end.winner === 'BLACK' ? 'black' : 'none'}">${esc(v.end.headline)}. ${esc(v.end.text)}${endHidden ? ' <button data-act="endshow">Show results</button>' : ''}</div>`
     : '';
   $('status').innerHTML = `
     <div class="who"><b>${esc(v.me.name)}</b><span>${esc(v.me.roleLabel)}</span>
       <span class="chip ${v.me.allegiance}">${v.me.allegiance === 'BLACK' ? 'Black Hat' : 'White Hat'}</span>
+      ${v.me.terminated ? '<span class="chip terminated">Terminated</span>' : ''}
       <span id="lock" class="chip lock" hidden></span></div>
-    <div class="clock"><span id="phase" class="phase"></span><span id="pace" class="pace"></span><b id="left"></b></div>
+    <div class="clock"><span id="phase" class="phase"></span><span id="pace" class="pace"></span><b id="elapsed"></b><span class="ends" title="The game ends at this time">/ ${fmtClock(v.durationSec)}</span></div>
     <div class="throughput"><div class="bar"><i id="bar"></i></div><span id="thr"></span></div>
     ${banner}`;
   updateClock();
+  renderEnd();
+}
+
+// ---- Game: end screen ---------------------------------------------------------------------
+/** Both teams, who was on them and what they made, and how the game was won. Embezzlement is an aside. */
+function renderEnd(): void {
+  const el = $('endscreen');
+  const end = view().end;
+  el.hidden = !end || endHidden;
+  if (!end || endHidden) return;
+  const made = (t: EndTeam): string =>
+    `<div class="end-made"><b>${money(t.made)}</b> of ${money(t.target)} ${t.side === 'WHITE' ? 'settled' : 'diverted'}</div>
+     <div class="end-bar"><i style="width:${Math.min(100, (t.made / t.target) * 100)}%"></i></div>`;
+  const member = (m: EndMember): string =>
+    `<li><span class="nm">${esc(m.name)}</span><span class="rl">${esc(m.roleLabel)}</span>
+      ${m.terminated ? '<span class="flag term">Terminated</span>' : ''}
+      ${m.embezzled > 0 ? `<span class="flag emb">Embezzled ${money(m.embezzled)}</span>` : ''}</li>`;
+  const anyEmbezzled = end.teams.some((t) => t.members.some((m) => m.embezzled > 0));
+  el.innerHTML = `<div class="end-card ${end.winner ?? 'NONE'}" role="dialog" aria-label="Game over">
+    <p class="end-kicker">Game over at ${esc(end.clock)}</p>
+    <h2>${esc(end.headline)}</h2>
+    <p class="end-text">${esc(end.text)}</p>
+    <div class="end-teams">${end.teams
+      .map(
+        (t) => `<section class="end-team ${t.side} ${t.won ? 'won' : ''}">
+          <header><h3>${esc(t.label)}</h3><span class="result">${t.won ? 'Won' : 'Lost'}</span></header>
+          ${made(t)}
+          <ul>${t.members.map(member).join('')}</ul>
+        </section>`,
+      )
+      .join('')}</div>
+    ${anyEmbezzled ? `<p class="end-note">Embezzled money was paid into an employee's own account. It counts toward no one's goal.</p>` : ''}
+    <button class="end-close" data-act="endhide">Back to the desk</button>
+  </div>`;
 }
 
 const PACE_TEXT: Record<Pace, string> = { SLOW: 'Slow', MEDIUM: 'Medium', BUSY: 'Busy', CLOSED: 'Closed' };
 
 function updateClock(): void {
   const v = view();
-  // Time of day, how busy it is, and the countdown.
+  // Time of day, how busy it is, and the game clock counting up to the end.
   $('phase').textContent = v.dayPhase;
   const pace = $('pace');
   pace.textContent = PACE_TEXT[v.pace];
   pace.className = `pace ${v.pace}`;
-  $('left').textContent = mmss(v.durationSec - v.t);
+  $('elapsed').textContent = fmtClock(v.t);
   $('bar').style.width = `${Math.min(100, (v.processed / v.whiteTarget) * 100)}%`;
   $('thr').textContent = `${money(v.processed)} of ${money(v.whiteTarget)} legitimate payments settled`;
   const lock = $('lock');
@@ -233,7 +269,7 @@ function renderRail(): void {
       const p = game.players[id];
       const v = getPlayerView(game, id);
       return `<div class="pl ${id === selected ? 'me' : ''}">
-        <span class="nm">${esc(p.name)}${id === selected ? ' <small>(you)</small>' : ''}</span><span class="rl">${esc(v.me.roleLabel)}</span>
+        <span class="nm">${esc(p.name)}${id === selected ? ' <small>(you)</small>' : ''}</span><span class="rl">${esc(v.me.roleLabel)}${p.terminated ? ' <b class="gone">Terminated</b>' : ''}</span>
         ${god ? `<i class="tag ${p.allegiance}" title="Sandbox: allegiance">${p.allegiance === 'BLACK' ? 'Black' : 'White'}</i>` : ''}
       </div>`;
     })
@@ -265,7 +301,7 @@ function deskSize(): { w: number; h: number } {
 }
 
 function routeAddress(r: Route): string {
-  if (r.kind === 'noroute' || r.kind === 'workstation') return r.address;
+  if (r.kind === 'noroute' || r.kind === 'workstation' || r.kind === 'proxy') return r.address;
   let a = findSystem(r.system)?.address ?? '';
   if (r.kind !== 'system') a += '/' + slug(r.module);
   return a;
@@ -283,6 +319,7 @@ function winTitle(w: Win): string {
   if (w.kind === 'personal') return 'My workstation';
   const r = route(w);
   if (r?.kind === 'workstation') return `${game.players[r.playerId]?.name ?? r.address}'s workstation`;
+  if (r?.kind === 'proxy') return 'Proxy relay';
   if (!r || r.kind === 'noroute') return 'Network';
   return findSystem(r.system)?.label ?? r.system;
 }
@@ -378,7 +415,7 @@ function showRoute(w: Win): void {
   if (r && 'system' in r && r.system !== w.termSystem) {
     const sys = findSystem(r.system)!;
     w.termSystem = r.system;
-    w.out = [{ cls: 'hs', text: `[${fmtClock(game.config, view().t)}] Logged in to ${sys.label} (${sys.address})` }];
+    w.out = [{ cls: 'hs', text: `[${fmtClock(view().t)}] Logged in to ${sys.label} (${sys.address})` }];
   }
   delete w.form.credSel;
   renderWin(w);
@@ -420,6 +457,7 @@ function goAddress(w: Win): void {
     refresh();
     if (!r.result.ok) return navigate(w, { kind: 'noroute', address: raw, message: r.result.message });
     if (r.result.workstation) return navigate(w, { kind: 'workstation', playerId: r.result.workstation, address: host });
+    if (r.result.proxy) return navigate(w, { kind: 'proxy', address: host, relaying: r.result.proxy.relaying });
     sys = SYSTEMS.find((s) => s.address === host);
     if (!sys) return;
   }
@@ -481,11 +519,19 @@ function browserHtml(w: Win): string {
   </form>`;
   if (!r) return nav;
   if (r.kind === 'workstation') return nav + remoteHtml(w, r);
+  if (r.kind === 'proxy') {
+    return `${nav}<div class="wbody"><div class="noroute proxy"><h2>Proxy relay at ${esc(r.address)}</h2>
+      <p>This address is a relay: it forwards other machines' traffic under its own address. There is nothing on it to log in to.</p>
+      <p class="relay ${r.relaying ? 'on' : ''}">${r.relaying ? 'Relaying traffic right now.' : 'Idle: no traffic is going through it right now.'}</p>
+      <p class="hint">Press Go again to check its status.</p></div></div>`;
+  }
   let crumbs = '';
   let body = '';
   if (r.kind === 'noroute') {
     const known = view().systems.map((s) => `${esc(s.label)} <code>${esc(s.address)}</code>`).join('<br>');
     body = `<div class="noroute"><h2>Can't reach ${esc(r.address || 'that address')}</h2><p>${esc(r.message)}</p><p class="hint">Addresses you know:<br>${known}</p></div>`;
+  } else if (view().me.terminated && r.system !== 'BLACKHAT_DB') {
+    body = `<div class="noroute terminated"><h2>${esc(TERMINATED_TEXT)}</h2><p>This workstation has been terminated. The bank's systems no longer accept it.</p></div>`;
   } else {
     const sys = findSystem(r.system)!;
     const crumb = (label: string, act: string | null): string =>
@@ -645,6 +691,12 @@ const scorePicker = (w: Win): string =>
     )
     .join('')}</div></fieldset>`;
 /** A dropdown for command cards. Starts on the first option; the choice sticks for the window. */
+/** The Infiltration proxies as dropdown options; an unavailable one says why (the engine refuses it anyway). */
+const proxyOptions = (): { value: string; label: string }[] => {
+  const list = view().proxies;
+  if (!list.length) return [{ value: '', label: 'No proxies yet: create one first' }];
+  return list.map((x) => ({ value: x.ip, label: x.unavailable ? `${x.ip} (unavailable: ${x.unavailable})` : x.ip }));
+};
 const select = (w: Win, name: string, label: string, options: { value: string; label: string }[], full = false): string => {
   const key = `p:${name}`;
   if (!options.some((o) => o.value === w.form[key])) w.form[key] = options[0]?.value ?? '';
@@ -738,29 +790,36 @@ const MODULE_PAGES: Record<string, ModulePage> = {
   'BLACKHAT_DB.INFILTRATION': {
     commands: (w) =>
       card(
+        'Create proxy',
+        'WRITE',
+        input(w, 'proxyIp', 'Proxy IP (unused)', '10.1.0.77', true, true) +
+          btns(btn(w, 'createProxy', 'Set up proxy · loud', 'loud', true)),
+        `${w.id}:createProxy`,
+      ) +
+      card(
         'Reroute IP',
         'WRITE',
-        input(w, 'toIp', 'Appear as IP', '10.1.0.14', true, true) +
-          btns(
-            btn(w, 'reroute:10', '10s · noisy', '', true) +
-              btn(w, 'reroute:30', '30s · loud', 'loud', true) +
-              btn(w, 'reroute:60', '60s · reckless', 'reckless', true),
-          ),
-        `${w.id}:reroute:10`,
+        input(w, 'rerouteFrom', 'Reroute IP (blank: your own)', 'your workstation', true) +
+          select(w, 'rerouteProxy', 'Appear as proxy', proxyOptions(), true) +
+          input(w, 'rerouteSec', 'Seconds (1-60)', '10') +
+          btns(btn(w, 'reroute', 'Reroute · noisy', '', true)),
+        `${w.id}:reroute`,
       ) +
       card(
         'Create user',
         'WRITE',
         input(w, 'newName', 'Name', 'Dana Pruitt') +
           select(w, 'newRole', 'Role', ROLE_ORDER.map((id) => ({ value: id, label: ROLES[id].label })), true) +
-          input(w, 'newIp', 'IP address', '10.1.0.30', true) +
+          select(w, 'newProxy', 'At proxy', proxyOptions(), true) +
           btns(btn(w, 'createUser', 'Add user · noisy', '', true)),
         `${w.id}:createUser`,
       ),
-    run: (w, cmd, arg) => {
-      if (cmd === 'reroute') runFresh(w, 'BLACKHAT_DB', 'INFILTRATION', 'REROUTE_IP', { toIp: w.form['p:toIp'] ?? '', duration: arg ?? '' }, ['toIp']);
+    run: (w, cmd) => {
+      if (cmd === 'createProxy') runFresh(w, 'BLACKHAT_DB', 'INFILTRATION', 'CREATE_PROXY', { ip: w.form['p:proxyIp'] ?? '' }, ['proxyIp']);
+      else if (cmd === 'reroute')
+        runFresh(w, 'BLACKHAT_DB', 'INFILTRATION', 'REROUTE_IP', { source: w.form['p:rerouteFrom'] ?? '', proxy: w.form['p:rerouteProxy'] ?? '', seconds: w.form['p:rerouteSec'] || '10' }, []);
       else if (cmd === 'createUser')
-        runFresh(w, 'BLACKHAT_DB', 'INFILTRATION', 'CREATE_USER', { name: w.form['p:newName'] ?? '', role: w.form['p:newRole'] ?? '', ip: w.form['p:newIp'] ?? '' }, ['newName', 'newIp']);
+        runFresh(w, 'BLACKHAT_DB', 'INFILTRATION', 'CREATE_USER', { name: w.form['p:newName'] ?? '', role: w.form['p:newRole'] ?? '', proxy: w.form['p:newProxy'] ?? '' }, ['newName']);
     },
   },
   'BLACKHAT_DB.SOCIAL': {
@@ -793,12 +852,39 @@ const MODULE_PAGES: Record<string, ModulePage> = {
           input(w, 'scamAcct', 'Account', '18392') +
           btns(btn(w, 'scam', 'Plant request · noisy', '', true)),
         `${w.id}:scam`,
+      ) +
+      card(
+        'Scam payment request',
+        'WRITE',
+        input(w, 'scamPayFrom', 'From customer', 'Tanaka Holdings or CU3', true, true) +
+          input(w, 'scamPayee', 'Pay to', 'Northwind Freight or CU7', true) +
+          input(w, 'scamAmount', 'Amount', '400000') +
+          select(
+            w,
+            'scamUrgent',
+            'Urgency',
+            [
+              { value: 'NO', label: 'Normal' },
+              { value: 'YES', label: 'Urgent (shorter deadline)' },
+            ],
+          ) +
+          btns(btn(w, 'scamPay', 'Plant request · noisy', '', true)),
+        `${w.id}:scamPay`,
       ),
     run: (w, cmd) => {
       if (cmd === 'spoof')
         runFresh(w, 'BLACKHAT_DB', 'SOCIAL', 'SPOOFED_MESSAGE', { to: w.form['p:spoofTo'] ?? '', from: w.form['p:spoofFrom'] ?? '', text: w.form['p:spoofText'] ?? '' }, ['spoofText']);
       else if (cmd === 'scam')
         runFresh(w, 'BLACKHAT_DB', 'SOCIAL', 'SCAM_REQUEST', { customer: w.form['p:scamCust'] ?? '', kind: w.form['p:scamKind'] ?? '', account: w.form['p:scamAcct'] ?? '' }, ['scamAcct']);
+      else if (cmd === 'scamPay')
+        runFresh(
+          w,
+          'BLACKHAT_DB',
+          'SOCIAL',
+          'SCAM_REQUEST',
+          { customer: w.form['p:scamPayFrom'] ?? '', kind: 'PAYMENT', payee: w.form['p:scamPayee'] ?? '', amount: w.form['p:scamAmount'] ?? '', urgent: w.form['p:scamUrgent'] ?? 'NO' },
+          ['scamAmount'],
+        );
     },
   },
   'BLACKHAT_DB.CLEANUP': {
@@ -1326,6 +1412,7 @@ function renderAll(): void {
 function refresh(): void {
   pollNotices();
   renderStatus();
+  renderRail();
   renderIcons();
   renderTaskbar();
   renderTruth();
@@ -1340,6 +1427,11 @@ app.addEventListener('click', (e) => {
   const w = args[0] ? winById(Number(args[0])) : undefined;
   const hostWin = winById(Number(el.closest<HTMLElement>('.win')?.dataset.win));
   switch (act) {
+    case 'endhide':
+    case 'endshow':
+      endHidden = act === 'endhide';
+      renderStatus();
+      break;
     case 'speed':
       speed = Number(args[0]);
       renderDev();

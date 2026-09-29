@@ -22,6 +22,7 @@ import {
   addHostLog,
   activeBlock,
   blockText,
+  effectiveHost,
   effectiveIp,
   normCred,
   normLog,
@@ -34,7 +35,7 @@ import { createCredential } from './credentials';
 import { pick, rand, randInt } from './rng';
 import { computeRisk, paymentFor, recordTx, reverseTransaction, settleTransaction } from './bank';
 import type { TxActor } from './bank';
-import { accountRequestText, requestReceived, requestTimes } from './requests';
+import { accountRequestText, paymentRequestText, requestReceived, requestTimes } from './requests';
 import { notify } from './notify';
 import type { AccountChange, ClientRequest, CodeCrack, Credential, Customer, Message, RequestKind, Revocation, GameState, LogEntry, Player, RoleId, SystemId, Transaction, TxEvent, TxStatus } from './types';
 
@@ -164,7 +165,8 @@ H['SECURITY.FIREWALL.VIEW_STATUS'] = (c) => {
 function networkAddress(c: Ctx, q: Params): string | { error: string } {
   const a = str(q, 'address');
   if (!a) return { error: 'Enter an address.' };
-  const known = Object.values(c.s.players).some((p) => p.ip === a) || SYSTEMS.some((sys) => sys.address === a);
+  // Workstations, systems and Infiltration proxies are all on the network (a proxy can be blocked or revoked).
+  const known = Object.values(c.s.players).some((p) => p.ip === a) || SYSTEMS.some((sys) => sys.address === a) || c.s.proxies.some((x) => x.ip === a);
   return known ? a : { error: 'No such address on the network.' };
 }
 
@@ -260,12 +262,12 @@ H['SECURITY.MASTER_LOG.VIEW_LOG'] = (c, q) => {
   if (show === 'ALERTS') {
     const rows = c.s.alerts
       .slice(-limit)
-      .map((a) => `[${fmtClock(c.s.config, a.t)}] ${a.id.padEnd(5)} ${a.kind}: ${a.message}${a.logId ? ` (log ${a.logId})` : ''}`);
+      .map((a) => `[${fmtClock(a.t)}] ${a.id.padEnd(5)} ${a.kind}: ${a.message}${a.logId ? ` (log ${a.logId})` : ''}`);
     return good(`Master Log alerts: ${rows.length}.`, rows.length ? rows : ['No alerts.']);
   }
   // Wiped entries (Cleanup / Log wiper) drop out here, leaving a visible gap in the ids; a Trace can still reach them.
   const entries = (show === 'ALL' ? c.s.logs : c.s.logs.filter((e) => e.actor !== 'SYSTEM')).filter((e) => !e.deleted);
-  const rows = entries.slice(-limit).map((e) => `[${fmtClock(c.s.config, e.t)}] ${e.id.padEnd(5)} ${e.message}`);
+  const rows = entries.slice(-limit).map((e) => `[${fmtClock(e.t)}] ${e.id.padEnd(5)} ${e.message}`);
   return good(`Master Log: ${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}.`, rows);
 };
 
@@ -283,11 +285,12 @@ H['SECURITY.EMPLOYEE_RECORDS.RESET_LOCKOUT'] = (c, q) => {
 H['SECURITY.EMPLOYEE_RECORDS.VIEW_EMPLOYEES'] = (c) => {
   const rows = c.s.playerOrder.flatMap((id) => {
     const p = c.s.players[id];
-    const active = p.lastActiveAt === null ? 'never' : `${fmtClock(c.s.config, p.lastActiveAt)} (${ago(c, p.lastActiveAt)})`;
+    const active = p.lastActiveAt === null ? 'never' : `${fmtClock(p.lastActiveAt)} (${ago(c, p.lastActiveAt)})`;
     const flags = [
       p.lockedUntil > c.t ? `LOCKED OUT ${Math.ceil(p.lockedUntil - c.t)}s` : '',
       activeBlock(c.s, p.ip) ? `BLOCKED ${blockText(c.s, activeBlock(c.s, p.ip)!)}` : '',
     ].filter(Boolean);
+    if (p.terminated) flags.unshift(`TERMINATED ${fmtClock(p.terminated.t)}`);
     return [
       `${p.name.padEnd(10)} ${ROLES[p.role].label.padEnd(24)} ${p.ip}${flags.length ? '  ' + flags.map((x) => `[${x}]`).join(' ') : ''}`,
       `           last activity: ${active}   failed attempts: ${p.failTotal}`,
@@ -300,7 +303,7 @@ H['SECURITY.EMPLOYEE_RECORDS.VIEW_EMPLOYEES'] = (c) => {
  * One true but partial clue about hidden host activity:
  * a range of four workstations, a pair (real + decoy), one number of the server's address, or what was done.
  */
-function relayClue(s: GameState, ip: string, activity?: string): string {
+function relayClue(s: GameState, ip: string, server: string, activity?: string): string {
   const ips = s.playerOrder.map((id) => s.players[id].ip);
   const last = (x: string): number => Number(x.split('.').pop());
   const kinds = ['RANGE', 'PAIR', 'SERVER', ...(activity ? ['ACTIVITY'] : [])];
@@ -314,7 +317,7 @@ function relayClue(s: GameState, ip: string, activity?: string): string {
     return `The origin workstation is within ${prefix}.${start}-${start + 3}.`;
   }
   if (kind === 'SERVER') {
-    const parts = s.hiddenHost.split('.');
+    const parts = server.split('.');
     const keep = randInt(s, 0, parts.length - 1);
     return `The server's IP address is ${parts.map((p, i) => (i === keep ? p : 'x')).join('.')}.`;
   }
@@ -329,15 +332,16 @@ function relayClue(s: GameState, ip: string, activity?: string): string {
  * What a trace of a hidden host entry reveals, by the action's exposure tier:
  * 1-2 (vague): one partial clue; 3 (loud): one exact fact, the operative's IP or the server's address;
  * 4 (reckless): the operative's IP and a working host credential code (their own).
- * Tier 1 follows the recorded (possibly rerouted) source; tier 2+ is always about the real operative.
+ * Every tier uses the addresses as recorded: a rerouted workstation or host shows its proxy, even here.
  */
 function exposureClue(s: GameState, e: LogEntry): string {
   const tier = e.exposure ?? 1;
   const real = e.actualPlayerId ? s.players[e.actualPlayerId] : undefined;
-  const ip = tier >= 2 && real ? real.ip : e.sourceIp!;
-  if (tier <= 2) return relayClue(s, ip, e.activity);
+  const ip = e.sourceIp!;
+  const server = e.server ?? s.hiddenHost;
+  if (tier <= 2) return relayClue(s, ip, server, e.activity);
   if (tier === 3) {
-    return rand(s) < 0.5 ? `The relay leaked the origin workstation: ${ip}.` : `The relay leaked the server's address: ${s.hiddenHost}.`;
+    return rand(s) < 0.5 ? `The relay leaked the origin workstation: ${ip}.` : `The relay leaked the server's address: ${server}.`;
   }
   const code = real ? ownHostCode(s, real) : null;
   return `The relay leaked the origin workstation: ${ip}.${code ? ` Captured host access code: ${code}.` : ''}`;
@@ -389,10 +393,10 @@ function requestLines(c: Ctx, r: ClientRequest): string[] {
   if (r.outcome === null && !r.phish) tags.push(`due in ${Math.max(0, Math.ceil(r.dueAt - c.t))}s`);
   if (r.reminders.length && r.status === 'OPEN') tags.push('REMINDER');
   const lines = [
-    `${r.id.padEnd(7)} ${fmtClock(c.s.config, r.t)}  ${r.sender ?? cust?.name ?? '?'} -> ${to}  ${requestStatusText(c, r)}${tags.length ? '  ' + tags.join('  ') : ''}`,
+    `${r.id.padEnd(7)} ${fmtClock(r.t)}  ${r.sender ?? cust?.name ?? '?'} -> ${to}  ${requestStatusText(c, r)}${tags.length ? '  ' + tags.join('  ') : ''}`,
     `        "${r.text}"`,
   ];
-  for (const m of r.reminders) lines.push(`        ${fmtClock(c.s.config, m.t)} follow-up: "${m.text}"`);
+  for (const m of r.reminders) lines.push(`        ${fmtClock(m.t)} follow-up: "${m.text}"`);
   if (r.status === 'OPEN' && r.archiveReason) {
     lines.push(`        (archived earlier${r.closedBy ? ` by ${nameOf(c.s, r.closedBy)}` : ''}: "${r.archiveReason}"; reopened by the follow-up)`);
   }
@@ -484,6 +488,7 @@ H['SECURITY.PERMISSIONS.VIEW_PERMISSIONS'] = (c, q) => {
 H['SECURITY.PERMISSIONS.CREATE_CREDENTIAL'] = (c, q) => {
   const owner = c.s.players[str(q, 'owner')];
   if (!owner) return bad('Choose an employee to issue to.');
+  if (owner.terminated) return bad(`${owner.name} was terminated and cannot be issued credentials.`);
   const [sys, mod] = str(q, 'scope').split('.');
   const sysDef = findSystem(sys);
   if (!sysDef || sysDef.hidden || !c.actor.knownSystems.includes(sysDef.id)) return bad('Unknown system.');
@@ -667,7 +672,7 @@ function changeLine(c: Ctx, h: AccountChange): string {
   const what =
     h.action === 'ADD_ACCOUNT' ? `added ${h.account}` : h.action === 'REMOVE_ACCOUNT' ? `removed ${h.account}` : `primary ${h.previousPrimary} -> ${h.account}`;
   const status = h.verified ? `[VERIFIED by ${h.verifiedBy ? nameOf(c.s, h.verifiedBy) : '?'}]` : '[UNVERIFIED]';
-  return `${h.id.padEnd(6)} ${fmtClock(c.s.config, h.t)}  ${h.customerId.padEnd(4)} ${(x?.name ?? '?').padEnd(22)} ${what}  by ${nameOf(c.s, h.byOwner)}  ${status}`;
+  return `${h.id.padEnd(6)} ${fmtClock(h.t)}  ${h.customerId.padEnd(4)} ${(x?.name ?? '?').padEnd(22)} ${what}  by ${nameOf(c.s, h.byOwner)}  ${status}`;
 }
 
 /** PENDING: account changes nobody has verified yet. ALL: the most recent changes. */
@@ -899,7 +904,7 @@ function stageLines(c: Ctx, tx: Transaction, stage: Stage): string[] {
   const parts: { text: string; e?: TxEvent }[] = [];
   if (tx.requestId) parts.push({ text: `for ${tx.requestId}` });
   const created = lastEvent(tx, 'CREATED');
-  if (stage === 'RISK' && created) parts.push({ text: `created ${fmtClock(c.s.config, created.t)} by ${eventBy(c, tx, created)}`, e: created });
+  if (stage === 'RISK' && created) parts.push({ text: `created ${fmtClock(created.t)} by ${eventBy(c, tx, created)}`, e: created });
   const checked = lastEvent(tx, 'RISK_CHECKED');
   if (checked && tx.riskResult) parts.push({ text: `risk ${tx.riskResult} by ${eventBy(c, tx, checked)}${quoted(tx.riskReason)}`, e: checked });
   const approved = lastEvent(tx, 'APPROVED');
@@ -944,7 +949,7 @@ H['TRANSACTIONS.SETTLEMENT.VIEW_SETTLEMENT'] = (c, q) =>
 // ---- Hidden host: tool kits & exposure ----------------------------------------
 // Black Hat tools have no cooldowns or charges; they are balanced by exposure. Each tool tags its "Unknown
 // server activity" entry with a tier: tier 2+ raises an alert pointing at the entry (never naming anyone),
-// and a trace of the entry reveals more the higher the tier, always about the REAL operative (tier 2+).
+// and a trace of the entry reveals more the higher the tier, using the addresses as recorded (a reroute shows its proxy).
 type ExposureTier = 1 | 2 | 3 | 4;
 
 /** An active host credential code the operative owns, if any (the strongest exposure hands over a working one). */
@@ -984,7 +989,8 @@ function raiseExposure(c: Ctx, tier: ExposureTier): void {
 
 /** A hidden host entry for background work (no Ctx), e.g. a running Code crack. */
 function hiddenEntry(s: GameState, actor: Player, activity: string): LogEntry {
-  return addLog(s, { actor: 'SYSTEM', kind: 'HIDDEN_ACCESS', message: 'Unknown server activity', sourceIp: effectiveIp(s, actor, gameTime(s)), actualPlayerId: actor.id, activity });
+  const t = gameTime(s);
+  return addLog(s, { actor: 'SYSTEM', kind: 'HIDDEN_ACCESS', message: 'Unknown server activity', sourceIp: effectiveIp(s, actor, t), actualPlayerId: actor.id, activity, server: effectiveHost(s, t) });
 }
 
 // ---- Infiltration -------------------------------------------------------------
@@ -1013,6 +1019,7 @@ function plantUser(s: GameState, name: string, role: RoleId, ip: string): Player
     remoteAccess: [],
     watching: [],
     notifications: [],
+    terminated: null,
     fake: true,
   };
   s.players[p.id] = p;
@@ -1020,13 +1027,50 @@ function plantUser(s: GameState, name: string, role: RoleId, ip: string): Player
   return p;
 }
 
+// ---- Proxies -------------------------------------------------------------------
+/** Is this address already on the network: a workstation (real or planted), a system, the host, or a proxy? */
+function addressInUse(s: GameState, ip: string): boolean {
+  return (
+    Object.values(s.players).some((p) => p.ip === ip) ||
+    SYSTEMS.some((sys) => sys.address === ip) ||
+    ip === s.hiddenHost ||
+    s.proxies.some((x) => x.ip === ip)
+  );
+}
+
+/** Why a proxy cannot be used right now, if it cannot. A reroute of `exceptRerouteFrom` (being renewed) does not count. */
+export function proxyUnavailable(s: GameState, ip: string, t: number, exceptRerouteFrom?: string): string | null {
+  if (activeBlock(s, ip)) return 'blocked by the firewall';
+  if (Object.values(s.players).some((p) => p.ip === ip)) return 'used by a planted user';
+  if (s.reroutes.some((r) => r.toIp === ip && r.until > t && r.fromIp !== exceptRerouteFrom)) return 'carrying a reroute';
+  return null;
+}
+
+/** The proxy a Reroute or Create user asked for, or why it cannot be used. */
+function pickProxy(c: Ctx, q: Params, renewing?: string): string | { error: string } {
+  if (!c.s.proxies.length) return { error: 'No proxies yet. Create a proxy first.' };
+  const ip = str(q, 'proxy');
+  if (!c.s.proxies.some((x) => x.ip === ip)) return { error: 'Choose one of the proxies.' };
+  const why = proxyUnavailable(c.s, ip, c.t, renewing);
+  return why ? { error: `Proxy ${ip} is unavailable: ${why}.` } : ip;
+}
+
+H['BLACKHAT_DB.INFILTRATION.CREATE_PROXY'] = (c, q) => {
+  const ip = str(q, 'ip');
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip) || ip.split('.').some((n) => Number(n) > 255)) return bad('Enter an IP address, e.g. 10.1.0.77.');
+  if (addressInUse(c.s, ip)) return bad(`${ip} is already in use on the network. A proxy needs an unused address.`);
+  c.s.proxies.push({ ip, t: c.t, createdBy: c.actor.id });
+  raiseExposure(c, 3);
+  return good(`Proxy ${ip} is set up. Reroute IP and Create user can use it now.`);
+};
+
 H['BLACKHAT_DB.INFILTRATION.CREATE_USER'] = (c, q) => {
   const name = str(q, 'name').slice(0, 24);
   if (!name) return bad('Enter a name for the user.');
   const role = str(q, 'role').toUpperCase() as RoleId;
   if (!ROLES[role]) return bad('Pick a role from the list.');
-  const ip = str(q, 'ip');
-  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return bad('Enter an IP address, e.g. 10.1.0.30.');
+  const ip = pickProxy(c, q);
+  if (typeof ip !== 'string') return bad(ip.error);
   const p = plantUser(c.s, name, role, ip);
   raiseExposure(c, 2);
   return good(`${p.name} (${ROLES[role].label}) planted at ${ip}. They now appear in Employee Records; issue them credentials from Permissions.`);
@@ -1047,7 +1091,9 @@ export function advanceCracks(s: GameState): void {
     if (k.done) continue;
     const cred = s.credentials[k.credentialId];
     const actor = s.players[k.actorId];
-    if (!cred || cred.status !== 'ACTIVE' || !actor || activeBlock(s, actor.ip)) {
+    const block = actor && activeBlock(s, actor.ip);
+    // A revoked IP (permanent block) cuts the bank off, not the host, so only a timed block stops a crack.
+    if (!cred || cred.status !== 'ACTIVE' || !actor || (block && block.until !== null)) {
       k.done = true; // aborted: credential revoked, or the source was blocked
       continue;
     }
@@ -1096,8 +1142,9 @@ H['BLACKHAT_DB.ACCESS.LOCKOUT_BOMB'] = (c, q) => {
   const fails = c.s.config.lockoutAfterFails;
   // Failed logins spoofed to come FROM the target, so their own anti-brute-force lockout trips.
   for (let i = 0; i < fails; i++) {
-    const entry = addLog(c.s, { actor: 'UNKNOWN', kind: 'AUTH_FAIL', message: `Failed authentication attempt from ${ip}`, sourceIp: ip, actualPlayerId: c.actor.id });
-    addAlert(c.s, 'AUTH_FAIL', `Failed authentication attempt from ${ip}`, entry.id, 2);
+    const from = effectiveIp(c.s, target, c.t);
+    const entry = addLog(c.s, { actor: 'UNKNOWN', kind: 'AUTH_FAIL', message: `Failed authentication attempt from ${from}`, sourceIp: from, actualPlayerId: c.actor.id });
+    addAlert(c.s, 'AUTH_FAIL', `Failed authentication attempt from ${from}`, entry.id, 2);
   }
   target.failTotal += fails;
   target.failStreak = 0;
@@ -1157,10 +1204,26 @@ H['BLACKHAT_DB.SOCIAL.SCAM_REQUEST'] = (c, q) => {
   const cust = findCustomerByRef(c.s, str(q, 'customer'));
   if (!cust) return bad('No customer by that name or id.');
   const kind = str(q, 'kind').toUpperCase() as RequestKind;
-  if (!(['SET_PRIMARY', 'ADD_AND_PRIMARY', 'ADD_ACCOUNT', 'REMOVE_ACCOUNT'] as RequestKind[]).includes(kind)) return bad('Pick what the request asks for.');
-  const account = normAccount(str(q, 'account'));
-  if (!account) return bad('Enter a 5-digit account number.');
-  const text = accountRequestText(c.s, cust, kind as Exclude<RequestKind, 'PAYMENT'>, account); // worded from the same forms as real requests
+  if (!(['PAYMENT', 'SET_PRIMARY', 'ADD_AND_PRIMARY', 'ADD_ACCOUNT', 'REMOVE_ACCOUNT'] as RequestKind[]).includes(kind)) return bad('Pick what the request asks for.');
+  // A payment: who to pay and how much (from the customer's main account). Anything else: one account.
+  let payee: Customer | undefined;
+  let amount: number | null = null;
+  let account: string | null = null;
+  let urgent = false;
+  if (kind === 'PAYMENT') {
+    payee = findCustomerByRef(c.s, str(q, 'payee'));
+    if (!payee) return bad('No payee by that name or id.');
+    if (payee.id === cust.id) return bad('A customer cannot ask to pay themselves.');
+    amount = Math.round(Number(str(q, 'amount').replace(/[$,]/g, '')));
+    if (!Number.isFinite(amount) || amount <= 0) return bad('Enter a positive amount.');
+    if (amount > c.s.config.maxManualAmount) return bad(`Bankers cannot pay more than ${money(c.s.config.maxManualAmount)} by hand.`);
+    urgent = str(q, 'urgent').toUpperCase() === 'YES';
+  } else {
+    account = normAccount(str(q, 'account'));
+    if (!account) return bad('Enter a 5-digit account number.');
+  }
+  // Worded from the same forms as real requests.
+  const text = payee && amount !== null ? paymentRequestText(c.s, cust, payee, amount, urgent) : accountRequestText(c.s, cust, kind as Exclude<RequestKind, 'PAYMENT'>, account!);
   const req: ClientRequest = {
     id: nextId(c.s, 'req', 'REQ-'),
     t: c.t,
@@ -1168,11 +1231,11 @@ H['BLACKHAT_DB.SOCIAL.SCAM_REQUEST'] = (c, q) => {
     bankerId: cust.bankerId,
     kind,
     text,
-    payeeId: null,
-    amount: null,
-    originAccount: null,
+    payeeId: payee?.id ?? null,
+    amount,
+    originAccount: payee ? cust.primary : null,
     account,
-    ...requestTimes(c.s, c.t, false), // shows a deadline like any request, but no customer will chase it
+    ...requestTimes(c.s, c.t, urgent), // shows a deadline like any request, but no customer will chase it
     scam: true,
     status: 'OPEN',
     closedAt: null,
@@ -1184,32 +1247,35 @@ H['BLACKHAT_DB.SOCIAL.SCAM_REQUEST'] = (c, q) => {
   c.s.requests.push(req);
   // Logged and notified exactly like a real incoming request, so nothing sets it apart.
   requestReceived(c.s, req);
-  note(c.actor, c.t, `Planted scam request ${req.id} from ${cust.name} (${kind} ${account}).`);
+  note(c.actor, c.t, `Planted scam request ${req.id} from ${cust.name} (${payee ? `pay ${money(amount!)} to ${payee.name}${urgent ? ', urgent' : ''}` : `${kind} ${account}`}).`);
   raiseExposure(c, 2);
   const to = cust.bankerId ? nameOf(c.s, cust.bankerId) : 'their banker';
   return good(`Scam request ${req.id} planted, from ${cust.name} to ${to}.`, [`"${text}"`]);
 };
 
 H['BLACKHAT_DB.INFILTRATION.REROUTE_IP'] = (c, q) => {
-  const toIp = str(q, 'toIp');
-  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(toIp)) return bad('Enter an IP address to appear as, e.g. 10.1.0.14.');
-  if (toIp === c.actor.ip) return bad('That is already your workstation.');
-  const tierByDuration: Record<string, ExposureTier> = { '10': 2, '30': 3, '60': 4 };
-  const duration = str(q, 'duration');
-  const tier = tierByDuration[duration];
-  if (!tier) return bad('Choose a duration: 10, 30 or 60 seconds.');
-  const seconds = Number(duration);
-  // One reroute per operative: a new one replaces any that is still running.
-  c.s.reroutes = c.s.reroutes.filter((r) => r.playerId !== c.actor.id);
-  c.s.reroutes.push({ playerId: c.actor.id, toIp, until: c.t + seconds });
-  raiseExposure(c, tier);
-  return good(`For ${seconds}s your activity appears to come from ${toIp}. Longer reroutes leak more — check the Host Log.`);
+  // What to reroute: your own workstation (blank), any other workstation, or the unregistered host itself.
+  const fromIp = str(q, 'source') || c.actor.ip;
+  const host = fromIp === c.s.hiddenHost;
+  const station = Object.values(c.s.players).find((p) => p.ip === fromIp);
+  if (!host && !station) return bad('Reroute a workstation\'s IP or the server\'s address.');
+  const toIp = pickProxy(c, q, fromIp);
+  if (typeof toIp !== 'string') return bad(toIp.error);
+  const seconds = Number(str(q, 'seconds') || '10');
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 60) return bad('Seconds must be a whole number from 1 to 60.');
+  // One reroute per address: a new one replaces any that is still running. Written before the log entry, so
+  // rerouting the host already hides its address in this very action's record.
+  c.s.reroutes = c.s.reroutes.filter((r) => r.fromIp !== fromIp);
+  c.s.reroutes.push({ fromIp, toIp, until: c.t + seconds, byPlayerId: c.actor.id });
+  raiseExposure(c, 2);
+  const what = host ? 'the server\'s address' : station!.id === c.actor.id ? 'your activity' : `activity from ${fromIp}`;
+  return good(`For ${seconds}s ${what} appears as proxy ${toIp}.`);
 };
 
 // ---- Hidden host: Black Hat Database ------------------------------------------
 H['BLACKHAT_DB.BLACKNET.READ_MESSAGES'] = (c, q) => {
   const limit = clampInt(q.limit, 30, 1, 100);
-  const rows = c.s.blacknet.slice(-limit).map((m) => `[${fmtClock(c.s.config, m.t)}] ${m.alias}: ${m.text}`);
+  const rows = c.s.blacknet.slice(-limit).map((m) => `[${fmtClock(m.t)}] ${m.alias}: ${m.text}`);
   return good(`Blacknet: ${rows.length} message${rows.length === 1 ? '' : 's'}.`, rows);
 };
 
@@ -1245,7 +1311,7 @@ H['BLACKHAT_DB.HOST_LOG.VIEW_HOST_LOG'] = (c, q) => {
   const rows = c.s.hostLog
     .filter((h) => !alertsOnly || h.alert)
     .slice(-30)
-    .map((h) => `[${fmtClock(c.s.config, h.t)}] ${h.id.padEnd(4)} ${h.alert ? '!! ' : ''}${h.message}`);
+    .map((h) => `[${fmtClock(h.t)}] ${h.id.padEnd(4)} ${h.alert ? '!! ' : ''}${h.message}`);
   return good(`Host log (${alertsOnly ? 'alerts' : 'all'}): ${rows.length}.`, rows.length ? rows : ['Nothing here.']);
 };
 

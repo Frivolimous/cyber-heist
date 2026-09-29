@@ -5,20 +5,41 @@ Decisions marked **assumed** were not in the design brief. Change them in `catal
 
 ## Win conditions
 
-- **Black Hats** win when stolen money reaches **$1M per Black Hat** ($3M at 10 players). Stolen money is
-  whatever sits in the Target Ledger (mule) accounts, which start empty: it arrives when a payment
-  SETTLES into one of them, and leaves again on a successful reversal or when a mule account pays out.
-- **White Hats** win when **$15M per player** ($150M at 10 players) of legitimate payments have been
-  SETTLED. Legitimate = every automatic payment, plus manual payments that **fulfil a payment request**
+- **Black Hats** win **at once** when stolen money reaches **$1M per Black Hat** ($3M at 10 players).
+  Stolen money is whatever sits in the Target Ledger (mule) accounts, which start empty: it arrives when a
+  payment SETTLES into one of them, and leaves again on a successful reversal or when a mule account pays out.
+- **White Hats** win **at close of business** (when the timer runs out) if **$15M per player** ($150M at
+  10 players) of legitimate payments have been SETTLED by then. Meeting the target early does not end the
+  game: the bank has to survive the whole day. Legitimate = every automatic payment, plus manual payments that **fulfil a payment request**
   (linked to it by request id, to the payee and for the amount the customer asked). Other manual
   payments never count, so players cannot invent payments to win. Rejected, held, failed and reversed
-  payments do not count, so defence has a throughput cost.
-- **Timer:** 20 minutes. If it expires the **Black Hats win** (assumed: the bank failed to hit its
-  quota). Configurable via `timeoutWinner`.
+  payments do not count, so defence has a throughput cost. Payments settled into an employee's own
+  account (**embezzled**) count for nobody.
+- **Timer:** 20 minutes. If it runs out with the bank short of its target (and the Black Hats short of
+  theirs, or they would already have won), **both sides lose**.
+- **White Hats** also win **at once** when **every Black Hat is terminated** (see Termination), or when a
+  Firewall "revoke all access" completes on the **unregistered host** (`10.66.6.6`): it is shut down and
+  the heist is over.
 - **Everybody loses** if a Firewall "revoke all access" completes on one of the bank's own systems
   (Security, Client Data or Transaction Processing): the bank shuts down and the game ends with no
-  winner. It is the nuclear option for a side about to lose. Revoking a workstation or the unregistered
-  host does not end the game.
+  winner. It is the nuclear option for a side about to lose.
+- **End screen**: who won and how (worded for each ending), both teams with their members and what each
+  team made against its goal (settled for the bank, diverted for the Black Hats), who was terminated, and
+  as an aside anyone who **embezzled** ("Embezzled $2,351": payments settled into their own account, which
+  count toward no goal). It can be put away to look at the desk and brought back from the status bar.
+
+## Termination
+
+- A player is **terminated** for good when **every bank credential they own has been revoked**, or when
+  a Firewall **"revoke all access" completes on their workstation's IP**. Nothing brings them back,
+  White Hat or Black Hat.
+- The Master Log records "<name> (<ip>) terminated: ..." and Employee Records mark them **TERMINATED**.
+  Permissions refuses to issue them credentials.
+- They lose every bank system, workstation logins and connections: every bank page shows "ERROR: Your
+  credentials are invalid." Private messages still work.
+- A terminated Black Hat **keeps the unregistered host**: it is outside the bank's firewall, so a revoked
+  IP does not cut it off and its credentials are not revoked. (A timed Firewall block still does.)
+- Planted users (Infiltration) are terminated the same way once they have been issued a credential.
 - **Volume scales with the table** (`scaledConfig` in `setup.ts`). Each Personal Banker gets a client
   request about every **90 seconds** on average. Automatic traffic fills the rest, up to about $18M per
   player in total, but automatic volume is capped at **80% of the bank target**, so the bank cannot win
@@ -37,7 +58,9 @@ Decisions marked **assumed** were not in the design brief. Change them in `catal
 - **Time of day** (`pacing.ts`): the day runs by share of the game elapsed. New client requests and
   automatic payments arrive at the phase's pace; busy is 4x slow and medium 2x slow, rescaled so the
   total over the game is unchanged. Nothing new arrives at Close of Business (work already in the queues
-  can still be finished). The header shows the time of day, the busy level and the countdown.
+  can still be finished). The header shows the time of day, the busy level and the game clock counting
+  up to its end ("07:42 / 20:00"). Every time players see (logs, records, requests, the end screen) uses
+  that same clock.
 
 | Time remaining (20 min) | Share left | Time of day | Pace |
 |---|---|---|---|
@@ -224,8 +247,9 @@ of "potential targets for fraudulent transactions").
     address (a bank system or the unregistered host) cannot be used by anyone. Logged in the Master Log only.
   - **Revoke all access** for an address: a confirmation ("irreversible"), then a 30s countdown
     (`revokeCountdownSec`) that can only be cancelled from the Firewall (**Cancel a revocation** by id).
-    When it runs, the address is blocked permanently, and a workstation's owner loses every credential.
-    It cannot be undone.
+    When it runs, the address is blocked permanently, and a workstation's owner loses every bank credential
+    and is terminated. It cannot be undone. Completing it on a bank system ends the game with no winner; on
+    the unregistered host, the White Hats win.
 - **Security alerts**: every Firewall action that weakens the bank, and every credential issued or revoked,
   raises a Master Log alert naming the credential owner, like the log entry it points at.
   - **Suspicious security activity** (tier 2, so Alert mute can hide it): blocking an address, switching a
@@ -322,9 +346,11 @@ of "potential targets for fraudulent transactions").
   or the person themselves for a private customer. Requests, follow-ups (normal and urgent), complaints
   and walkouts are each picked from a set of 6-10 form messages ("This is Cody from Cobalt Payroll.",
   "Regarding the payment to ...", ...).
-- **Scam requests** (Social / Scam request) are worded from the same form messages as real account
-  requests (the operative picks customer, kind and account, not the text). They show a deadline like any other, but no customer ever follows
-  up or complains: they expire quietly, with no strike.
+- **Scam requests** (Social / Scam request) are worded from the same form messages as real requests
+  (the operative picks the customer and what is asked, not the text). They show a deadline like any
+  other (the urgent one for an urgent payment), but no customer ever follows up or complains: they
+  expire quietly, with no strike. A payment made for a scam request never counts toward the bank's
+  target, even when it matches the payee and amount.
 - **Phishing:** every Personal Banker also gets 1-5 obvious scam messages per game (`phishPerBankerMin`/
   `Max`) at random times, from a set of tropes (the prince with a frozen fortune, the rich kid whose dad froze
   his cards, the lonely bride who needs a plane ticket, the lottery win, the stranded friend, ...). They
@@ -387,15 +413,53 @@ Authorization.
   going to a random operative as a second. With more kits than operatives, some go unused; with more
   operatives than kits (15+ players), kits repeat so everyone has one. Operatives can share kit codes
   like any other credential.
-- **Kit tools**: Infiltration (Reroute IP, Create user), Social (Spoofed message, Scam request), Cleanup
-  (Log wiper, Alert mute), Access (Code crack, Lockout bomb). Details are in BACKLOG.md under Black Hats.
-  They have no cooldowns or charges; each is balanced by its **exposure tier**, shown on its button:
+- **Kit tools** (tier in brackets):
+  - **Infiltration / Create proxy** (3): set up a typed, unused IP address as a proxy. An address already
+    on the network (a workstation, planted or real, a bank system, the host, another proxy) is refused.
+    Proxies are shared by every operative, and Reroute IP and Create user can only use proxies, so
+    neither can borrow a real workstation's IP. A proxy is an address like any other: the Firewall can
+    block it or revoke all access to it. Typing its address into a window's address bar shows a **Proxy
+    relay** page: nothing to log in to, but it says whether traffic is going through it right now (a
+    reroute is running) or it is idle.
+  - **Infiltration / Reroute IP** (2): pick what to reroute (your own workstation by default, any other
+    workstation's IP, or the server's own address), a proxy from the list and a number of seconds (1-60,
+    10 by default). For that long the rerouted address shows as the proxy in **every** record: Master Log
+    source IPs, alerts, and every trace clue at every tier (a loud tool's "exact IP" or "server's address"
+    gives the proxy). Rerouting the server hides its address from the bank's clues. Routing (blocks,
+    lockouts) stays on the real address, and a rerouted workstation looks idle in Employee Records. Each
+    address has one reroute at a time: a new one replaces it.
+  - **Infiltration / Create user** (2): plant a fake employee (typed name, a role, a proxy from the list)
+    at the proxy's address. It shows in Employee Records and can be issued credentials like anyone else,
+    but is nobody's seat.
+  - A proxy is **unavailable** (the list says why, and both tools refuse it) while the Firewall blocks
+    it, while another operative's reroute runs through it, or once a planted user sits at it.
+  - **Social / Spoofed message** (2): a private message that appears to come from another employee (typed
+    to, from and text). It lands only in the recipient's inbox, never the impersonated sender's history,
+    so comparing notes exposes it; a made-up sender name shows as typed.
+  - **Social / Scam request** (2): a fake Client Request from a customer to their banker, worded like
+    real requests. It asks either for an account change (set primary, add and make primary, add, or
+    remove an account) or for a payment (pay a typed payee a typed amount from the customer's main
+    account, normal or urgent, up to the manual payment cap). It looks normal in the queue; the leak is
+    the alert. Paired with a redirected payee primary, a scam payment sends a real customer's money to a
+    mule.
+  - **Cleanup / Log wiper** (2): hide one Master Log entry. It leaves a visible id gap, and a Trace still
+    reaches it until it ages out.
+  - **Cleanup / Alert mute** (3): for 10s, tier 1-2 alerts are dropped. Tier 3-4 alerts, including the
+    mute's own, always get through.
+  - **Access / Code crack** (2): pick a module; one digit of a random credential covering it is recovered
+    about every 15s (a minute for all four), each leaving an alert naming the credential and its
+    progress. The operative learns the credential when it completes. Revoking the credential or a timed
+    block on the operative's workstation stops it.
+  - **Access / Lockout bomb** (2): failed logins spoofed from the target's IP trip their lockout. Employee
+    Records can reset it.
+- Kit tools have no cooldowns or charges; each is balanced by its **exposure tier**, shown on its button:
   - noisy (tier 2): an alert pointing at the tool's "Unknown server activity" entry; a trace of it gives a
     vague clue;
   - loud (tier 3): an alert; a trace gives the operative's exact IP or the server's address;
-  - reckless (tier 4): an alert; a trace gives the operative's IP and their host access code.
-  Everyday host use (tier 1) raises no alert. Alerts never name anyone; the leak is in the trace, and it
-  is always about the real operative, even during a reroute. Operatives get a Host Log warning for each
+  - reckless (tier 4): an alert; a trace gives the operative's IP and their host access code. (No tool
+    is tier 4 at the moment.)
+  Everyday host use (tier 1) raises no alert. Alerts never name anyone; the leak is in the trace, which
+  gives the addresses as recorded: during a reroute, the proxy. Operatives get a Host Log warning for each
   alert. Alert mute drops noisy and other minor alerts (and their warnings) for 10s.
 - **Host Log**: the host's own log, for operatives (and anyone who gets in). It records activity on the
   host named after the host credential's owner ("Anna: posted on Blacknet"; failed logins and bare
@@ -404,7 +468,7 @@ Authorization.
 - Every use of the host (and every Connect to its address) writes only a cryptic, nameless system entry,
   **"Unknown server activity"**, visible under the Master Log's **Everything** filter but not **Player
   activity**. Quiet live-monitor refreshes write nothing. Everyday host use raises **no alert**; only
-  kit tools do (by exposure tier, see BACKLOG.md), and their alerts just point at the entry to trace.
+  kit tools do (by exposure tier, above), and their alerts just point at the entry to trace.
 - Failed code attempts on the host (unknown, revoked, wrong access) also write only "Unknown server
   activity". They still count toward the lockout and the failed-attempts total in Employee Records.
 - **Tracing** an "Unknown server activity" entry ("routed through a relay.") returns one true but
@@ -420,6 +484,8 @@ Authorization.
   from a reckless tool's trace, get one shared, or find one on a Black Hat's workstation. Permissions
   cannot issue host credentials.
 - Credential Cache lists White Hat credentials held by operatives.
+- A Firewall "revoke all access" that completes on the host's address shuts it down, and the White Hats
+  win (see Win conditions). A timed block only cuts the operatives off for its duration.
 
 ## Not implemented yet
 

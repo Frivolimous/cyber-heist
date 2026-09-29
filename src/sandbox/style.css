@@ -64,6 +64,7 @@ button:disabled { cursor: default; opacity: 0.4; }
 .who > span:not(.chip) { color: #9fb0cc; }
 .clock { display: flex; align-items: center; gap: 10px; }
 .clock b { font: 700 24px/1 var(--mono); color: var(--gold); }
+.clock .ends { font: 600 14px/1 var(--mono); color: #9fb0cc; margin-left: -4px; white-space: nowrap; }
 .clock .phase { font-weight: 600; color: #eef2f8; white-space: nowrap; }
 /* busy level: a pill whose colour tracks how fast new work is arriving */
 .pace { font-size: 12px; font-weight: 600; padding: 1px 9px; border-radius: 10px; white-space: nowrap; }
@@ -341,3 +342,51 @@ fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
 .win.host.kit .cmd-btn.reckless:hover { background: #ff3b2f; border-color: #ff3b2f; }
 .cmd-row .warn { flex-basis: 100%; margin: 0; padding: 8px 10px; border-radius: 4px; background: #f7d9d5; color: #5c120c; font-size: 13px; }
 .banner.none { background: #e3e6ec; color: #22283a; }
+
+/* terminated employees */
+.chip.terminated { background: #3d4454; }
+.pl .rl .gone { font-weight: 600; font-size: 11px; color: #ff9c8f; margin-left: 4px; }
+.noroute.terminated h2 { font-family: var(--mono); }
+
+/* end screen: covers the desk until put away */
+.endscreen { position: absolute; inset: 0; z-index: 200000; display: grid; place-items: center; padding: 16px; background: rgba(6, 12, 24, 0.72); overflow: auto; }
+.endscreen[hidden] { display: none; }
+.end-card { width: min(760px, 100%); background: #f4f6f9; color: var(--text); border-radius: 12px; padding: 22px 24px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5); display: grid; gap: 12px; border-top: 6px solid #6b7488; }
+.end-card.WHITE { border-top-color: var(--white-hat); }
+.end-card.BLACK { border-top-color: var(--black-hat); }
+.end-card h2 { margin: 0; font-size: 26px; }
+.end-card.WHITE h2 { color: var(--white-hat); }
+.end-card.BLACK h2 { color: var(--black-hat); }
+.end-kicker { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.end-text { margin: 0; line-height: 1.45; }
+.end-teams { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.end-team { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; gap: 8px; align-content: start; }
+.end-team.won { box-shadow: 0 0 0 2px var(--gold); }
+.end-team header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.end-team h3 { margin: 0; font-size: 15px; }
+.end-team.WHITE h3 { color: var(--white-hat); }
+.end-team.BLACK h3 { color: var(--black-hat); }
+.end-team .result { font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 1px 8px; border-radius: 9px; background: #e3e6ec; color: var(--muted); }
+.end-team.won .result { background: var(--gold); color: #3d2a00; }
+.end-made { font-size: 13px; color: var(--muted); }
+.end-made b { font-size: 18px; color: var(--text); }
+.end-bar { height: 6px; border-radius: 3px; background: #e3e6ec; overflow: hidden; }
+.end-bar i { display: block; height: 100%; }
+.end-team.WHITE .end-bar i { background: var(--white-hat); }
+.end-team.BLACK .end-bar i { background: var(--black-hat); }
+.end-team ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.end-team li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 4px 0; border-top: 1px solid #eef1f5; }
+.end-team li .nm { font-weight: 600; }
+.end-team li .rl { color: var(--muted); font-size: 12px; }
+.end-team .flag { font-size: 11px; padding: 0 6px; border-radius: 3px; }
+.end-team .flag.term { background: #3d4454; color: #fff; }
+.end-team .flag.emb { background: var(--amber-bg); color: #7a4a00; font-style: italic; }
+.end-note { margin: 0; font-size: 12px; color: var(--muted); font-style: italic; }
+.end-close { justify-self: end; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 6px 14px; font-weight: 600; }
+.end-close:hover { border-color: var(--win-title); }
+.banner button { margin-left: 8px; border: 1px solid currentColor; background: none; color: inherit; border-radius: 4px; padding: 1px 8px; font: inherit; font-weight: 600; }
+
+/* a proxy's address typed into the nav bar */
+.noroute.proxy h2 { color: var(--win-title); font-family: var(--mono); }
+.noroute .relay { font-weight: 600; color: var(--muted); }
+.noroute .relay.on { color: var(--black-hat); }

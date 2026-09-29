@@ -93,13 +93,21 @@ function matchRequest(s: GameState, tx: Transaction): void {
 /**
  * Does this payment count toward the bank's target? Automatic payments always do. A manual payment counts
  * only when it fulfils a customer's payment request: linked to it, to the payee and for the amount asked.
- * (Otherwise players could invent payments to hit the target.) A request can be linked only once.
+ * (Otherwise players could invent payments to hit the target.) A request can be linked only once. A scam or
+ * phishing request has no real customer behind it: paying it never counts.
  */
 export function countsForBank(s: GameState, tx: Transaction): boolean {
   if (tx.origin === 'NPC') return true;
   const req = tx.requestId ? s.requests.find((r) => r.id === tx.requestId) : undefined;
-  return !!req && req.kind === 'PAYMENT' && req.payeeId === tx.beneficiaryId && req.amount === tx.amount;
+  return !!req && !req.scam && !req.phish && req.kind === 'PAYMENT' && req.payeeId === tx.beneficiaryId && req.amount === tx.amount;
 }
+
+/** An employee's own account: money settled there is embezzled, and counts toward no goal. */
+export const isEmployeeAccount = (s: GameState, account: string | null): boolean =>
+  account !== null && Object.values(s.players).some((p) => p.bankAccount === account);
+
+/** A settled payment's contribution to the bank's target: never when it went to a mule or an employee. */
+const creditsBank = (s: GameState, tx: Transaction): boolean => !tx.fraud && !isEmployeeAccount(s, tx.settledTo) && countsForBank(s, tx);
 
 /**
  * Moves the money at once: out of the originator account, into whatever account is the beneficiary's primary
@@ -122,7 +130,7 @@ export function settleTransaction(s: GameState, tx: Transaction, who: TxActor): 
   moveMoney(s, from, account, tx.amount); // the stolen total follows the Target Ledger balances
   recordTx(s, tx, 'SETTLED', who, `${money(tx.amount)} from ${from} to ${account}`);
   if (!tx.requestId) matchRequest(s, tx);
-  if (!fraud && countsForBank(s, tx)) s.totals.processed += tx.amount;
+  if (creditsBank(s, tx)) s.totals.processed += tx.amount;
   return { ok: true, account, fraud };
 }
 
@@ -130,7 +138,7 @@ export function settleTransaction(s: GameState, tx: Transaction, who: TxActor): 
 export function reverseTransaction(s: GameState, tx: Transaction, who: TxActor): boolean {
   if (balanceOf(s, tx.settledTo!) < tx.amount) return false;
   moveMoney(s, tx.settledTo!, tx.debitedFrom!, tx.amount);
-  if (!tx.fraud && countsForBank(s, tx)) s.totals.processed -= tx.amount;
+  if (creditsBank(s, tx)) s.totals.processed -= tx.amount;
   tx.status = 'REVERSED';
   recordTx(s, tx, 'REVERSED', who, `${money(tx.amount)} returned from ${tx.settledTo} to ${tx.debitedFrom}`);
   return true;

@@ -43,6 +43,11 @@ npm run typecheck
   mule account a customer's primary diverts every payment to them.
 - **Time:** 20 minutes, running through a working day (slow morning, lunch rush, busy end of day, close
   of business). New work arrives faster or slower accordingly.
+- **Winning:** the Black Hats win the moment they divert their goal. The bank wins at close of business if
+  it met its target, or at once if every Black Hat is terminated (all their credentials revoked, or their
+  IP revoked) or the unregistered host is shut down. If time runs out with neither goal met, or one of
+  the bank's own systems is shut down, everybody loses. The end screen shows both teams, what they made,
+  and anyone who embezzled.
 
 Full rules and tuning: [docs/RULES.md](docs/RULES.md).
 
@@ -53,7 +58,8 @@ Full rules and tuning: [docs/RULES.md](docs/RULES.md).
   Switch seats with **Viewing as**. Each seat keeps its own open windows.
 - Set the table size with **players** (6-30) and start a **New game**; the seed makes a game
   repeatable.
-- The header shows the time of day, how busy it is, the countdown and the bank's progress.
+- The header shows the time of day, how busy it is, the game clock ("07:42 / 20:00", the same time the
+  logs use) and the bank's progress.
 - The player screen is an employee sidebar plus a simulated desktop. Click a system to open a
   window, then a module (each tile shows your access to it). Windows can be moved, resized,
   minimized, maximized and navigated with back/forward or the address bar (e.g.
@@ -88,7 +94,8 @@ src/engine/
   types.ts        data model (plain JSON, Firestore-friendly)
   catalog.ts      systems > modules > functions, roles and their credentials, player-count formulas, tuning
   setup.ts        createGame: roles, allegiances, credentials, customers, scaled targets and rates
-  engine.ts       applyAction / tick: auth, scope, offline, blocks, logging, arrivals, win checks
+  engine.ts       applyAction / tick: auth, scope, offline, blocks, logging, arrivals
+  ending.ts       terminations, end conditions and the end-screen summary
   handlers.ts     one handler per catalog function (incl. the Black Hat tools and their exposure)
   bank.ts         risk scoring, settlement, reversal, automatic payments, debug auto-processor
   requests.ts     client requests and banker assignment

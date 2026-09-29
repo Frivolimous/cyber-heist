@@ -3,7 +3,7 @@
 import { findModule } from './catalog';
 import { randInt } from './rng';
 import { notify } from './notify';
-import type { ActionResult, Alert, Block, Customer, GameConfig, GameState, LogEntry, Player, Reroute } from './types';
+import type { ActionResult, Alert, Block, Customer, GameState, LogEntry, Player, Reroute } from './types';
 
 export const keyOf = (system: string, module: string): string => `${system}.${module}`;
 
@@ -11,12 +11,10 @@ export function gameTime(s: GameState): number {
   return Math.max(0, (s.now - s.startedAt) / 1000);
 }
 
-export function fmtClock(config: GameConfig, t: number): string {
-  const total = Math.floor(config.clockStart + t);
-  const h = Math.floor(total / 3600) % 24;
-  const m = Math.floor(total / 60) % 60;
-  const sec = total % 60;
-  return [h, m, sec].map((n) => String(n).padStart(2, '0')).join(':');
+/** Game time as players see it everywhere (logs, records, the header): elapsed minutes and seconds, "07:42". */
+export function fmtClock(t: number): string {
+  const total = Math.max(0, Math.floor(t));
+  return [Math.floor(total / 60), total % 60].map((n) => String(n).padStart(2, '0')).join(':');
 }
 
 export function money(n: number): string {
@@ -125,14 +123,19 @@ export function blockText(s: GameState, b: Block): string {
   return b.until === null ? 'permanently' : `for ${Math.ceil(b.until - gameTime(s))}s`;
 }
 
-/** The IP reroute in force for a player, if any (the latest one that has not expired). */
-export function activeReroute(s: GameState, playerId: string, t: number): Reroute | undefined {
-  return [...s.reroutes].reverse().find((r) => r.playerId === playerId && r.until > t);
+/** The IP reroute in force for an address, if any (the latest one that has not expired). */
+export function activeReroute(s: GameState, ip: string, t: number): Reroute | undefined {
+  return [...s.reroutes].reverse().find((r) => r.fromIp === ip && r.until > t);
 }
 
-/** The IP a player's activity currently appears to come from: their own, unless an IP reroute is active. */
+/** The IP a player's activity currently appears to come from: their own, unless their workstation is rerouted. */
 export function effectiveIp(s: GameState, p: Player, t: number): string {
-  return activeReroute(s, p.id, t)?.toIp ?? p.ip;
+  return activeReroute(s, p.ip, t)?.toIp ?? p.ip;
+}
+
+/** The unregistered host's address as it currently appears in records: its own, unless it is rerouted. */
+export function effectiveHost(s: GameState, t: number): string {
+  return activeReroute(s, s.hiddenHost, t)?.toIp ?? s.hiddenHost;
 }
 
 /** Adds an entry to the hidden host's own log. */

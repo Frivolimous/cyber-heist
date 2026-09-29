@@ -28,7 +28,6 @@ export interface GameConfig {
   customersPerBanker: number;
   whiteTarget: number; // derived: legitimate money that must be settled for a White Hat win
   blackTarget: number; // derived: stolen money for a Black Hat win
-  timeoutWinner: Winner; // who wins if the clock runs out
   blackHatCount: number | null; // null = hackerCount(n): floor(n / 3)
   npcIntervalSec: number; // derived: one automatic payment every N seconds
   npcMinAmount: number;
@@ -41,7 +40,6 @@ export interface GameConfig {
   traceCooldownSec: number;
   lockoutAfterFails: number; // consecutive failures before a workstation locks
   lockoutSec: number;
-  clockStart: number; // seconds after midnight shown as the in-game start time
   autoProcess: boolean; // DEBUG: a bot settles NPC payments that pass the risk check
   autoProcessDelaySec: number;
   requestIntervalSec: number; // derived: one client request (bank-wide) every N seconds
@@ -66,14 +64,26 @@ export interface Block {
 }
 
 /**
- * An IP reroute (Infiltration kit): for a while, one operative's activity appears to come from `toIp`.
- * Attribution only — Master Log source IPs (so Traces) and Employee Records "last activity" follow the
- * fake IP; actual routing (firewall blocks, lockouts) still tracks the real workstation.
+ * An IP reroute (Infiltration kit): for a while, everything recorded about `fromIp` shows the proxy `toIp`
+ * instead. `fromIp` is a workstation (any player's, not only the operative's own) or the unregistered host.
+ * Attribution only — log source IPs, every trace clue and alert, and Employee Records "last activity" follow
+ * the proxy; actual routing (firewall blocks, lockouts) still tracks the real address.
  */
 export interface Reroute {
-  playerId: PlayerId;
+  fromIp: string;
   toIp: string;
   until: number; // game seconds
+  byPlayerId: PlayerId; // ground truth: the operative who set it up
+}
+
+/**
+ * A proxy (Infiltration / Create proxy): an address set up on the unregistered host. Reroute IP and Create user
+ * can only use proxies, never an address already on the network. Shared by every operative.
+ */
+export interface Proxy {
+  ip: string;
+  t: number; // game seconds
+  createdBy: PlayerId; // ground truth: the operative who set it up
 }
 
 /** "Revoke all access" for an address: runs when the countdown ends unless someone cancels it. */
@@ -130,6 +140,8 @@ export interface LogEntry {
   actualPlayerId: PlayerId | null;
   /** Hidden host entries only: what was really done ("posted on Blacknet"); a Trace may reveal it. */
   activity?: string;
+  /** Hidden host entries only: the server's address as recorded (a proxy while the host is rerouted). */
+  server?: string;
   /** Hidden host entries only: exposure tier 1-4 of the action (default 1). A higher tier makes a Trace reveal more. */
   exposure?: number;
   /** Wiped by Cleanup / Log wiper: hidden from the Master Log (leaving an id gap) but still traceable until it ages out. */
@@ -283,6 +295,16 @@ export interface Notice {
   text: string;
 }
 
+export type TerminationReason = 'CREDENTIALS' | 'IP_REVOKED';
+
+/**
+ * How the game ended. BLACK_TARGET: the Black Hats diverted their goal. WHITE_TARGET: the bank reached close of
+ * business with its target met. BANK_SHORT: close of business with neither goal met (both lose). BLACK_HATS_TERMINATED:
+ * every Black Hat was disabled. HOST_SHUT_DOWN: the unregistered host's access was revoked (White Hats win).
+ * SHUTDOWN: a bank system's access was revoked, and everybody loses.
+ */
+export type EndKind = 'BLACK_TARGET' | 'WHITE_TARGET' | 'BANK_SHORT' | 'BLACK_HATS_TERMINATED' | 'HOST_SHUT_DOWN' | 'SHUTDOWN';
+
 export interface ActivityEntry {
   t: number;
   text: string;
@@ -310,6 +332,8 @@ export interface Player {
   remoteAccess: { playerId: PlayerId; credentialId: string }[]; // other workstations this player has logged in to
   watching: string[]; // pages (SYSTEM.MODULE) with the notification bell on
   notifications: Notice[]; // the last few pop-ups, newest last
+  /** Disabled for good: every bank credential revoked, or the workstation's IP revoked. Keeps the hidden host only. */
+  terminated: { t: number; reason: TerminationReason } | null;
   fake?: boolean; // planted by a Black Hat (Infiltration): a record in Employee Records, not a real seat
 }
 
@@ -320,7 +344,9 @@ export interface GameState {
   config: GameConfig;
   status: 'RUNNING' | 'ENDED';
   winner: Winner | null;
+  endKind: EndKind | null;
   endReason: string | null;
+  endedAt: number | null; // game seconds
   startedAt: number; // ms
   now: number; // ms, last time the state was advanced to
   lastNpcAt: number; // game seconds
@@ -334,6 +360,7 @@ export interface GameState {
   requests: ClientRequest[];
   blocks: Block[];
   reroutes: Reroute[];
+  proxies: Proxy[];
   cracks: CodeCrack[];
   alertMuteUntil: number; // game seconds: while now < this, tier 1-2 alerts are suppressed (Cleanup / Alert mute)
   hostLog: HostLogEntry[];
@@ -410,4 +437,5 @@ export interface ActionResult {
   message: string;
   lines?: string[];
   workstation?: PlayerId; // CONNECT: the address belongs to this player's workstation
+  proxy?: { ip: string; relaying: boolean }; // CONNECT: the address is an Infiltration proxy (and whether a reroute runs through it now)
 }

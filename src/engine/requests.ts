@@ -89,6 +89,21 @@ export function accountRequestText(s: GameState, cust: Customer, kind: Exclude<R
   return pick(s, ACCOUNT_TEXTS[kind])(words);
 }
 
+/** A payment request in the customer's words (paid from their main account), from the same forms real requests use. */
+export function paymentRequestText(s: GameState, cust: Customer, payee: Customer, amount: number, urgent: boolean): string {
+  const words: Words = {
+    banker: cust.bankerId ? s.players[cust.bankerId].name : 'team',
+    cust: cust.name,
+    payee: payee.name,
+    amt: money(amount),
+    from: 'from our main account',
+    acct: '',
+    month: pick(s, MONTHS),
+    ref: randInt(s, 1000, 9999),
+  };
+  return pick(s, urgent ? URGENT_TEXTS : PAYMENT_TEXTS)(words);
+}
+
 /** Hands each customer to a personal banker (round-robin); with no personal bankers, to anyone. */
 export function assignBankers(s: GameState): void {
   const players = s.playerOrder.map((id) => s.players[id]);

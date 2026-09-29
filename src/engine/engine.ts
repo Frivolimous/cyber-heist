@@ -7,6 +7,7 @@ import { advanceRequests, spawnRequest } from './requests';
 import {
   activeBlock,
   activeReroute,
+  effectiveHost,
   addAlert,
   addHostLog,
   addLog,
@@ -16,6 +17,7 @@ import {
   fail,
   gameTime,
   keyOf,
+  money,
   nameOf,
   nextId,
   note,
@@ -25,6 +27,7 @@ import {
 import { findCredentialByCode } from './credentials';
 import { advanceCracks, credScopeText, HANDLERS } from './handlers';
 import { canWriteModule, notify, WATCHABLE } from './notify';
+import { checkEnd, closeOfBusiness, endGame, TERMINATED_TEXT } from './ending';
 import { nextArrival } from './pacing';
 import type { Ctx } from './handlers';
 import type {
@@ -71,11 +74,7 @@ export function advanceState(s: GameState, now: number): void {
   advanceRequests(s);
   if (s.config.autoProcess) autoProcess(s);
   checkWin(s);
-  if (s.status === 'RUNNING' && targetT >= endT) {
-    s.status = 'ENDED';
-    s.winner = s.config.timeoutWinner;
-    s.endReason = 'Time ran out before either objective was met.';
-  }
+  if (s.status === 'RUNNING' && targetT >= endT) closeOfBusiness(s);
 }
 
 /** Pure wrapper around advanceState. */
@@ -85,17 +84,9 @@ export function tick(state: GameState, now: number): GameState {
   return s;
 }
 
+/** Terminations and the instant end conditions (see ending.ts). The bank's own target is only checked at close of business. */
 export function checkWin(s: GameState): void {
-  if (s.status !== 'RUNNING') return;
-  if (s.totals.stolen >= s.config.blackTarget) {
-    s.status = 'ENDED';
-    s.winner = 'BLACK';
-    s.endReason = 'The Black Hats diverted enough money.';
-  } else if (s.totals.processed >= s.config.whiteTarget) {
-    s.status = 'ENDED';
-    s.winner = 'WHITE';
-    s.endReason = 'The bank processed its quota of legitimate payments.';
-  }
+  checkEnd(s);
 }
 
 // ---- Actions ------------------------------------------------------------------
@@ -150,7 +141,7 @@ function registerFailure(s: GameState, p: Player): void {
  * real workstation stays idle. So Employee Records tells the same spoofed story as the Master Log.
  */
 function markActive(s: GameState, p: Player, t: number): void {
-  const rr = activeReroute(s, p.id, t);
+  const rr = activeReroute(s, p.ip, t);
   if (!rr) {
     p.lastActiveAt = t;
     return;
@@ -168,15 +159,21 @@ function credCovers(cr: Credential, system: string, module: string, fnId: string
   );
 }
 
-/** Why this workstation cannot reach the network right now, if it cannot. */
-function workstationBlocked(s: GameState, p: Player): string | null {
+/**
+ * Why this workstation cannot reach the network right now, if it cannot. A revoked IP (a permanent block) cuts
+ * it off from the bank only: the unregistered host is outside the bank's firewall.
+ */
+function workstationBlocked(s: GameState, p: Player, toHiddenHost = false): string | null {
   const b = activeBlock(s, p.ip);
-  return b ? `Your workstation is blocked by the firewall ${blockText(s, b)}.` : null;
+  if (!b || (toHiddenHost && b.until === null)) return null;
+  return `Your workstation is blocked by the firewall ${blockText(s, b)}.`;
 }
 
 function execute(s: GameState, p: Player, a: ExecuteAction): ActionResult {
   const t = gameTime(s);
-  const blocked = workstationBlocked(s, p);
+  // A terminated employee keeps nothing but the unregistered host.
+  if (p.terminated && a.system !== 'BLACKHAT_DB') return fail(TERMINATED_TEXT);
+  const blocked = workstationBlocked(s, p, a.system === 'BLACKHAT_DB');
   if (blocked) return fail(blocked);
   if (p.lockedUntil > t) {
     return fail(`Workstation locked for ${Math.ceil(p.lockedUntil - t)}s after repeated failed attempts.`);
@@ -356,7 +353,9 @@ function sendMessage(s: GameState, p: Player, toId: string, text: string): Actio
 
 function connect(s: GameState, p: Player, address: string): ActionResult {
   const t = gameTime(s);
-  const blocked = workstationBlocked(s, p);
+  const toHost = (address ?? '').trim() === s.hiddenHost;
+  if (p.terminated && !toHost) return fail(TERMINATED_TEXT);
+  const blocked = workstationBlocked(s, p, toHost);
   if (blocked) return fail(blocked);
   if (activeBlock(s, (address ?? '').trim())) return fail('No route to host.');
   markActive(s, p, t);
@@ -364,6 +363,11 @@ function connect(s: GameState, p: Player, address: string): ActionResult {
   const addr = (address ?? '').trim();
   const station = Object.values(s.players).find((x) => x.ip === addr);
   if (station) return { ok: true, message: `Workstation ${addr} found.`, workstation: station.id };
+  // A proxy answers as a relay: nothing to log in to, but it shows whether traffic is going through it right now.
+  if (s.proxies.some((x) => x.ip === addr)) {
+    const relaying = s.reroutes.some((r) => r.toIp === addr && r.until > t);
+    return { ok: true, message: `${addr} is a proxy relay.`, proxy: { ip: addr, relaying } };
+  }
   if (addr !== s.hiddenHost) return fail('No route to host.');
   const first = !p.knownSystems.includes('BLACKHAT_DB');
   if (first) p.knownSystems.push('BLACKHAT_DB');
@@ -379,6 +383,7 @@ function connect(s: GameState, p: Player, address: string): ActionResult {
  */
 function accessWorkstation(s: GameState, p: Player, targetId: string, code: string): ActionResult {
   const t = gameTime(s);
+  if (p.terminated) return fail(TERMINATED_TEXT);
   const blocked = workstationBlocked(s, p);
   if (blocked) return fail(blocked);
   if (s.players[targetId] && activeBlock(s, s.players[targetId].ip)) return fail('No route to host.');
@@ -446,11 +451,12 @@ function runDueRevocations(s: GameState): void {
     let revoked = 0;
     if (victim) {
       for (const cr of Object.values(s.credentials)) {
-        if (cr.owner !== victim.id || cr.status === 'REVOKED') continue;
+        // The unregistered host is not the bank's: its credentials survive.
+        if (cr.owner !== victim.id || cr.status === 'REVOKED' || cr.system === 'BLACKHAT_DB') continue;
         cr.status = 'REVOKED';
         revoked++;
       }
-      note(victim, t, 'The firewall revoked all access for your workstation. Your credentials no longer work.');
+      note(victim, t, 'The firewall revoked all access for your workstation. Your bank credentials no longer work.');
     }
     const message = `Firewall: all access revoked for ${r.address} (${r.id})${victim ? `, ${revoked} of ${victim.name}'s credential${revoked === 1 ? '' : 's'} revoked` : ''}`;
     const entry = addLog(s, { actor: 'SYSTEM', kind: 'REVOKED_ALL', message, sourceIp: null, actualPlayerId: null });
@@ -458,17 +464,18 @@ function runDueRevocations(s: GameState): void {
     notify(s, 'SECURITY', 'FIREWALL', message);
     // The nuclear option: cutting off one of the bank's own systems shuts the bank down, and everybody loses.
     const bankSystem = SYSTEMS.find((sys) => !sys.hidden && sys.address === r.address);
-    if (bankSystem && s.status === 'RUNNING') {
-      s.status = 'ENDED';
-      s.winner = null;
-      s.endReason = `All access to ${bankSystem.label} was revoked and the bank shut down. Nobody wins.`;
+    if (bankSystem) endGame(s, 'SHUTDOWN', null, `All access to ${bankSystem.label} was revoked and the bank shut down. Nobody wins.`);
+    // Cutting off the unregistered host ends the heist: the White Hats win.
+    else if (r.address === s.hiddenHost) {
+      endGame(s, 'HOST_SHUT_DOWN', 'WHITE', `The Firewall revoked all access to the unregistered host at ${s.hiddenHost} and shut it down. Without it the heist is over. The Black Hats had diverted ${money(s.totals.stolen)} of their ${money(s.config.blackTarget)} goal.`);
     }
   }
 }
 
 /** Any contact with the hidden host: a nameless system entry (exposure tier 1: no alert, a trace gives a vague clue). */
 function hiddenActivity(s: GameState, p: Player, activity: string, hostMessage: string): LogEntry {
-  const entry = addLog(s, { actor: 'SYSTEM', kind: 'HIDDEN_ACCESS', message: 'Unknown server activity', sourceIp: effectiveIp(s, p, gameTime(s)), actualPlayerId: p.id, activity });
+  const t = gameTime(s);
+  const entry = addLog(s, { actor: 'SYSTEM', kind: 'HIDDEN_ACCESS', message: 'Unknown server activity', sourceIp: effectiveIp(s, p, t), actualPlayerId: p.id, activity, server: effectiveHost(s, t) });
   // The host keeps its own record, named after the host credential's owner.
   addHostLog(s, hostMessage);
   return entry;
@@ -482,6 +489,7 @@ const HIDDEN_ACTIVITY: Record<string, string> = {
   SET_TARGET_STATUS: 'changed a target\'s status',
   VIEW_CACHE: 'viewed the credential cache',
   VIEW_HOST_LOG: 'viewed the host log',
+  CREATE_PROXY: 'set up a proxy',
   REROUTE_IP: 'rerouted their IP',
   CREATE_USER: 'planted a user in the records',
   SPOOFED_MESSAGE: 'sent a spoofed message',

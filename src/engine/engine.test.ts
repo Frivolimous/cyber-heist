@@ -58,6 +58,16 @@ class Sim {
   }
 }
 
+/** Infiltration shortcuts for a player with whole-host access (grantMasterAccess). */
+function hostRun(sim: Sim, pid: string, fn: string, params: Record<string, string>): ActionResult {
+  return sim.run(pid, sim.code(pid, 'BLACKHAT_DB', null), 'BLACKHAT_DB', 'INFILTRATION', fn, params);
+}
+function plantAt(sim: Sim, pid: string, name: string, ip: string): ActionResult {
+  const proxy = hostRun(sim, pid, 'CREATE_PROXY', { ip });
+  assert.ok(proxy.ok, proxy.message);
+  return hostRun(sim, pid, 'CREATE_USER', { name, role: 'PERSONAL_BANKER', proxy: ip });
+}
+
 test('setup deals roles, allegiances, unique codes and a job description for everyone', () => {
   const { s } = new Sim();
   const ps = Object.values(s.players);
@@ -418,7 +428,7 @@ test('Black Hats win as soon as stolen money reaches the target', () => {
   assert.equal(after.message, 'The game is over.');
 });
 
-test('NPC traffic arrives on a schedule and White Hats win once enough is settled', () => {
+test('NPC traffic arrives on a schedule, and White Hats win at close of business once enough is settled', () => {
   const sim = new Sim({ npcMinAmount: 2_000_000, npcMaxAmount: 2_000_000 });
   assert.equal(sim.s.transactions.length, 3);
   // Arrivals follow the time of day: count the scheduled ones due by t=60 (a slow morning).
@@ -431,18 +441,27 @@ test('NPC traffic arrives on a schedule and White Hats win once enough is settle
 
   const win = new Sim({ npcMinAmount: 2_000_000, npcMaxAmount: 2_000_000, whiteTarget: 8_000_000, autoProcess: true });
   win.at(300);
+  assert.ok(win.s.totals.processed >= 8_000_000);
+  assert.equal(win.s.status, 'RUNNING', 'meeting the target early does not end the game');
+  win.at(win.s.config.durationSec + 1);
   assert.equal(win.s.status, 'ENDED');
   assert.equal(win.s.winner, 'WHITE');
-  assert.ok(win.s.totals.processed >= 8_000_000);
+  assert.equal(win.s.endKind, 'WHITE_TARGET');
+  assert.match(win.s.endReason!, /clearing its \$8,000,000 target/);
 });
 
-test('when time runs out the configured side wins', () => {
+test('when time runs out with neither goal met, both sides lose', () => {
   const sim = new Sim({ durationSec: 60 });
   sim.at(59);
   assert.equal(sim.s.status, 'RUNNING');
   sim.at(61);
   assert.equal(sim.s.status, 'ENDED');
-  assert.equal(sim.s.winner, 'BLACK');
+  assert.equal(sim.s.winner, null, 'neither side made its goal: both lose');
+  assert.equal(sim.s.endKind, 'BANK_SHORT');
+  assert.match(sim.s.endReason!, /neither side made its goal/);
+  const end = getPlayerView(sim.s, 'p0').end!;
+  assert.equal(end.headline, 'Everybody loses');
+  assert.ok(end.teams.every((t) => !t.won));
 });
 
 test('hidden host: guarded by credentials, discoverable through alerts, reachable once you know the address', () => {
@@ -701,7 +720,7 @@ test('stage rows: both accounts, who handled it (credential owner or channel), a
   const lines = sim.run('p0', master, 'TRANSACTIONS', 'RISK_CHECK', 'VIEW_RISK_QUEUE', { show: 'PENDING' }).lines!;
   const rowOf = (id: string) => lines.slice(lines.findIndex((l) => l.startsWith(id)), lines.findIndex((l) => l.startsWith(id)) + 2).join('\n');
   assert.ok(rowOf(mine.id).includes(`${cust.primary} -> CU2 ${sim.s.customers[1].primary}`), rowOf(mine.id));
-  assert.match(rowOf(mine.id), new RegExp(`created [0-9:]{8} by ${owner.name}`));
+  assert.match(rowOf(mine.id), new RegExp(`created [0-9]{2}:[0-9]{2} by ${owner.name}`));
   assert.ok(!rowOf(mine.id).includes(intruder.name));
   assert.match(rowOf(batch.id), new RegExp(`by ${batch.channel}`));
 
@@ -1080,15 +1099,27 @@ test('revoking all access to a bank system shuts the bank down: everybody loses'
   const [admin] = sim.byRole('IT_SPECIALIST');
   const fw = sim.code(admin.id, 'SECURITY', 'FIREWALL');
   sim.at(2);
-  // The hidden host can be revoked without ending the game.
-  sim.run(admin.id, fw, 'SECURITY', 'FIREWALL', 'REVOKE_ALL_ACCESS', { address: sim.s.hiddenHost });
-  sim.at(2 + sim.s.config.revokeCountdownSec + 1);
-  assert.equal(sim.s.status, 'RUNNING');
   sim.run(admin.id, fw, 'SECURITY', 'FIREWALL', 'REVOKE_ALL_ACCESS', { address: '10.0.0.30' });
   sim.at(sim.sec + sim.s.config.revokeCountdownSec + 1);
   assert.equal(sim.s.status, 'ENDED');
   assert.equal(sim.s.winner, null);
+  assert.equal(sim.s.endKind, 'SHUTDOWN');
   assert.match(sim.s.endReason!, /Transaction Processing was revoked .* Nobody wins/);
+  assert.equal(getPlayerView(sim.s, admin.id).end!.headline, 'Everybody loses');
+});
+
+test('revoking all access to the unregistered host shuts it down: White Hats win', () => {
+  const sim = new Sim();
+  const admin = sim.byRole('IT_SPECIALIST').find((p) => p.allegiance === 'WHITE')!;
+  sim.at(2);
+  assert.ok(sim.run(admin.id, sim.code(admin.id, 'SECURITY', 'FIREWALL'), 'SECURITY', 'FIREWALL', 'REVOKE_ALL_ACCESS', { address: sim.s.hiddenHost }).ok);
+  sim.at(2 + sim.s.config.revokeCountdownSec - 1);
+  assert.equal(sim.s.status, 'RUNNING', 'it can still be cancelled');
+  sim.at(3 + sim.s.config.revokeCountdownSec);
+  assert.equal(sim.s.status, 'ENDED');
+  assert.equal(sim.s.winner, 'WHITE');
+  assert.equal(sim.s.endKind, 'HOST_SHUT_DOWN');
+  assert.match(sim.s.endReason!, /unregistered host at 10\.66\.6\.6 and shut it down/);
 });
 
 test('firewall: "revoke all access" counts down, can be cancelled only from the Firewall, and is permanent once done', () => {
@@ -1116,8 +1147,8 @@ test('firewall: "revoke all access" counts down, can be cancelled only from the 
   // Allowed to finish: permanent block and every credential of the owner revoked.
   sim.run(admin.id, fw, 'SECURITY', 'FIREWALL', 'REVOKE_ALL_ACCESS', { address: ar.ip });
   sim.at(sim.sec + sim.s.config.revokeCountdownSec + 1);
-  assert.match(sim.run(ar.id, arCode, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'VIEW_QUEUE', {}).message, /blocked by the firewall permanently/);
-  assert.ok(Object.values(sim.s.credentials).filter((c) => c.owner === ar.id).every((c) => c.status === 'REVOKED'));
+  assert.equal(sim.run(ar.id, arCode, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'VIEW_QUEUE', {}).message, 'ERROR: Your credentials are invalid.');
+  assert.ok(Object.values(sim.s.credentials).filter((c) => c.owner === ar.id && c.system !== 'BLACKHAT_DB').every((c) => c.status === 'REVOKED'));
   assert.match(sim.run(admin.id, fw, 'SECURITY', 'FIREWALL', 'UNBLOCK_ADDRESS', { address: ar.ip }).message, /cannot be undone/);
   assert.ok(sim.s.logs.some((l) => l.message.startsWith(`Firewall: all access revoked for ${ar.ip}`)));
 });
@@ -1133,7 +1164,7 @@ test('Employee Records show last activity, failed attempts, lockouts and blocks;
   const rows = sim.run(analyst.id, sim.code(analyst.id, 'SECURITY', 'EMPLOYEE_RECORDS'), 'SECURITY', 'EMPLOYEE_RECORDS', 'VIEW_EMPLOYEES').lines!;
   const i = rows.findIndex((l) => l.startsWith(pb.name));
   assert.ok(rows[i].includes('[LOCKED OUT'), rows[i]);
-  assert.ok(rows[i + 1].includes('failed attempts: 3') && rows[i + 1].includes('last activity: 08:30:10'), rows[i + 1]);
+  assert.ok(rows[i + 1].includes('failed attempts: 3') && rows[i + 1].includes('last activity: 00:10'), rows[i + 1]);
   const alerts = sim.run(analyst.id, sim.code(analyst.id, 'SECURITY', 'MASTER_LOG'), 'SECURITY', 'MASTER_LOG', 'VIEW_LOG', { show: 'ALERTS' }).lines!;
   assert.equal(alerts.filter((l) => l.includes('AUTH_FAIL')).length, 3);
   assert.ok(!SYSTEMS.find((s) => s.id === 'SECURITY')!.modules.some((m) => m.id === 'INTRUSION_DETECTION'));
@@ -1225,68 +1256,80 @@ test('Host Log: activity on the host by credential owner, and alerts when the ba
   assert.ok(alerts[0].endsWith(trace.message.split('routed through a relay. ')[1]), 'same clue the bank got');
 });
 
-test('Infiltration / Reroute IP: activity follows the fake IP, exposure leaks the real one, and it wears off', () => {
+test('Infiltration / Create proxy and Reroute IP: reroutes only through a proxy, and a trace follows the proxy', () => {
   const sim = new Sim({ traceCooldownSec: 0 });
-  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const [black, other] = Object.values(sim.s.players).filter((p) => p.allegiance === 'BLACK');
   const victim = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE')!;
   const [analyst] = sim.byRole('BANK_MANAGER');
   grantMasterAccess(sim.s, black.id);
-  const hostCode = sim.code(black.id, 'BLACKHAT_DB', null);
+  grantMasterAccess(sim.s, other.id);
   const secCode = sim.code(black.id, 'SECURITY', null);
   const traceCode = sim.code(analyst.id, 'SECURITY', 'MASTER_LOG');
-  const cast = (toIp: string, duration: string) => sim.run(black.id, hostCode, 'BLACKHAT_DB', 'INFILTRATION', 'REROUTE_IP', { toIp, duration });
+  const proxy = (ip: string) => hostRun(sim, black.id, 'CREATE_PROXY', { ip });
+  const cast = (pid: string, ip: string, seconds: string) => hostRun(sim, pid, 'REROUTE_IP', { proxy: ip, seconds });
   const lastAccess = () => sim.s.logs.filter((l) => l.kind === 'ACCESS').at(-1)!;
 
-  // A made-up IP is rejected; your own IP is rejected; a bad duration is rejected. None of these take effect.
-  assert.match(cast('nope', '10').message, /IP address/);
-  assert.match(cast(black.ip, '10').message, /already your workstation/);
-  assert.match(cast(victim.ip, '5').message, /Choose a duration/);
-  assert.equal(sim.s.reroutes.length, 0, 'nothing rerouted yet');
+  // No proxy, no reroute. A proxy needs an unused address: no workstation, system or host.
+  assert.match(cast(black.id, '10.1.0.77', '10').message, /No proxies yet/);
+  assert.match(proxy('nope').message, /IP address/);
+  for (const used of [black.ip, victim.ip, '10.0.0.30', sim.s.hiddenHost]) assert.match(proxy(used).message, /already in use/);
+  assert.equal(sim.s.proxies.length, 0);
 
+  // Setting one up is loud (tier 3).
+  sim.at(5);
+  assert.ok(proxy('10.1.0.77').ok);
+  assert.match(proxy('10.1.0.77').message, /already in use/, 'no duplicates');
+  const proxyAlert = sim.s.alerts.filter((a) => a.kind === 'UNAUTHORIZED_ACTION').at(-1)!;
+  assert.equal(proxyAlert.tier, 3);
+  const loud = sim.run(analyst.id, traceCode, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: proxyAlert.logId! });
+  assert.ok(loud.message.includes(black.ip) || loud.message.includes(sim.s.hiddenHost), loud.message);
+  assert.deepEqual(getPlayerView(sim.s, other.id).proxies, [{ ip: '10.1.0.77', unavailable: null }], 'shared by every operative');
+  assert.deepEqual(getPlayerView(sim.s, victim.id).proxies, [], 'invisible without Infiltration access');
+
+  // Reroute: a proxy from the list, 1-60 seconds (10 by default), always noisy (tier 2).
+  assert.match(cast(black.id, victim.ip, '10').message, /Choose one of the proxies/);
+  assert.match(cast(black.id, '10.1.0.77', '0').message, /1 to 60/);
+  assert.match(cast(black.id, '10.1.0.77', '61').message, /1 to 60/);
   sim.at(10);
-  assert.ok(cast(victim.ip, '30').ok); // 30s = tier 3: leaks the exact real IP
-  assert.ok(sim.s.reroutes.some((r) => r.playerId === black.id && r.toIp === victim.ip));
+  assert.ok(cast(black.id, '10.1.0.77', '').ok);
+  assert.ok(sim.s.reroutes.some((r) => r.fromIp === black.ip && r.toIp === '10.1.0.77' && r.until === 20));
+  assert.equal(sim.s.alerts.filter((a) => a.kind === 'UNAUTHORIZED_ACTION').at(-1)!.tier, 2);
+
+  // While it runs, nobody else can use that proxy; the operative running it can renew it.
+  assert.match(cast(other.id, '10.1.0.77', '10').message, /unavailable: carrying a reroute/);
+  assert.equal(getPlayerView(sim.s, other.id).proxies[0].unavailable, 'carrying a reroute');
 
   sim.at(15);
   assert.ok(sim.run(black.id, secCode, 'SECURITY', 'MASTER_LOG', 'VIEW_LOG').ok);
-  assert.equal(lastAccess().sourceIp, victim.ip, 'the Master Log records the fake IP');
-  assert.equal(sim.s.players[victim.id].lastActiveAt, 15, 'Employee Records frames the victim as active');
-  assert.equal(sim.s.players[black.id].lastActiveAt, 10, 'the real operative looks idle since the cast');
-
-  // A trace of that entry hands the bank the fake IP, keeping the story consistent.
+  assert.equal(lastAccess().sourceIp, '10.1.0.77', 'the Master Log records the proxy');
+  assert.equal(sim.s.players[black.id].lastActiveAt, 10, 'the real workstation looks idle');
   const traced = sim.run(analyst.id, traceCode, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: lastAccess().id });
-  assert.ok(traced.message.includes(victim.ip) && !traced.message.includes(black.ip), traced.message);
-
-  // But casting it raised a tier-3 alert that names nothing and points at the cast's hidden host entry,
-  // and the operatives were warned in the Host Log.
-  const spoofAlert = sim.s.alerts.find((a) => a.kind === 'UNAUTHORIZED_ACTION')!;
-  assert.equal(spoofAlert.tier, 3);
-  assert.ok(!spoofAlert.message.includes(black.ip) && !spoofAlert.message.includes(sim.s.hiddenHost), spoofAlert.message);
-  assert.ok(sim.s.hostLog.some((h) => h.alert && h.message.includes(spoofAlert.logId!)), 'the Host Log warns of the exposure');
-  // Tracing that entry is loud: one exact fact about the REAL operative (their IP) or the server, never the fake IP.
-  const loud = sim.run(analyst.id, traceCode, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: spoofAlert.logId! });
-  assert.ok(loud.message.includes(black.ip) || loud.message.includes(sim.s.hiddenHost), loud.message);
-  assert.ok(!loud.message.includes(victim.ip), loud.message);
+  assert.ok(traced.message.includes('10.1.0.77') && !traced.message.includes(black.ip), traced.message);
 
   // Once it wears off, activity is the real workstation again.
-  sim.at(45);
+  sim.at(25);
   assert.ok(sim.run(black.id, secCode, 'SECURITY', 'MASTER_LOG', 'VIEW_LOG').ok);
-  assert.equal(lastAccess().sourceIp, black.ip, 'reroute expired: back to the real IP');
-  assert.equal(sim.s.players[black.id].lastActiveAt, 45);
+  assert.equal(lastAccess().sourceIp, black.ip);
+
+  // A Firewall block on the proxy's address makes it unavailable.
+  const it = sim.byRole('IT_SPECIALIST').find((p) => p.id !== black.id && p.id !== other.id)!;
+  assert.ok(sim.run(it.id, sim.code(it.id, 'SECURITY', 'FIREWALL'), 'SECURITY', 'FIREWALL', 'BLOCK_ADDRESS', { address: '10.1.0.77' }).ok);
+  assert.match(cast(black.id, '10.1.0.77', '10').message, /unavailable: blocked by the firewall/);
 });
 
-test('Infiltration / Create user: plants a fake employee that shows in the records and can be issued credentials', () => {
+test('Infiltration / Create user: plants a fake employee at a proxy; it shows in the records and can be issued credentials', () => {
   const sim = new Sim();
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
   const [it] = sim.byRole('IT_SPECIALIST'); // holds Employee Records and Permissions write
   grantMasterAccess(sim.s, black.id);
-  const hostCode = sim.code(black.id, 'BLACKHAT_DB', null);
-  const create = (name: string, role: string, ip: string) => sim.run(black.id, hostCode, 'BLACKHAT_DB', 'INFILTRATION', 'CREATE_USER', { name, role, ip });
+  const create = (name: string, role: string, proxy: string) => hostRun(sim, black.id, 'CREATE_USER', { name, role, proxy });
 
-  // Validation: a name, a real role, and an IP-shaped address are all required. None of these plant anyone.
+  // Validation: a proxy must exist, then a name, a real role and one of the proxies. None of these plant anyone.
+  assert.match(create('Dana', 'IT_SPECIALIST', '10.1.0.30').message, /No proxies yet/);
+  assert.ok(hostRun(sim, black.id, 'CREATE_PROXY', { ip: '10.1.0.30' }).ok);
   assert.match(create('', 'IT_SPECIALIST', '10.1.0.30').message, /name/);
   assert.match(create('Dana', 'WIZARD', '10.1.0.30').message, /role/i);
-  assert.match(create('Dana', 'IT_SPECIALIST', 'nope').message, /IP address/);
+  assert.match(create('Dana', 'IT_SPECIALIST', it.ip).message, /Choose one of the proxies/, 'never an existing workstation');
   const before = sim.s.playerOrder.length;
 
   sim.at(5);
@@ -1297,6 +1340,10 @@ test('Infiltration / Create user: plants a fake employee that shows in the recor
   assert.equal(fake.ip, '10.1.0.30');
   assert.equal(fake.allegiance, 'WHITE', 'poses as bank staff');
 
+  // The proxy is now taken: no second user there, and no reroute through it.
+  assert.match(create('Other', 'IT_SPECIALIST', '10.1.0.30').message, /unavailable: used by a planted user/);
+  assert.match(hostRun(sim, black.id, 'REROUTE_IP', { proxy: '10.1.0.30', seconds: '10' }).message, /used by a planted user/);
+
   // Shows up in Employee Records like any other employee.
   const records = sim.run(it.id, sim.code(it.id, 'SECURITY', 'EMPLOYEE_RECORDS'), 'SECURITY', 'EMPLOYEE_RECORDS', 'VIEW_EMPLOYEES');
   assert.ok(records.lines!.some((l) => l.includes('Dana Pruitt') && l.includes('10.1.0.30')), 'the planted user is in the records');
@@ -1306,8 +1353,8 @@ test('Infiltration / Create user: plants a fake employee that shows in the recor
   assert.ok(issue.ok, issue.message);
   assert.ok(Object.values(sim.s.credentials).some((cr) => cr.owner === fake.id), 'the planted user owns a credential');
 
-  // Exposure: an instant tool set to tier 2 leaks only a partial clue, plus a Host Log warning.
-  const alert = sim.s.alerts.find((a) => a.kind === 'UNAUTHORIZED_ACTION')!;
+  // Exposure: planting is tier 2 (a partial clue), plus a Host Log warning.
+  const alert = sim.s.alerts.filter((a) => a.kind === 'UNAUTHORIZED_ACTION').at(-1)!;
   assert.match(alert.message, /^Suspicious server activity$/);
   assert.ok(sim.s.hostLog.some((h) => h.alert));
 });
@@ -1478,8 +1525,12 @@ test('Cleanup / Alert mute: hides tier 1-2 alerts for 10s but never the loud tie
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
   grantMasterAccess(sim.s, black.id);
   const host = sim.code(black.id, 'BLACKHAT_DB', null);
-  const reroute = (toIp: string, duration: string) => sim.run(black.id, host, 'BLACKHAT_DB', 'INFILTRATION', 'REROUTE_IP', { toIp, duration });
+  const reroute = () => sim.run(black.id, host, 'BLACKHAT_DB', 'INFILTRATION', 'REROUTE_IP', { proxy: '10.1.0.99', seconds: '10' });
   const spoofAlerts = () => sim.s.alerts.filter((a) => a.kind === 'UNAUTHORIZED_ACTION');
+
+  sim.at(1);
+  assert.ok(sim.run(black.id, host, 'BLACKHAT_DB', 'INFILTRATION', 'CREATE_PROXY', { ip: '10.1.0.99' }).ok);
+  sim.s.alerts = []; // start counting from the mute
 
   sim.at(5);
   assert.ok(sim.run(black.id, host, 'BLACKHAT_DB', 'CLEANUP', 'ALERT_MUTE', {}).ok);
@@ -1489,34 +1540,19 @@ test('Cleanup / Alert mute: hides tier 1-2 alerts for 10s but never the loud tie
   sim.at(8); // still inside the 10s window
   const warnings = () => sim.s.hostLog.filter((h) => h.alert).length;
   const warned = warnings();
-  assert.ok(reroute('10.1.0.99', '10').ok);
+  assert.ok(reroute().ok);
   assert.equal(spoofAlerts().length, 1, 'a tier-2 exposure is suppressed while muted');
   assert.equal(warnings(), warned, 'and the operatives are not warned about an alert the bank never got');
-  assert.ok(reroute('10.1.0.98', '30').ok);
+  assert.ok(sim.run(black.id, host, 'BLACKHAT_DB', 'INFILTRATION', 'CREATE_PROXY', { ip: '10.1.0.98' }).ok);
   assert.equal(spoofAlerts().length, 2, 'a tier-3 exposure still gets through');
   assert.equal(spoofAlerts().at(-1)!.tier, 3);
 
   sim.at(20); // past the window
-  assert.ok(reroute('10.1.0.97', '10').ok);
+  assert.ok(reroute().ok);
   assert.equal(spoofAlerts().length, 3, 'mute expired: tier-2 exposure fires again');
 });
 
-test('Infiltration / Reroute IP: the strongest reroute also hands over a working host code', () => {
-  const sim = new Sim();
-  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
-  const victim = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE')!;
-  grantMasterAccess(sim.s, black.id);
-  sim.at(5);
-  assert.ok(sim.run(black.id, sim.code(black.id, 'BLACKHAT_DB', null), 'BLACKHAT_DB', 'INFILTRATION', 'REROUTE_IP', { toIp: victim.ip, duration: '60' }).ok);
-  const alert = sim.s.alerts.find((a) => a.kind === 'UNAUTHORIZED_ACTION')!;
-  assert.ok(!/\d{4}/.test(alert.message), 'the alert itself gives nothing away');
-  const [analyst] = sim.byRole('BANK_MANAGER');
-  const trace = sim.run(analyst.id, sim.code(analyst.id, 'SECURITY', 'MASTER_LOG'), 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: alert.logId! });
-  assert.ok(trace.message.includes(black.ip), trace.message);
-  const code = trace.message.match(/Captured host access code: (\d{4})/)?.[1];
-  assert.ok(code, trace.message);
-  assert.ok(Object.values(sim.s.credentials).some((cr) => cr.owner === black.id && cr.system === 'BLACKHAT_DB' && cr.code === code), 'a real code the operative owns');
-});
+
 
 test('Employee Records: reset a lockout', () => {
   const sim = new Sim();
@@ -1591,7 +1627,7 @@ test('balances: fixed wealth split, every account funded, and only existing acco
   // A planted user's account number is made up: it does not exist.
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
   grantMasterAccess(sim.s, black.id);
-  sim.run(black.id, sim.code(black.id, 'BLACKHAT_DB', null), 'BLACKHAT_DB', 'INFILTRATION', 'CREATE_USER', { name: 'Ghost', role: 'PERSONAL_BANKER', ip: '10.1.0.99' });
+  assert.ok(plantAt(sim, black.id, 'Ghost', '10.1.0.99').ok);
   const fake = Object.values(sim.s.players).find((p) => p.fake)!;
   assert.match(fake.bankAccount, /^ACC-\d{5}$/);
   assert.equal(fake.bankAccount in sim.s.balances, false);
@@ -1898,4 +1934,221 @@ test('notifications: a page bell needs write access, and pops up only other peop
   // Switching it off.
   assert.ok(watch(it1.id, 'SECURITY', 'FIREWALL', false).ok);
   assert.ok(!sim.s.players[it1.id].watching.includes('SECURITY.FIREWALL'));
+});
+
+// ---- Termination and the end of the game ----------------------------------------------
+
+const INVALID = 'ERROR: Your credentials are invalid.';
+const whiteIt = (sim: Sim): Player => sim.byRole('IT_SPECIALIST').find((p) => p.allegiance === 'WHITE')!;
+
+test('termination: losing every bank credential disables a player for good', () => {
+  const sim = new Sim();
+  const admin = whiteIt(sim);
+  const pb = sim.byRole('PERSONAL_BANKER').find((p) => p.allegiance === 'WHITE')!;
+  const perm = sim.code(admin.id, 'SECURITY', 'PERMISSIONS');
+  const revoke = (id: string) => sim.run(admin.id, perm, 'SECURITY', 'PERMISSIONS', 'REVOKE_CREDENTIAL', { credentialId: id });
+  const records = sim.code(pb.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS');
+  sim.at(5);
+  const ids = Object.values(sim.s.credentials).filter((c) => c.owner === pb.id).map((c) => c.id);
+  for (const id of ids.slice(0, -1)) assert.ok(revoke(id).ok);
+  assert.equal(sim.s.players[pb.id].terminated, null, 'one credential left');
+  assert.ok(revoke(ids.at(-1)!).ok);
+  assert.deepEqual(sim.s.players[pb.id].terminated, { t: 5, reason: 'CREDENTIALS' });
+  assert.ok(sim.s.logs.some((l) => l.kind === 'TERMINATED' && l.message.startsWith(`${pb.name} (${pb.ip}) terminated`)));
+  assert.ok(getPlayerView(sim.s, pb.id).me.terminated);
+
+  // Nothing on the bank works any more, not even with someone else's code.
+  assert.equal(sim.run(pb.id, records, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS').message, INVALID);
+  assert.equal(sim.run(pb.id, perm, 'SECURITY', 'PERMISSIONS', 'VIEW_PERMISSIONS').message, INVALID);
+  assert.equal(sim.do({ type: 'CONNECT', playerId: pb.id, address: admin.ip }).message, INVALID);
+
+  // No coming back, and Employee Records say so.
+  const issue = sim.run(admin.id, perm, 'SECURITY', 'PERMISSIONS', 'CREATE_CREDENTIAL', { owner: pb.id, scope: 'CLIENT_DATA.*', permission: 'WRITE' });
+  assert.match(issue.message, /terminated and cannot be issued credentials/);
+  const rows = sim.run(admin.id, sim.code(admin.id, 'SECURITY', 'EMPLOYEE_RECORDS'), 'SECURITY', 'EMPLOYEE_RECORDS', 'VIEW_EMPLOYEES').lines!;
+  assert.ok(rows.find((l) => l.startsWith(pb.name))!.includes('[TERMINATED 00:05]'));
+  assert.equal(sim.s.status, 'RUNNING');
+});
+
+test('termination: a revoked IP disables a Black Hat on the bank, but not on the unregistered host', () => {
+  const sim = new Sim();
+  const admin = whiteIt(sim);
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  sim.at(2);
+  assert.ok(sim.run(admin.id, sim.code(admin.id, 'SECURITY', 'FIREWALL'), 'SECURITY', 'FIREWALL', 'REVOKE_ALL_ACCESS', { address: black.ip }).ok);
+  sim.at(3 + sim.s.config.revokeCountdownSec);
+  assert.equal(sim.s.players[black.id].terminated?.reason, 'IP_REVOKED');
+  assert.equal(sim.run(black.id, sim.code(black.id, 'SECURITY', 'EMPLOYEE_RECORDS'), 'SECURITY', 'EMPLOYEE_RECORDS', 'VIEW_EMPLOYEES').message, INVALID);
+  assert.equal(sim.do({ type: 'CONNECT', playerId: black.id, address: admin.ip }).message, INVALID);
+  // The host is outside the bank's firewall: its credentials survive and it still answers.
+  assert.ok(Object.values(sim.s.credentials).filter((c) => c.owner === black.id && c.system === 'BLACKHAT_DB').every((c) => c.status === 'ACTIVE'));
+  assert.ok(sim.do({ type: 'CONNECT', playerId: black.id, address: sim.s.hiddenHost }).ok);
+  const read = sim.run(black.id, sim.code(black.id, 'BLACKHAT_DB', 'BLACKNET'), 'BLACKHAT_DB', 'BLACKNET', 'READ_MESSAGES');
+  assert.ok(read.ok, read.message);
+});
+
+test('White Hats win at once when every Black Hat is terminated; the end screen shows both teams', () => {
+  const sim = new Sim();
+  const admin = whiteIt(sim);
+  const fw = sim.code(admin.id, 'SECURITY', 'FIREWALL');
+  const blacks = Object.values(sim.s.players).filter((p) => p.allegiance === 'BLACK');
+  sim.at(2);
+  for (const b of blacks) assert.ok(sim.run(admin.id, fw, 'SECURITY', 'FIREWALL', 'REVOKE_ALL_ACCESS', { address: b.ip }).ok);
+  assert.equal(getPlayerView(sim.s, admin.id).end, null, 'no end screen while the game runs');
+  sim.at(3 + sim.s.config.revokeCountdownSec);
+  assert.equal(sim.s.status, 'ENDED');
+  assert.equal(sim.s.winner, 'WHITE');
+  assert.equal(sim.s.endKind, 'BLACK_HATS_TERMINATED');
+  for (const b of blacks) assert.ok(sim.s.endReason!.includes(b.name));
+
+  const end = getPlayerView(sim.s, blacks[0].id).end!;
+  assert.equal(end.headline, 'White Hats win');
+  const [white, black] = end.teams;
+  assert.equal(white.side, 'WHITE');
+  assert.ok(white.won && !black.won);
+  assert.equal(white.members.length, 7);
+  assert.deepEqual(black.members.map((m) => m.name).sort(), blacks.map((b) => b.name).sort());
+  assert.ok(black.members.every((m) => m.terminated));
+  assert.equal(black.made, sim.s.totals.stolen);
+});
+
+test('embezzlement: payments settled into an employee account count toward no goal, and show on the end screen', () => {
+  const sim = new Sim({ durationSec: 120 });
+  grantMasterAccess(sim.s, 'p0');
+  const cd = sim.code('p0', 'CLIENT_DATA', null);
+  const txc = sim.code('p0', 'TRANSACTIONS', null);
+  const npc = sim.s.transactions[0]; // an automatic payment: it would normally count for the bank
+  sim.at(1);
+  const add = sim.run('p0', cd, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: npc.beneficiaryId, account: sim.s.players.p0.bankAccount, makePrimary: 'YES' });
+  assert.ok(add.ok, add.message);
+  const before = sim.s.totals;
+  for (const [mod, fn] of [['RISK_CHECK', 'RUN_RISK_CHECK'], ['AUTHORIZATION', 'APPROVE'], ['SETTLEMENT', 'SETTLE']]) {
+    const r = sim.run('p0', txc, 'TRANSACTIONS', mod, fn, { txId: npc.id });
+    assert.ok(r.ok, r.message);
+  }
+  assert.deepEqual(sim.s.totals, before, 'neither the bank nor the Black Hats are credited');
+
+  sim.at(121);
+  const members = getPlayerView(sim.s, 'p1').end!.teams.flatMap((t) => t.members);
+  const me = members.find((m) => m.name === sim.s.players.p0.name)!;
+  assert.equal(me.embezzled, npc.amount);
+  assert.ok(members.filter((m) => m !== me).every((m) => m.embezzled === 0));
+});
+
+test('termination: a planted user with no credentials yet is not terminated, but is once its credentials are revoked', () => {
+  const sim = new Sim();
+  const admin = whiteIt(sim);
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  grantMasterAccess(sim.s, black.id);
+  sim.at(2);
+  assert.ok(plantAt(sim, black.id, 'Ghost', '10.1.0.99').ok);
+  const fake = Object.values(sim.s.players).find((p) => p.fake)!;
+  sim.at(10);
+  assert.equal(sim.s.players[fake.id].terminated, null, 'nothing issued yet');
+
+  const perm = sim.code(admin.id, 'SECURITY', 'PERMISSIONS');
+  assert.ok(sim.run(admin.id, perm, 'SECURITY', 'PERMISSIONS', 'CREATE_CREDENTIAL', { owner: fake.id, scope: 'CLIENT_DATA.*', permission: 'READ' }).ok);
+  const cred = Object.values(sim.s.credentials).find((c) => c.owner === fake.id)!;
+  assert.equal(sim.s.players[fake.id].terminated, null);
+  assert.ok(sim.run(admin.id, perm, 'SECURITY', 'PERMISSIONS', 'REVOKE_CREDENTIAL', { credentialId: cred.id }).ok);
+  assert.equal(sim.s.players[fake.id].terminated?.reason, 'CREDENTIALS');
+});
+
+test('Social / Scam request can ask for a payment; paying it never counts for the bank', () => {
+  const sim = new Sim();
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  grantMasterAccess(sim.s, black.id);
+  grantMasterAccess(sim.s, 'p0');
+  const host = sim.code(black.id, 'BLACKHAT_DB', null);
+  const [from, payee] = sim.s.customers;
+  const scam = (params: Record<string, string>) => sim.run(black.id, host, 'BLACKHAT_DB', 'SOCIAL', 'SCAM_REQUEST', { customer: from.id, kind: 'PAYMENT', ...params });
+  sim.at(2);
+  assert.match(scam({ payee: from.name, amount: '400000' }).message, /cannot ask to pay themselves/);
+  assert.match(scam({ payee: payee.id, amount: String(sim.s.config.maxManualAmount + 1) }).message, /cannot pay more than/);
+  assert.match(scam({ payee: 'Nobody Ltd', amount: '400000' }).message, /No payee/);
+
+  const planted = scam({ payee: payee.name, amount: '$400,000', urgent: 'YES' });
+  assert.ok(planted.ok, planted.message);
+  const req = sim.s.requests.at(-1)!;
+  assert.equal(req.kind, 'PAYMENT');
+  assert.ok(req.scam && req.urgent);
+  assert.equal(req.payeeId, payee.id);
+  assert.equal(req.amount, 400_000);
+  assert.equal(req.dueAt - req.t, sim.s.config.urgentDeadlineSec);
+  assert.ok(req.text.includes(payee.name) && req.text.includes('$400,000'), req.text);
+  assert.ok(sim.s.logs.some((l) => l.message === `Client request ${req.id} received`), 'arrives like any other request');
+
+  // The banker falls for it: the request is done, the money moves, the bank gains nothing.
+  const txc = sim.code('p0', 'TRANSACTIONS', null);
+  const made = sim.run('p0', txc, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'CREATE_TRANSACTION', { originAccount: from.primary, beneficiaryId: payee.id, amount: '400000', requestId: req.id });
+  assert.ok(made.ok, made.message);
+  assert.equal(sim.s.requests.find((r) => r.id === req.id)!.status, 'DONE');
+  const id = sim.s.transactions.at(-1)!.id;
+  const before = sim.s.totals.processed;
+  for (const [mod, fn] of [['RISK_CHECK', 'RUN_RISK_CHECK'], ['AUTHORIZATION', 'APPROVE'], ['SETTLEMENT', 'SETTLE']]) {
+    const r = sim.run('p0', txc, 'TRANSACTIONS', mod, fn, { txId: id });
+    assert.ok(r.ok, r.message);
+  }
+  assert.equal(sim.s.transactions.at(-1)!.status, 'SETTLED');
+  assert.equal(sim.s.totals.processed, before);
+});
+
+test('Infiltration / Reroute IP: any workstation or the server itself can be rerouted, and every clue shows the proxy', () => {
+  const sim = new Sim({ traceCooldownSec: 0 });
+  const [black, mate] = Object.values(sim.s.players).filter((p) => p.allegiance === 'BLACK');
+  const [analyst] = sim.byRole('BANK_MANAGER');
+  grantMasterAccess(sim.s, black.id);
+  const traceCode = sim.code(analyst.id, 'SECURITY', 'MASTER_LOG');
+  const trace = (logId: string) => sim.run(analyst.id, traceCode, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId }).message;
+  sim.at(1);
+  for (const ip of ['10.1.0.77', '10.1.0.78']) assert.ok(hostRun(sim, black.id, 'CREATE_PROXY', { ip }).ok);
+  const reroute = (source: string, proxy: string) => hostRun(sim, black.id, 'REROUTE_IP', { source, proxy, seconds: '30' });
+
+  // Only a workstation or the server can be rerouted.
+  assert.match(reroute('10.0.0.30', '10.1.0.77').message, /workstation's IP or the server's address/);
+
+  // Another operative's workstation: their records show the proxy.
+  sim.at(5);
+  assert.ok(reroute(mate.ip, '10.1.0.77').ok);
+  assert.ok(sim.run(mate.id, sim.code(mate.id, 'SECURITY', 'EMPLOYEE_RECORDS'), 'SECURITY', 'EMPLOYEE_RECORDS', 'VIEW_EMPLOYEES').ok);
+  assert.equal(sim.s.logs.filter((l) => l.kind === 'ACCESS').at(-1)!.sourceIp, '10.1.0.77');
+
+  // The operative's own workstation and the server: now even a loud (tier 3) exposure leaks only proxies.
+  assert.ok(reroute('', '10.1.0.78').ok);
+  assert.match(reroute(sim.s.hiddenHost, '10.1.0.77').message, /carrying a reroute/, 'one reroute per proxy');
+  assert.ok(hostRun(sim, black.id, 'CREATE_PROXY', { ip: '10.1.0.79' }).ok);
+  assert.ok(reroute(sim.s.hiddenHost, '10.1.0.79').ok);
+  assert.ok(hostRun(sim, black.id, 'CREATE_PROXY', { ip: '10.1.0.80' }).ok); // tier 3
+  const loudEntry = sim.s.alerts.filter((a) => a.kind === 'UNAUTHORIZED_ACTION').at(-1)!.logId!;
+  for (let i = 0; i < 12; i++) {
+    const clue = trace(loudEntry);
+    assert.ok(clue.includes('10.1.0.78') || clue.includes('10.1.0.79'), clue);
+    assert.ok(!clue.includes(black.ip) && !clue.includes(sim.s.hiddenHost), clue);
+  }
+  // Vague clues about the server give away numbers of the proxy, never the real address.
+  const entry = sim.s.logs.find((l) => l.id === loudEntry)!;
+  assert.equal(entry.server, '10.1.0.79');
+
+  // Once the reroutes wear off, new records show the real addresses again.
+  sim.at(40);
+  assert.ok(hostRun(sim, black.id, 'CREATE_PROXY', { ip: '10.1.0.81' }).ok);
+  const later = sim.s.logs.filter((l) => l.kind === 'HIDDEN_ACCESS').at(-1)!;
+  assert.equal(later.sourceIp, black.ip);
+  assert.equal(later.server, sim.s.hiddenHost);
+});
+
+test('typing a proxy address into the network finds a relay, and shows whether traffic goes through it now', () => {
+  const sim = new Sim();
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const white = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE')!;
+  grantMasterAccess(sim.s, black.id);
+  const connect = () => sim.do({ type: 'CONNECT', playerId: white.id, address: '10.1.0.77' });
+  sim.at(2);
+  assert.equal(connect().message, 'No route to host.', 'not a proxy yet');
+  assert.ok(hostRun(sim, black.id, 'CREATE_PROXY', { ip: '10.1.0.77' }).ok);
+  assert.deepEqual(connect().proxy, { ip: '10.1.0.77', relaying: false });
+  assert.ok(hostRun(sim, black.id, 'REROUTE_IP', { proxy: '10.1.0.77', seconds: '10' }).ok);
+  assert.deepEqual(connect().proxy, { ip: '10.1.0.77', relaying: true });
+  sim.at(13);
+  assert.equal(connect().proxy!.relaying, false, 'the reroute ended');
 });

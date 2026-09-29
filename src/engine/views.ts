@@ -3,8 +3,10 @@
 import { ROLES, SYSTEMS } from './catalog';
 import type { SystemDef } from './catalog';
 import { accountExists, balanceOf, fmtClock, gameTime, nameOf } from './core';
-import { credScopeText } from './handlers';
+import { credScopeText, proxyUnavailable } from './handlers';
 import { jobDescription } from './jobs';
+import { endSummary } from './ending';
+import type { EndSummary } from './ending';
 import { dayPhaseAt } from './pacing';
 import type { Pace } from './pacing';
 import type { JobDescription } from './jobs';
@@ -23,6 +25,8 @@ export interface WorkstationView {
   bankAccount: string;
   bankBalance: number | null; // null: the account does not exist (a planted user's made-up number)
   lockedForSec: number;
+  /** Terminated: the bank's systems refuse this workstation for good. */
+  terminated: boolean;
   job: JobDescription;
   knownSystems: SystemId[];
   credentials: {
@@ -52,6 +56,8 @@ export interface PlayerView {
   status: 'RUNNING' | 'ENDED';
   winner: Winner | null;
   endReason: string | null;
+  /** The end screen: both teams, who was on them and what they made. Null while the game runs. */
+  end: EndSummary | null;
   processed: number; // legitimate money settled toward the bank target
   whiteTarget: number;
   me: WorkstationView;
@@ -65,11 +71,13 @@ export interface PlayerView {
   watching: string[];
   /** Recent pop-up notifications, newest last. The screen shows each one once. */
   notifications: Notice[];
+  /** Infiltration proxies (only for a player holding Infiltration access), with why each is unavailable. */
+  proxies: { ip: string; unavailable: string | null }[];
 }
 
 function workstationView(s: GameState, p: Player): WorkstationView {
   const t = gameTime(s);
-  const time = (x: number): string => fmtClock(s.config, x);
+  const time = (x: number): string => fmtClock(x);
   return {
     id: p.id,
     name: p.name,
@@ -82,6 +90,7 @@ function workstationView(s: GameState, p: Player): WorkstationView {
     bankAccount: p.bankAccount,
     bankBalance: accountExists(s, p.bankAccount) ? balanceOf(s, p.bankAccount) : null,
     lockedForSec: Math.max(0, Math.ceil(p.lockedUntil - t)),
+    terminated: !!p.terminated,
     job: jobDescription(p.role, p.allegiance, s.config),
     knownSystems: p.knownSystems,
     credentials: p.heldCredentialIds.map((id) => {
@@ -110,6 +119,13 @@ function workstationView(s: GameState, p: Player): WorkstationView {
   };
 }
 
+/** Holds an active host credential that reaches Infiltration (the proxy list is that kit's data). */
+const holdsInfiltration = (s: GameState, p: Player): boolean =>
+  p.heldCredentialIds.some((id) => {
+    const cr = s.credentials[id];
+    return cr.status === 'ACTIVE' && cr.system === 'BLACKHAT_DB' && (cr.module === null || cr.module === 'INFILTRATION');
+  });
+
 export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
   const p = s.players[playerId];
   const t = gameTime(s);
@@ -119,7 +135,7 @@ export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
   }
   return {
     gameId: s.id,
-    clock: fmtClock(s.config, t),
+    clock: fmtClock(t),
     dayPhase: dayPhaseAt(s.config.durationSec, t).label,
     pace: dayPhaseAt(s.config.durationSec, t).pace,
     t,
@@ -127,6 +143,7 @@ export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
     status: s.status,
     winner: s.winner,
     endReason: s.endReason,
+    end: endSummary(s),
     processed: s.totals.processed,
     whiteTarget: s.config.whiteTarget,
     me: workstationView(s, p),
@@ -136,5 +153,6 @@ export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
     openModules: Object.entries(s.modules).filter(([, m]) => m.open).map(([k]) => k),
     watching: [...p.watching],
     notifications: p.notifications.map((n) => ({ ...n })),
+    proxies: holdsInfiltration(s, p) ? s.proxies.map((x) => ({ ip: x.ip, unavailable: proxyUnavailable(s, x.ip, t, p.id) })) : [],
   };
 }

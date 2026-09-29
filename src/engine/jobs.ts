@@ -32,6 +32,7 @@ function commonRules(c: GameConfig): string[] {
     `${c.lockoutAfterFails} wrong codes in a row lock your workstation for ${secs(c.lockoutSec)}.`,
     'Anyone with one of your active codes can log in to your workstation and read everything on it, including your codes.',
     'Switch on the bell of a page you can write to and it tells you when someone else does something there.',
+    "Lose every credential, or have your IP revoked by the Firewall, and you are terminated: the bank's systems refuse you for the rest of the game. The bank wins at once if every Black Hat is terminated.",
   ];
 }
 
@@ -78,7 +79,7 @@ const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
       'A payment is paid into the payee\'s primary account at the moment it settles. Check the primary before you settle.',
       `A settled payment can be reversed for ${secs(c.reversalWindowSec)}, as long as the account it was paid into still holds the money.`,
       "A payment fails at settlement if the account it is paid from holds too little. Customer Records shows every account's balance.",
-      `The bank wins by settling ${money(c.whiteTarget)} of customer payments. Every payment held, rejected or reversed slows the bank down.`,
+      `The bank wins if ${money(c.whiteTarget)} of customer payments are settled by close of business. Every payment held, rejected or reversed slows the bank down. A payment settled into an employee's own account counts for nobody.`,
     ],
   }),
   IT_SPECIALIST: (c) => ({
@@ -97,7 +98,7 @@ const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
       `A trace reveals which workstation made a log entry. Entries must be under ${secs(c.traceMaxAgeSec)} old, and you can trace once every ${secs(c.traceCooldownSec)}. Employee Records list every workstation's IP.`,
       '"Unknown server activity" comes from an unregistered host. Tracing it gives only a partial clue, unless an alert points at it.',
       `A block lasts ${secs(c.blockSec)}. A blocked workstation cannot use any system.`,
-      `"Revoke all access" is permanent once its ${secs(c.revokeCountdownSec)} countdown ends; only the Firewall can cancel it. Revoking one of the bank's own systems shuts the bank down, and everybody loses.`,
+      `"Revoke all access" is permanent once its ${secs(c.revokeCountdownSec)} countdown ends; only the Firewall can cancel it. Revoking a workstation terminates its owner for good. Revoking the unregistered host shuts it down and the bank wins; revoking one of the bank's own systems shuts the bank down, and everybody loses.`,
       'While the Master Log is offline nothing is recorded, but the entry numbers keep counting, so the gap shows.',
       'You can issue a credential in anyone\'s name. Its owner is told.',
       'Blocking an address, switching security off, taking a module offline, and issuing or revoking a credential raise a "Suspicious security activity" alert naming you. Starting a "revoke all access", and issuing or revoking Firewall or Permissions write, raise a "Fatal" one.',
@@ -134,6 +135,7 @@ const OPERATIVE = (c: GameConfig): string[] => [
   'Anything you do on the unregistered host leaves an "Unknown server activity" entry in the Master Log. Tracing it gives the bank a partial clue.',
   'Kit tools are marked noisy, loud or reckless. The louder the tool, the more a trace of its alert gives away: a partial clue, then your exact IP or the server\'s address, then your IP and your host code.',
   'Your Host Log warns you when the bank gets an alert about you, and when someone traces one of your entries.',
+  'If you are terminated, the unregistered host still answers you: keep helping from there.',
   `Money counts while it sits in a Target Ledger account. A settled payment can be reversed for ${secs(c.reversalWindowSec)}, but only while the account it went to still holds the money: a mule account can pay it on first.`,
 ];
 

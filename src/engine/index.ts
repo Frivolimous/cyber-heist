@@ -11,3 +11,5 @@ export type { DayPhase, Pace } from './pacing';
 export { accountVerified, fmtClock, gameTime, money } from './core';
 export { CHANNELS } from './bank';
 export { WATCHABLE } from './notify';
+export { embezzledBy, endSummary, TERMINATED_TEXT } from './ending';
+export type { EndMember, EndSummary, EndTeam } from './ending';
