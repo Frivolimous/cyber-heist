@@ -17,17 +17,17 @@ export function recordTx(s: GameState, tx: Transaction, action: TxEvent['action'
   notifyStage(s, tx, action, who);
 }
 
-/** Payment pipeline bells: each stage tells the next one there is work. The (debug) auto-processor stays quiet. */
+/** Payment pipeline bells: each stage tells the next one there is work, unless that stage's automation will take it. */
 function notifyStage(s: GameState, tx: Transaction, action: TxEvent['action'], who: TxActor): void {
   const scope = { owner: who.by === 'SYSTEM' ? null : who.by };
   const pay = `${tx.id} (${money(tx.amount)} to ${tx.beneficiaryId})`;
   if (action === 'CREATED') {
     const by = who.by === 'SYSTEM' ? (tx.channel ?? 'automatic') : nameOf(s, who.by);
     notify(s, 'TRANSACTIONS', 'PAYMENT_QUEUE', `New payment ${pay} from ${by}`, scope);
-    notify(s, 'TRANSACTIONS', 'RISK_CHECK', `${pay} is waiting for a risk score`, scope);
-  } else if (who.by !== 'SYSTEM' && action === 'RISK_CHECKED') {
+    if (!autoScores(s, tx)) notify(s, 'TRANSACTIONS', 'RISK_CHECK', `${pay} is waiting for a risk score`, scope);
+  } else if (action === 'RISK_CHECKED' && !autoApproves(s, tx)) {
     notify(s, 'TRANSACTIONS', 'AUTHORIZATION', `${pay} is waiting for approval (${tx.riskResult} risk)`, scope);
-  } else if (who.by !== 'SYSTEM' && action === 'APPROVED') {
+  } else if (action === 'APPROVED' && !autoSettles(s, tx)) {
     notify(s, 'TRANSACTIONS', 'SETTLEMENT', `${pay} is ready to settle`, scope);
   }
 }
@@ -227,30 +227,62 @@ export function spawnNpc(s: GameState): void {
   }
 }
 
-/** DEBUG helper: settles NPC payments that come back LOW risk, like a diligent (but not paranoid) team. */
-export function autoProcess(s: GameState): void {
-  const t = gameTime(s);
+// ---- Automation: each stage can handle routine payments by itself (s.automation) ----------------
+
+const RISK_RANK: Record<RiskResult, number> = { LOW: 1, MEDIUM: 2, HIGH: 3 };
+
+/** Risk Check scores this queued payment LOW by itself: small enough, and from the sources the settings allow. */
+export function autoScores(s: GameState, tx: Transaction): boolean {
+  const a = s.automation;
+  if (tx.amount > a.scoreMax) return false;
+  if (a.scoreSource === 'AUTOMATIC' && tx.origin !== 'NPC') return false;
+  if (a.scoreOrigin === 'CUSTOMER' && tx.customerId === null) return false;
+  const payee = s.customers.find((c) => c.id === tx.beneficiaryId);
+  return a.scorePayee === 'ANY' || (!!payee && accountVerified(payee, payee.primary));
+}
+/** Authorization approves this risk-checked payment by itself. */
+export const autoApproves = (s: GameState, tx: Transaction): boolean =>
+  s.automation.approveUpTo !== 'NONE' && tx.riskResult !== null && RISK_RANK[tx.riskResult] <= RISK_RANK[s.automation.approveUpTo];
+/** Settlement settles this approved payment by itself. */
+export const autoSettles = (s: GameState, tx: Transaction): boolean => tx.amount <= s.automation.settleMax;
+
+/** Mutating: moves every payment the automation settings cover through as many stages as they allow. */
+export function runAutomation(s: GameState): void {
   for (const tx of s.transactions) {
-    if (tx.origin !== 'NPC' || tx.status !== 'QUEUED') continue;
-    if (t - tx.createdAt < s.config.autoProcessDelaySec) continue;
-    const r = computeRisk(s, tx);
-    tx.riskResult = r.result;
-    tx.riskFlags = r.flags;
-    tx.status = 'RISK_CHECKED';
-    recordTx(s, tx, 'RISK_CHECKED', SYSTEM_ACTOR, riskDetail(tx));
-    if (r.result !== 'LOW') {
-      notify(s, 'TRANSACTIONS', 'AUTHORIZATION', `${tx.id} (${money(tx.amount)} to ${tx.beneficiaryId}) is waiting for approval (${r.result} risk)`);
-      continue; // leave for humans
+    if (tx.status === 'QUEUED' && autoScores(s, tx)) {
+      tx.riskResult = 'LOW';
+      tx.riskReason = 'Automatic scoring';
+      tx.riskFlags = computeRisk(s, tx).flags; // hidden ground truth, as for a human score
+      tx.status = 'RISK_CHECKED';
+      recordTx(s, tx, 'RISK_CHECKED', SYSTEM_ACTOR, 'risk LOW: automatic scoring');
     }
-    tx.status = 'AUTHORIZED';
-    recordTx(s, tx, 'APPROVED', SYSTEM_ACTOR);
-    const settled = settleTransaction(s, tx, SYSTEM_ACTOR);
-    addLog(s, {
-      actor: 'SYSTEM',
-      kind: 'AUTO_SETTLE',
-      message: settled.ok ? `Auto-processor settled ${tx.id}` : `Auto-processor: ${tx.id} failed, insufficient funds`,
-      sourceIp: null,
-      actualPlayerId: null,
-    });
+    if (tx.status === 'RISK_CHECKED' && autoApproves(s, tx)) {
+      tx.status = 'AUTHORIZED';
+      recordTx(s, tx, 'APPROVED', SYSTEM_ACTOR, `automatic approval (${tx.riskResult} risk)`);
+    }
+    if (tx.status === 'AUTHORIZED' && autoSettles(s, tx)) {
+      const settled = settleTransaction(s, tx, SYSTEM_ACTOR);
+      addLog(s, {
+        actor: 'SYSTEM',
+        kind: 'AUTO_SETTLE',
+        message: settled.ok ? `Automation settled ${tx.id}` : `Automation: ${tx.id} failed, insufficient funds`,
+        sourceIp: null,
+        actualPlayerId: null,
+      });
+    }
   }
+}
+
+/** What each stage's automation does right now, in words. */
+export function automationText(s: GameState, stage: 'RISK' | 'AUTH' | 'SETTLE'): string {
+  const a = s.automation;
+  if (stage === 'RISK') {
+    if (a.scoreMax <= 0) return 'Automatic scoring: off.';
+    const source = a.scoreSource === 'AUTOMATIC' ? 'automatic payments' : 'automatic and manual payments';
+    const origin = a.scoreOrigin === 'CUSTOMER' ? 'from customer accounts' : 'from customer or floating accounts';
+    const payee = a.scorePayee === 'VERIFIED' ? 'to verified primaries' : 'to any primary';
+    return `Automatic scoring: LOW for ${source} up to ${money(a.scoreMax)}, ${origin}, ${payee}.`;
+  }
+  if (stage === 'AUTH') return a.approveUpTo === 'NONE' ? 'Automatic approval: off.' : `Automatic approval: ${a.approveUpTo === 'LOW' ? 'LOW' : `${a.approveUpTo} risk and below`}.`;
+  return a.settleMax <= 0 ? 'Automatic settlement: off.' : `Automatic settlement: payments up to ${money(a.settleMax)}.`;
 }

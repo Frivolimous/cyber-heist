@@ -82,14 +82,14 @@ export const PERSON_CUSTOMERS: ReadonlySet<string> = new Set([
  * Amounts are capped by what the paying account holds (affordableAmount in bank.ts), so the average payment is
  * below the middle of its range; the factors below are measured averages over simulated games.
  */
-const NPC_AMOUNT_FACTOR = 0.87; // average automatic payment / middle of npcMinAmount..npcMaxAmount
-const REQUEST_AMOUNT_FACTOR = 0.45; // average requested payment / middle of npcMinAmount..maxManualAmount
+export const NPC_AMOUNT_FACTOR = 0.94; // average automatic payment / middle of npcMinAmount..npcMaxAmount
+export const REQUEST_AMOUNT_FACTOR = 0.41; // average requested payment / (requestAmountFactor x middle of requestMinAmount..requestMaxAmount)
 const MAX_AUTO_SHARE = 0.8; // automatic volume is capped at this share of the bank target
 export function scaledConfig(base: GameConfig, n: number, hackers: number): Pick<GameConfig, 'whiteTarget' | 'blackTarget' | 'npcIntervalSec' | 'requestIntervalSec'> {
   const bankers = roleCounts(n).PERSONAL_BANKER;
   const requestIntervalSec = base.requestEverySecPerBanker / bankers;
   const requests = base.durationSec / requestIntervalSec;
-  const avgRequested = (REQUEST_AMOUNT_FACTOR * (base.npcMinAmount + base.maxManualAmount)) / 2;
+  const avgRequested = (REQUEST_AMOUNT_FACTOR * base.requestAmountFactor * (base.requestMinAmount + base.requestMaxAmount)) / 2;
   const requestedVolume = requests * (1 - base.requestChangeShare) * avgRequested;
   const avgNpc = (NPC_AMOUNT_FACTOR * (base.npcMinAmount + base.npcMaxAmount)) / 2;
   const whiteTarget = base.whiteTargetPerPlayer * n;
@@ -149,6 +149,7 @@ export function createGame(o: NewGameOptions): GameState {
     cracks: [],
     unlocks: [],
     alertMuteUntil: 0,
+    automation: { ...config.automation },
     hostLog: [],
     revocations: [],
     lastRequestAt: 0,
@@ -192,8 +193,7 @@ export function createGame(o: NewGameOptions): GameState {
     const accounts = Array.from({ length: randInt(s, 1, 3) }, () => newAccount());
     return { id: `CU${i + 1}`, name, bankerId: null, accounts, primary: accounts[0], originalPrimary: accounts[0], lastModifiedAt: null, history: [], wealth: 'SMALL' as WealthTier, person: false, contact: '', strikes: 0, suspended: false };
   });
-  const statuses = ['READY', 'PREPARE', 'ABORT'] as const;
-  s.targets = statuses.map((status) => ({ account: newAccount(), status }));
+  s.targets = Array.from({ length: 3 }, () => ({ account: newAccount() }));
 
   // Addresses come from a side stream, so the game's main random sequence is unchanged: workstations get
   // distinct random numbers in 10.1.0.x, and the host a random address outside the bank's 10.0/10.1 ranges.

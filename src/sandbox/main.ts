@@ -143,10 +143,9 @@ const icon = (id: SystemId, size = 48): string =>
 
 // ---- Game lifecycle ----------------------------------------------------------------
 function newGame(seed: number): void {
-  const autoProcess = game ? game.config.autoProcess : true;
   vNow = Date.now();
   const roster = rosterOf(playerCount);
-  game = createGame({ seed, players: roster, now: vNow, config: { autoProcess } });
+  game = createGame({ seed, players: roster, now: vNow });
   grantMasterAccess(game, MASTER_SEAT);
   desks = {};
   endHidden = false;
@@ -221,7 +220,6 @@ function renderDev(): void {
       .map((id) => `<option value="${id}" ${id === selected ? 'selected' : ''}>${esc(game.players[id].name)}${id === MASTER_SEAT ? ' (master access)' : ''}${online[id] ? ` · ${online[id]} online` : ''}</option>`)
       .join('')}</select></label>
     <span class="grp">${btn('speed:0', 'Pause', speed === 0)}${btn('speed:1', '1x', speed === 1)}${btn('speed:5', '5x', speed === 5)}${btn('speed:20', '20x', speed === 20)}<button data-act="skip:30">+30s</button></span>
-    <label><input type="checkbox" data-f="auto" ${game.config.autoProcess ? 'checked' : ''}> auto-process routine payments</label>
     <label><input type="checkbox" data-f="god" ${god ? 'checked' : ''}> show allegiances</label>
     <label>players <input type="number" data-f="count" min="${MIN_PLAYERS}" max="${MAX_PLAYERS}" value="${playerCount}" title="Applies on New game"></label>
     <label>seed <input type="number" data-f="seed" value="${game.seed >>> 0}"></label>
@@ -277,7 +275,7 @@ function renderTruth(): void {
     .map((x) => [`${x.id}`, ...x.history.map((e) => `  [${t(e.t)}] ${e.action.padEnd(12)} records: ${who(e.by).padEnd(8)} truth: ${who(e.actualPlayerId).padEnd(8)} ${e.detail ?? ''}`)].join('\n'))
     .join('\n');
   const bn = s.blacknet.map((m) => `[${t(m.t)}] ${m.alias} (really ${s.players[m.ownerId].name}): ${m.text}`).join('\n');
-  const targets = s.targets.map((x) => `${x.account} ${x.status}`).join('   ');
+  const targets = s.targets.map((x) => `${x.account} ${money(s.balances[x.account] ?? 0)}`).join('   ');
   el.innerHTML = `
     <div class="truth-head"><b>Ground truth (spoilers)</b><button data-act="truth" aria-label="Close ground truth">Close</button></div>
     <div class="totals"><span>settled: ${money(s.totals.processed)}</span><span>stolen: ${money(s.totals.stolen)} / ${money(s.config.blackTarget)}</span><span>targets: ${esc(targets)}</span></div>
@@ -790,14 +788,21 @@ const card = (title: string, perm: 'READ' | 'WRITE', body: string, form?: string
 };
 const input = (w: Win, name: string, label: string, placeholder: string, grow = false, full = false): string =>
   `<label class="field ${grow ? 'grow' : ''} ${full ? 'full' : ''}"><span>${label}</span><input data-f="p:${name}" value="${esc(w.form[`p:${name}`] ?? '')}" placeholder="${placeholder}" autocomplete="off" size="8"></label>`;
-/** Low / Medium / High, nothing preselected so Enter cannot file a score by accident. */
-const scorePicker = (w: Win): string =>
-  `<fieldset class="field full seg"><span>Score</span><div class="seg-opts">${['LOW', 'MEDIUM', 'HIGH']
+/** A row of radio buttons (a segmented control), nothing preselected so Enter cannot pick one by accident. */
+const segPicker = (w: Win, name: string, label: string, options: string[]): string =>
+  `<fieldset class="field full seg"><span>${label}</span><div class="seg-opts">${options
     .map(
       (s) =>
-        `<label class="seg-opt ${s}"><input type="radio" name="score-${w.id}" data-f="p:score" value="${s}" ${w.form['p:score'] === s ? 'checked' : ''}><span>${s[0] + s.slice(1).toLowerCase()}</span></label>`,
+        `<label class="seg-opt ${s}"><input type="radio" name="${name}-${w.id}" data-f="p:${name}" value="${s}" ${w.form[`p:${name}`] === s ? 'checked' : ''}><span>${s[0] + s.slice(1).toLowerCase()}</span></label>`,
     )
     .join('')}</div></fieldset>`;
+/** Low / Medium / High. */
+const scorePicker = (w: Win): string => segPicker(w, 'score', 'Score', ['LOW', 'MEDIUM', 'HIGH']);
+/** A typed automation threshold as the engine wants it ("" when unreadable, so the engine explains). */
+const thresholdParam = (w: Win): string => {
+  const n = parseAmount(w.form['p:maxAmount'] ?? '');
+  return n === null ? '' : String(n);
+};
 /** A dropdown for command cards. Starts on the first option; the choice sticks for the window. */
 /** The Infiltration proxies as dropdown options; an unavailable one says why (the engine refuses it anyway). */
 const proxyOptions = (): { value: string; label: string }[] => {
@@ -864,18 +869,13 @@ const MODULE_PAGES: Record<string, ModulePage> = {
   },
   'BLACKHAT_DB.TARGET_LEDGER': {
     commands: (w) =>
-      card('View targets', 'READ', btn(w, 'view', 'All target accounts')) +
-      card(
-        'Set a target\'s status',
-        'WRITE',
-        input(w, 'account', 'Account', '12345', true, true) +
-          btns(btn(w, 'status:READY', 'Ready', '', true) + btn(w, 'status:PREPARE', 'Prepare', 'alt', true) + btn(w, 'status:ABORT', 'Abort', 'danger', true)),
-        `${w.id}:status:READY`,
-      ),
-    run: (w, cmd, arg) => {
-      if (cmd === 'view') execute(w, 'BLACKHAT_DB', 'TARGET_LEDGER', 'VIEW_TARGETS', {});
-      else runFresh(w, 'BLACKHAT_DB', 'TARGET_LEDGER', 'SET_TARGET_STATUS', { account: w.form['p:account'] ?? '', status: arg ?? '' }, ['account']);
+      card('View targets', 'READ', btn(w, 'view', 'All target accounts') + checkbox(w, 'monitor', 'Auto-update every second (only opening the ledger is logged)')),
+    run: (w, cmd) => {
+      if (cmd !== 'view') return;
+      execute(w, 'BLACKHAT_DB', 'TARGET_LEDGER', 'VIEW_TARGETS', {});
+      w.liveEnd = w.out.length;
     },
+    monitor: () => ({ fn: 'VIEW_TARGETS', params: {} }),
   },
   'BLACKHAT_DB.HOST_LOG': {
     commands: (w) =>
@@ -1257,9 +1257,20 @@ const MODULE_PAGES: Record<string, ModulePage> = {
           input(w, 'reason', 'Reason', 'Why this score?', true, true) +
           btns(btn(w, 'check', 'Submit score', '', true)),
         `${w.id}:check`,
+      ) +
+      card(
+        'Automatic scoring (LOW)',
+        'WRITE',
+        input(w, 'maxAmount', 'Max amount (0 = off)', '1,000,000 or 1m', true, true) +
+          select(w, 'source', 'Payments', [{ value: 'AUTOMATIC', label: 'Automatic only' }, { value: 'ALL', label: 'Also manual' }]) +
+          select(w, 'origin', 'Paid from', [{ value: 'CUSTOMER', label: 'Customers only' }, { value: 'ANY', label: 'Also floating' }]) +
+          select(w, 'payee', 'Payee primary', [{ value: 'VERIFIED', label: 'Verified only' }, { value: 'ANY', label: 'Also unverified' }]) +
+          btns(btn(w, 'auto', 'Save', 'alt', true)),
+        `${w.id}:auto`,
       ),
     run: (w, cmd, arg) => {
       if (cmd === 'view') execute(w, 'TRANSACTIONS', 'RISK_CHECK', 'VIEW_RISK_QUEUE', { show: arg ?? 'PENDING' });
+      else if (cmd === 'auto') runFresh(w, 'TRANSACTIONS', 'RISK_CHECK', 'SET_AUTO_SCORE', { maxAmount: thresholdParam(w), source: w.form['p:source'] ?? '', origin: w.form['p:origin'] ?? '', payee: w.form['p:payee'] ?? '' }, ['maxAmount']);
       else runFresh(w, 'TRANSACTIONS', 'RISK_CHECK', 'RUN_RISK_CHECK', { ...txParam(w), score: w.form['p:score'] ?? '', reason: w.form['p:reason'] ?? '' }, ['txId', 'score', 'reason']);
     },
   },
@@ -1273,9 +1284,16 @@ const MODULE_PAGES: Record<string, ModulePage> = {
           input(w, 'reason', 'Reason', 'Required to hold or reject', true, true) +
           btns(btn(w, 'APPROVE', 'Approve', '', true) + btn(w, 'HOLD', 'Hold', 'alt', true) + btn(w, 'REJECT', 'Reject', 'danger', true)),
         `${w.id}:APPROVE`,
+      ) +
+      card(
+        'Automatic approval',
+        'WRITE',
+        segPicker(w, 'level', 'Approve automatically up to', ['NONE', 'LOW', 'MEDIUM', 'HIGH']) + btns(btn(w, 'auto', 'Save', 'alt', true)),
+        `${w.id}:auto`,
       ),
     run: (w, cmd, arg) => {
       if (cmd === 'view') execute(w, 'TRANSACTIONS', 'AUTHORIZATION', 'VIEW_AUTH_QUEUE', { show: arg ?? 'PENDING' });
+      else if (cmd === 'auto') runFresh(w, 'TRANSACTIONS', 'AUTHORIZATION', 'SET_AUTO_APPROVE', { level: w.form['p:level'] ?? '' }, ['level']);
       else runFresh(w, 'TRANSACTIONS', 'AUTHORIZATION', cmd, { ...txParam(w), reason: w.form['p:reason'] ?? '' }, ['txId', 'reason']);
     },
   },
@@ -1288,9 +1306,16 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         input(w, 'txId', 'Transaction', 'TX-0001 or 1', true, true) +
           btns(btn(w, 'SETTLE', 'Settle', '', true) + btn(w, 'REVERSE', 'Reverse', 'danger', true)),
         `${w.id}:SETTLE`,
+      ) +
+      card(
+        'Automatic settlement',
+        'WRITE',
+        input(w, 'maxAmount', 'Max amount (0 = off)', '1,000,000 or 1m', true, true) + btns(btn(w, 'auto', 'Save', 'alt', true)),
+        `${w.id}:auto`,
       ),
     run: (w, cmd, arg) => {
       if (cmd === 'view') execute(w, 'TRANSACTIONS', 'SETTLEMENT', 'VIEW_SETTLEMENT', { show: arg ?? 'PENDING' });
+      else if (cmd === 'auto') runFresh(w, 'TRANSACTIONS', 'SETTLEMENT', 'SET_AUTO_SETTLE', { maxAmount: thresholdParam(w) }, ['maxAmount']);
       else runFresh(w, 'TRANSACTIONS', 'SETTLEMENT', cmd, txParam(w), ['txId']);
     },
   },
@@ -1702,9 +1727,6 @@ app.addEventListener('input', (e) => {
       selected = el.value;
       pollNotices(true); // a seat you just sat down at shows only what arrives from now on
       renderAll();
-      break;
-    case 'auto':
-      game.config.autoProcess = (el as HTMLInputElement).checked;
       break;
     case 'god':
       god = (el as HTMLInputElement).checked;

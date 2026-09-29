@@ -2,16 +2,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { accountVerified, applyAction, CHANNELS, createGame, DAY_PHASES, dayPhaseAt, nextArrival, paceMultiplier, ENCRYPTION_ENABLED, getPlayerView, grantMasterAccess, hackerCount, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, SYSTEMS, tick } from './index';
 import type { Action, ActionResult, GameConfig, GameState, Player, RoleId, SystemId } from './index';
+import { NPC_AMOUNT_FACTOR, REQUEST_AMOUNT_FACTOR } from './setup';
 
 const NAMES = ['Jeremy', 'Sarah', 'Mike', 'David', 'Lisa', 'Anna', 'Omar', 'Priya', 'Chen', 'Rosa'];
 const PLAYERS = NAMES.map((name, i) => ({ id: `p${i}`, name }));
 const T0 = 1_000_000;
+/** Tests drive every payment stage by hand unless they switch the automation on. */
+const MANUAL: GameConfig['automation'] = { scoreMax: 0, scoreSource: 'AUTOMATIC', scoreOrigin: 'CUSTOMER', scorePayee: 'VERIFIED', approveUpTo: 'NONE', settleMax: 0 };
+const EVERYTHING: GameConfig['automation'] = { scoreMax: 1e12, scoreSource: 'ALL', scoreOrigin: 'ANY', scorePayee: 'ANY', approveUpTo: 'HIGH', settleMax: 1e12 };
 
 class Sim {
   s: GameState;
   sec = 0;
   constructor(config: Partial<GameConfig> = {}, seed = 42) {
-    this.s = createGame({ seed, players: PLAYERS, now: T0, config });
+    this.s = createGame({ seed, players: PLAYERS, now: T0, config: { automation: MANUAL, ...config } });
   }
   at(sec: number): this {
     this.sec = sec;
@@ -132,11 +136,11 @@ test('the economy scales with the table: targets, customers, requests and automa
     assert.ok(new Set(s.customers.map((x) => x.name)).size === s.customers.length, 'no duplicate customers');
     // Each banker gets a request about every 90 seconds.
     assert.ok(Math.abs((c.requestIntervalSec * bankers) - 90) < 1e-9, `n=${n} request rate`);
-    // Expected offered volume (automatic + requested, at the measured average amounts) is at most $18m per
+    // Expected offered volume (automatic + requested, at the measured average amounts) is at most $17.4m per
     // player, and automatic traffic is capped at 80% of the bank target so it can never win on its own.
-    const requested = (c.durationSec / c.requestIntervalSec) * (1 - c.requestChangeShare) * ((0.45 * (c.npcMinAmount + c.maxManualAmount)) / 2);
-    const automatic = (c.durationSec / c.npcIntervalSec) * ((0.87 * (c.npcMinAmount + c.npcMaxAmount)) / 2);
-    assert.ok(Math.abs(automatic - Math.min(18_000_000 * n - requested, 0.8 * c.whiteTarget)) < 1, `n=${n} automatic volume ${automatic}`);
+    const requested = (c.durationSec / c.requestIntervalSec) * (1 - c.requestChangeShare) * ((REQUEST_AMOUNT_FACTOR * c.requestAmountFactor * (c.requestMinAmount + c.requestMaxAmount)) / 2);
+    const automatic = (c.durationSec / c.npcIntervalSec) * ((NPC_AMOUNT_FACTOR * (c.npcMinAmount + c.npcMaxAmount)) / 2);
+    assert.ok(Math.abs(automatic - Math.min(17_400_000 * n - requested, 0.8 * c.whiteTarget)) < 1, `n=${n} automatic volume ${automatic}`);
   }
   // Customers are drawn at random: different seeds, different line-ups.
   const names = (seed: number) => createGame({ seed, players: table(10), now: T0 }).customers.map((x) => x.name).join();
@@ -432,15 +436,15 @@ test('Black Hats win as soon as stolen money reaches the target', () => {
 test('NPC traffic arrives on a schedule, and White Hats win at close of business once enough is settled', () => {
   const sim = new Sim({ npcMinAmount: 2_000_000, npcMaxAmount: 2_000_000 });
   assert.equal(sim.s.transactions.length, 3);
-  // Arrivals follow the time of day: count the scheduled ones due by t=60 (a slow morning).
+  // Arrivals follow the time of day: count the scheduled ones due by t=120 (a slow morning).
   const c = sim.s.config;
   let due = 0;
-  for (let t = nextArrival(c.durationSec, 0, c.npcIntervalSec); t <= 60; t = nextArrival(c.durationSec, t, c.npcIntervalSec)) due++;
+  for (let t = nextArrival(c.durationSec, 0, c.npcIntervalSec); t <= 120; t = nextArrival(c.durationSec, t, c.npcIntervalSec)) due++;
   assert.ok(due >= 1);
-  sim.at(60);
+  sim.at(120);
   assert.equal(sim.s.transactions.length, 3 + due);
 
-  const win = new Sim({ npcMinAmount: 2_000_000, npcMaxAmount: 2_000_000, whiteTarget: 8_000_000, autoProcess: true });
+  const win = new Sim({ npcMinAmount: 2_000_000, npcMaxAmount: 2_000_000, whiteTarget: 8_000_000, automation: EVERYTHING });
   win.at(300);
   assert.ok(win.s.totals.processed >= 8_000_000);
   assert.equal(win.s.status, 'RUNNING', 'meeting the target early does not end the game');
@@ -753,12 +757,66 @@ test('payment history records every step with the credential owner and the real 
   assert.match(tx.history[1].detail!, /^risk (LOW|MEDIUM|HIGH)/);
 });
 
-test('the auto-processor signs its steps as SYSTEM', () => {
-  const sim = new Sim({ autoProcess: true });
-  sim.at(sim.s.config.autoProcessDelaySec + 1);
-  const settled = sim.s.transactions.find((t) => t.status === 'SETTLED');
-  assert.ok(settled, 'something was auto-settled');
-  assert.deepEqual(settled.history.map((e) => `${e.action}:${e.by}`), ['CREATED:SYSTEM', 'RISK_CHECKED:SYSTEM', 'APPROVED:SYSTEM', 'SETTLED:SYSTEM']);
+test('automation: each stage handles what its settings cover, signed as SYSTEM; settings are logged and HIGH approval alerts', () => {
+  const sim = new Sim();
+  assert.deepEqual(createGame({ seed: 1, players: PLAYERS, now: T0 }).automation, { scoreMax: 1_000_000, scoreSource: 'AUTOMATIC', scoreOrigin: 'CUSTOMER', scorePayee: 'VERIFIED', approveUpTo: 'LOW', settleMax: 1_000_000 });
+  grantMasterAccess(sim.s, 'p0');
+  const master = sim.code('p0', 'TRANSACTIONS', null);
+  const go = (module: string, fn: string, params: Record<string, string>) => sim.run('p0', master, 'TRANSACTIONS', module, fn, params);
+  const payer = sim.s.customers.find((c) => sim.s.balances[c.primary] >= 10_000_000)!;
+  const payee = sim.s.customers.find((c) => c.id !== payer.id)!;
+  const pay = (amount: number, from = payer.primary) => {
+    assert.ok(go('PAYMENT_QUEUE', 'CREATE_TRANSACTION', { originAccount: from, beneficiaryId: payee.id, amount: String(amount) }).ok);
+    return sim.s.transactions.at(-1)!.id;
+  };
+  const tx = (id: string) => sim.s.transactions.find((t) => t.id === id)!;
+  sim.at(1);
+
+  // Settings: typed and checked, logged under the credential owner.
+  assert.match(go('RISK_CHECK', 'SET_AUTO_SCORE', { maxAmount: 'lots', source: 'AUTOMATIC', origin: 'CUSTOMER', payee: 'VERIFIED' }).message, /max amount/);
+  assert.ok(go('RISK_CHECK', 'SET_AUTO_SCORE', { maxAmount: '1,000,000', source: 'AUTOMATIC', origin: 'CUSTOMER', payee: 'VERIFIED' }).ok);
+  assert.match(sim.lastLog(), /changed automatic scoring/);
+  assert.ok(go('AUTHORIZATION', 'SET_AUTO_APPROVE', { level: 'LOW' }).ok);
+  assert.ok(go('SETTLEMENT', 'SET_AUTO_SETTLE', { maxAmount: '1000000' }).ok);
+  assert.equal(sim.s.alerts.length, 0);
+
+  // Scoring: a manual payment waits while only automatic payments are scored; then goes all the way.
+  const small = pay(900_000);
+  sim.at(2);
+  assert.equal(tx(small).status, 'QUEUED');
+  go('RISK_CHECK', 'SET_AUTO_SCORE', { maxAmount: '1000000', source: 'ALL', origin: 'CUSTOMER', payee: 'VERIFIED' });
+  sim.at(3);
+  assert.equal(tx(small).status, 'SETTLED');
+  assert.deepEqual(tx(small).history.map((e) => `${e.action}:${e.by}`), ['CREATED:p0', 'RISK_CHECKED:SYSTEM', 'APPROVED:SYSTEM', 'SETTLED:SYSTEM']);
+
+  // From a floating account: only scored once floating accounts are allowed.
+  sim.open(5_000_000, '77777');
+  const floating = pay(500_000, 'ACC-77777');
+  sim.at(4);
+  assert.equal(tx(floating).status, 'QUEUED');
+
+  // Over the scoring max: a human scores it; approval follows the score; settlement stops above its max.
+  const big = pay(2_000_000);
+  const risky = pay(2_000_000);
+  sim.at(5);
+  assert.equal(tx(big).status, 'QUEUED');
+  go('RISK_CHECK', 'RUN_RISK_CHECK', { txId: big, score: 'LOW' });
+  go('RISK_CHECK', 'RUN_RISK_CHECK', { txId: risky, score: 'MEDIUM' });
+  sim.at(6);
+  assert.equal(tx(big).status, 'AUTHORIZED', 'approved automatically, too big to settle automatically');
+  assert.equal(tx(risky).status, 'RISK_CHECKED');
+
+  // Approving everything up to HIGH raises an alert naming the credential owner.
+  assert.ok(go('AUTHORIZATION', 'SET_AUTO_APPROVE', { level: 'HIGH' }).ok);
+  assert.match(sim.s.alerts.at(-1)!.message, new RegExp(`${sim.s.players.p0.name} set automatic approval to HIGH`));
+  sim.at(7);
+  assert.equal(tx(risky).status, 'AUTHORIZED');
+  // 0 switches a stage off.
+  go('SETTLEMENT', 'SET_AUTO_SETTLE', { maxAmount: '0' });
+  const last = pay(100_000);
+  sim.at(8);
+  assert.equal(tx(last).status, 'AUTHORIZED');
+  assert.ok(go('SETTLEMENT', 'VIEW_SETTLEMENT', {}).lines![0].includes('Automatic settlement: off'));
 });
 
 test('stage rows: both accounts, who handled it (credential owner or channel), and never the risk flags', () => {
@@ -994,6 +1052,13 @@ test('customer accounts: 3 per banker; add, set primary and remove, with their r
   go('SETTLE', 'SETTLEMENT', { txId: id });
   assert.equal(sim.s.transactions.at(-1)!.settledTo, floating);
   assert.equal(sim.s.totals.stolen, 1_000_000, 'the floating account was a mule');
+
+  // The Target Ledger shows where each mule account sits and what it holds.
+  const bh = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const ledger = sim.run(bh.id, sim.code(bh.id, 'BLACKHAT_DB', 'TARGET_LEDGER'), 'BLACKHAT_DB', 'TARGET_LEDGER', 'VIEW_TARGETS');
+  assert.ok(ledger.message.includes('$1,000,000 of'), ledger.message);
+  assert.match(ledger.lines!.find((l) => l.startsWith(floating))!, /CU5 \(primary\)\s+\$1,000,000$/);
+  assert.match(ledger.lines!.find((l) => l.startsWith(sim.s.targets[0].account))!, /floating\s+\$0$/);
 });
 
 test('Customer Records: bankers see only their own customers; every other role sees all of them', () => {
@@ -1643,7 +1708,7 @@ test('Employee Records: reset a lockout', () => {
 });
 
 test('balances: fixed wealth split, every account funded, and only existing accounts can be added or pay', () => {
-  const sim = new Sim({ autoProcess: false });
+  const sim = new Sim();
   const s = sim.s;
   // 12 customers at 10 players: 20% wealthy, 30% mid, the rest small.
   const tiers = s.customers.map((c) => c.wealth);

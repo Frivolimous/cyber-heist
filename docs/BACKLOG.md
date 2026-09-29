@@ -38,12 +38,16 @@ Built, but the numbers or the balance are a first guess.
   write, so one banker can divert a customer and start payments to them (verification and risk sit with
   other roles). Employee Records write (reset a lockout) is IT-only.
 - **Economy** (see RULES.md > Win conditions). Targets ($15M per player, $1M per Black Hat), volume
-  (automatic capped at 80% of the target, about 1.1x offered in total) and request rate (one per banker
-  every 90s) scale with the table. To check:
-  - the bank must act on requests to win: is the request workload right with a 1.1x margin?
-  - wealth tiers ($250k-$2M / $5M-$15M / $30M-$60M) and the 40%-of-balance cap on payment sizes: small
-    customers' requests are worth little to the bank;
-  - the amount factors in `scaledConfig` (0.87 automatic, 0.45 requested) were measured by simulation;
+  (automatic capped at 80% of the target, about 1.15-1.2x offered in total) and request rate (one per banker
+  every 90s) scale with the table. Automatic payments are many and small ($165k-$1.32M), requests fewer
+  and big (x2.18). To check:
+  - the bank must act on requests to win: is the request workload right with a ~1.15x margin?
+  - payment automation defaults ($1M scoring and settlement, approve LOW): how much work is left for people?
+  - small customers going broke: a request can take up to ~87% of an account, and money drifts to the
+    wealthy. If too many customers can only ask to add accounts, raise the small tier (e.g. $0.5M-$3M);
+  - the Master Log gets a "Batch processor queued" line per automatic payment (~120 a game at 10 players):
+    good cover for the Black Hats, or just noise?
+  - the amount factors in `scaledConfig` (0.94 automatic, 0.41 requested) were measured by simulation;
     re-measure if payment sizing or tiers change;
   - the hacker target grows with Black Hats, but their chances per payment do not;
   - the 20-minute timer (was 40), and time-of-day pacing (busy = 4x slow).

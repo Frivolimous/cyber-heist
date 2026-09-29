@@ -229,6 +229,12 @@ export const SYSTEMS: SystemDef[] = [
             { name: 'score', label: 'Score', kind: 'select', options: ['LOW', 'MEDIUM', 'HIGH'] },
             reason,
           ]),
+          fn('SET_AUTO_SCORE', 'Automatic scoring', 'WRITE', 'Score routine payments LOW automatically. A max amount of 0 switches it off.', [
+            { name: 'maxAmount', label: 'Max amount', kind: 'number', placeholder: '1000000' },
+            { name: 'source', label: 'Payments', kind: 'select', options: ['AUTOMATIC', 'ALL'] },
+            { name: 'origin', label: 'Paid from', kind: 'select', options: ['CUSTOMER', 'ANY'] },
+            { name: 'payee', label: 'Payee primary', kind: 'select', options: ['VERIFIED', 'ANY'] },
+          ]),
         ],
       },
       {
@@ -239,6 +245,9 @@ export const SYSTEMS: SystemDef[] = [
           fn('APPROVE', 'Approve', 'WRITE', 'Approve a risk-checked payment.', [tx, { ...reason, optional: true }]),
           fn('REJECT', 'Reject', 'WRITE', 'Reject a payment permanently. Needs a reason.', [tx, reason]),
           fn('HOLD', 'Hold', 'WRITE', 'Pause a payment. Needs a reason.', [tx, reason]),
+          fn('SET_AUTO_APPROVE', 'Automatic approval', 'WRITE', 'Approve risk-checked payments at or below a risk level automatically. HIGH raises an alert.', [
+            { name: 'level', label: 'Up to', kind: 'select', options: ['NONE', 'LOW', 'MEDIUM', 'HIGH'] },
+          ]),
         ],
       },
       {
@@ -248,6 +257,9 @@ export const SYSTEMS: SystemDef[] = [
           fn('SETTLE', 'Settle', 'WRITE', 'Pay out an approved payment.', [tx]),
           fn('REVERSE', 'Reverse', 'WRITE', 'Claw back a recently settled payment.', [tx]),
           fn('VIEW_SETTLEMENT', 'View settlement queue', 'READ', 'Approved payments waiting to be paid out (or all, including settled).', [inbox]),
+          fn('SET_AUTO_SETTLE', 'Automatic settlement', 'WRITE', 'Settle approved payments up to an amount automatically. 0 switches it off.', [
+            { name: 'maxAmount', label: 'Max amount', kind: 'number', placeholder: '1000000' },
+          ]),
         ],
       },
     ],
@@ -272,11 +284,7 @@ export const SYSTEMS: SystemDef[] = [
         id: 'TARGET_LEDGER',
         label: 'Target Ledger',
         fns: [
-          fn('VIEW_TARGETS', 'View targets', 'READ', 'Destination accounts for stolen funds.'),
-          fn('SET_TARGET_STATUS', 'Set target status', 'WRITE', 'Mark an account READY / PREPARE / ABORT.', [
-            { name: 'account', label: 'Account (5 digits)', kind: 'text', placeholder: '18392' },
-            { name: 'status', label: 'Status', kind: 'select', options: ['READY', 'PREPARE', 'ABORT'] },
-          ]),
+          fn('VIEW_TARGETS', 'View targets', 'READ', 'Destination accounts for stolen funds: whose they are and what they hold.'),
         ],
       },
       {
@@ -509,7 +517,7 @@ export const DEFAULT_CONFIG: GameConfig = {
   durationSec: 20 * 60,
   whiteTargetPerPlayer: 15_000_000,
   blackTargetPerHacker: 1_000_000,
-  volumePerPlayer: 18_000_000, // 1.2x the target: room for held, rejected and missed payments
+  volumePerPlayer: 17_400_000, // 1.16x the target: room for held, rejected and missed payments
   requestEverySecPerBanker: 90,
   customersPerBanker: 3,
   // Derived at game creation (scaledConfig); these are the 10-player values, for reference only.
@@ -517,9 +525,12 @@ export const DEFAULT_CONFIG: GameConfig = {
   blackTarget: 3_000_000,
   blackHatCount: null,
   npcIntervalSec: 19.6,
-  npcMinAmount: 500_000,
-  npcMaxAmount: 4_000_000,
-  maxManualAmount: 5_000_000,
+  npcMinAmount: 165_000,
+  npcMaxAmount: 1_320_000,
+  requestMinAmount: 500_000,
+  requestMaxAmount: 5_000_000,
+  requestAmountFactor: 2.18,
+  maxManualAmount: 10_000_000,
   largeAmount: 3_500_000,
   recentModifySec: 300,
   reversalWindowSec: 180,
@@ -527,8 +538,7 @@ export const DEFAULT_CONFIG: GameConfig = {
   traceCooldownSec: 30,
   lockoutAfterFails: 3,
   lockoutSec: 20,
-  autoProcess: false,
-  autoProcessDelaySec: 15,
+  automation: { scoreMax: 1_000_000, scoreSource: 'AUTOMATIC', scoreOrigin: 'CUSTOMER', scorePayee: 'VERIFIED', approveUpTo: 'LOW', settleMax: 1_000_000 },
   requestIntervalSec: 22.5, // derived
   requestChangeShare: 0.3,
   requestDeadlineSec: 120,

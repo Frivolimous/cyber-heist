@@ -33,7 +33,7 @@ import {
 } from './core';
 import { createCredential } from './credentials';
 import { pick, rand, randInt } from './rng';
-import { computeRisk, paymentFor, recordTx, reverseTransaction, settleTransaction } from './bank';
+import { automationText, computeRisk, paymentFor, recordTx, reverseTransaction, settleTransaction } from './bank';
 import type { TxActor } from './bank';
 import { accountRequestText, paymentRequestText, requestReceived, requestTimes } from './requests';
 import { notify } from './notify';
@@ -887,10 +887,10 @@ H['TRANSACTIONS.SETTLEMENT.REVERSE'] = (c, q) => {
 const lastEvent = (tx: Transaction, action: TxEvent['action']): TxEvent | undefined =>
   [...tx.history].reverse().find((e) => e.action === action);
 
-/** Who a history step is attributed to: a player, the payment's channel, or the (debug) auto-processor. */
+/** Who a history step is attributed to: a player, the payment's channel, or the stage's automation. */
 function eventBy(c: Ctx, tx: Transaction, e: TxEvent): string {
   if (e.by !== 'SYSTEM') return nameOf(c.s, e.by);
-  return e.action === 'CREATED' ? (tx.channel ?? 'SYSTEM') : 'Auto-processor';
+  return e.action === 'CREATED' ? (tx.channel ?? 'SYSTEM') : 'Automation';
 }
 
 const quoted = (text: string | null): string => (text ? `: "${text}"` : '');
@@ -955,7 +955,10 @@ function stageView(c: Ctx, q: Record<string, string>, stage: Stage, title: strin
     .filter((tx) => (showAll ? all(tx) : pending.includes(tx.status)))
     .slice(-40);
   const n = rows.length;
-  return good(`${title} (${showAll ? 'all' : 'pending'}): ${n} payment${n === 1 ? '' : 's'}.`, n ? rows.flatMap((tx) => stageLines(c, tx, stage)) : ['Nothing here.']);
+  return good(`${title} (${showAll ? 'all' : 'pending'}): ${n} payment${n === 1 ? '' : 's'}.`, [
+    automationText(c.s, stage),
+    ...(n ? rows.flatMap((tx) => stageLines(c, tx, stage)) : ['Nothing here.']),
+  ]);
 }
 
 H['TRANSACTIONS.RISK_CHECK.VIEW_RISK_QUEUE'] = (c, q) =>
@@ -970,6 +973,44 @@ H['TRANSACTIONS.AUTHORIZATION.VIEW_AUTH_QUEUE'] = (c, q) =>
 
 H['TRANSACTIONS.SETTLEMENT.VIEW_SETTLEMENT'] = (c, q) =>
   stageView(c, q, 'SETTLE', 'Settlement queue', ['AUTHORIZED'], (tx) => ['AUTHORIZED', 'SETTLED', 'FAILED', 'REVERSED'].includes(tx.status));
+
+// ---- Automation settings: anyone with WRITE on the stage changes them, logged under the credential owner ----
+
+/** A typed amount for an automation threshold: "1000000", "$1,000,000"; 0 switches the stage off. */
+function thresholdOf(q: Record<string, string>): number | null {
+  const n = Math.round(Number(str(q, 'maxAmount').replace(/[$,\s]/g, '')));
+  return str(q, 'maxAmount') !== '' && Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+H['TRANSACTIONS.RISK_CHECK.SET_AUTO_SCORE'] = (c, q) => {
+  const max = thresholdOf(q);
+  if (max === null) return bad('Enter a max amount (0 switches automatic scoring off).');
+  const source = str(q, 'source');
+  const origin = str(q, 'origin');
+  const payee = str(q, 'payee');
+  if ((source !== 'AUTOMATIC' && source !== 'ALL') || (origin !== 'CUSTOMER' && origin !== 'ANY') || (payee !== 'VERIFIED' && payee !== 'ANY')) {
+    return bad('Pick which payments, paid from where, to which primaries.');
+  }
+  Object.assign(c.s.automation, { scoreMax: max, scoreSource: source, scoreOrigin: origin, scorePayee: payee });
+  const text = automationText(c.s, 'RISK');
+  return good(text, undefined, `changed automatic scoring (${text.replace(/^Automatic scoring: /, '').replace(/\.$/, '')})`);
+};
+
+H['TRANSACTIONS.AUTHORIZATION.SET_AUTO_APPROVE'] = (c, q) => {
+  const level = str(q, 'level').toUpperCase();
+  if (level !== 'NONE' && level !== 'LOW' && level !== 'MEDIUM' && level !== 'HIGH') return bad('Pick NONE, LOW, MEDIUM or HIGH.');
+  c.s.automation.approveUpTo = level;
+  const detail = `set automatic approval to ${level}`;
+  if (level === 'HIGH') securityAlert(c, detail, 'SUSPICIOUS'); // every payment would go through unchecked
+  return good(automationText(c.s, 'AUTH'), undefined, detail);
+};
+
+H['TRANSACTIONS.SETTLEMENT.SET_AUTO_SETTLE'] = (c, q) => {
+  const max = thresholdOf(q);
+  if (max === null) return bad('Enter a max amount (0 switches automatic settlement off).');
+  c.s.automation.settleMax = max;
+  return good(automationText(c.s, 'SETTLE'), undefined, max ? `set automatic settlement to payments up to ${money(max)}` : 'switched automatic settlement off');
+};
 
 // ---- Hidden host: tool kits & exposure ----------------------------------------
 // Black Hat tools have no cooldowns or charges; they are balanced by exposure. Each tool tags its "Unknown
@@ -1356,18 +1397,16 @@ H['BLACKHAT_DB.BLACKNET.POST_MESSAGE'] = (c, q) => {
   return good('Posted.');
 };
 
+/** Each mule account: the customer it is on (and whether it is their primary) or floating, and its balance. */
 H['BLACKHAT_DB.TARGET_LEDGER.VIEW_TARGETS'] = (c) =>
-  good('TARGET ACCOUNTS', c.s.targets.map((tg) => `${tg.account}  ${tg.status}`));
-
-H['BLACKHAT_DB.TARGET_LEDGER.SET_TARGET_STATUS'] = (c, q) => {
-  const acc = normAccount(str(q, 'account'));
-  const tg = c.s.targets.find((x) => x.account === acc);
-  if (!tg) return bad('That account is not in the ledger.');
-  const status = str(q, 'status');
-  if (status !== 'READY' && status !== 'PREPARE' && status !== 'ABORT') return bad('Status must be READY, PREPARE or ABORT.');
-  tg.status = status;
-  return good(`${tg.account} is now ${status}.`);
-};
+  good(
+    `Target accounts: ${money(c.s.totals.stolen)} of ${money(c.s.config.blackTarget)} diverted.`,
+    c.s.targets.map((tg) => {
+      const owner = accountOwner(c.s, tg.account);
+      const where = owner ? `${owner.id}${owner.primary === tg.account ? ' (primary)' : ''}` : 'floating';
+      return `${tg.account}  ${where.padEnd(14)} ${money(balanceOf(c.s, tg.account))}`;
+    }),
+  );
 
 /** ALL: everything on the host's own log; ALERTS: only the moments an operative was exposed. */
 H['BLACKHAT_DB.HOST_LOG.VIEW_HOST_LOG'] = (c, q) => {

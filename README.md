@@ -130,7 +130,7 @@ src/engine/
   engine.ts       applyAction / tick: auth, scope, offline, blocks, logging, arrivals
   ending.ts       terminations, end conditions and the end-screen summary
   handlers.ts     one handler per catalog function (incl. the Black Hat tools and their exposure)
-  bank.ts         risk scoring, settlement, reversal, automatic payments, debug auto-processor
+  bank.ts         risk scoring, settlement, reversal, automatic payments, stage automation
   requests.ts     client requests and banker assignment
   notify.ts       the page bells: who gets a pop-up notification about what
   pacing.ts       time of day and how fast new work arrives

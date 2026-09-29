@@ -2,7 +2,7 @@
 // No Firebase, no DOM. Later this exact module runs inside a Cloud Function.
 
 import { findFn, findSystem, SYSTEMS } from './catalog';
-import { autoProcess, spawnNpc } from './bank';
+import { runAutomation, spawnNpc } from './bank';
 import { advanceRequests, spawnRequest } from './requests';
 import {
   activeBlock,
@@ -43,7 +43,7 @@ import type {
 
 // ---- Time ---------------------------------------------------------------------
 
-/** Mutating: brings the state up to `now` (NPC traffic, auto-processing, win/timeout checks). */
+/** Mutating: brings the state up to `now` (NPC traffic, payment automation, win/timeout checks). */
 export function advanceState(s: GameState, now: number): void {
   if (s.status !== 'RUNNING') return;
   const endT = s.config.durationSec;
@@ -60,7 +60,7 @@ export function advanceState(s: GameState, now: number): void {
     if (next === nextNpc) {
       s.lastNpcAt = nextNpc;
       spawnNpc(s);
-      if (s.config.autoProcess) autoProcess(s);
+      runAutomation(s);
       checkWin(s);
     } else {
       s.lastRequestAt = nextReq;
@@ -74,7 +74,7 @@ export function advanceState(s: GameState, now: number): void {
   advanceCracks(s);
   advanceUnlocks(s);
   advanceRequests(s);
-  if (s.config.autoProcess) autoProcess(s);
+  runAutomation(s);
   checkWin(s);
   if (s.status === 'RUNNING' && targetT >= endT) closeOfBusiness(s);
 }
@@ -490,7 +490,6 @@ const HIDDEN_ACTIVITY: Record<string, string> = {
   READ_MESSAGES: 'read the Blacknet board',
   POST_MESSAGE: 'posted on Blacknet',
   VIEW_TARGETS: 'viewed the target ledger',
-  SET_TARGET_STATUS: 'changed a target\'s status',
   VIEW_CACHE: 'viewed the credential cache',
   VIEW_HOST_LOG: 'viewed the host log',
   CREATE_PROXY: 'set up a proxy',

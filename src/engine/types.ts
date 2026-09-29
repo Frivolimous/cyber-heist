@@ -31,8 +31,11 @@ export interface GameConfig {
   blackTarget: number; // derived: stolen money for a Black Hat win
   blackHatCount: number | null; // null = hackerCount(n): floor(n / 3)
   npcIntervalSec: number; // derived: one automatic payment every N seconds
-  npcMinAmount: number;
+  npcMinAmount: number; // automatic payments: between these (and what the paying account can afford)
   npcMaxAmount: number;
+  requestMinAmount: number; // payment requests: picked between these (and what the account can afford)...
+  requestMaxAmount: number;
+  requestAmountFactor: number; // ...then multiplied by this, never more than the account holds or maxManualAmount
   maxManualAmount: number; // largest payment a player can create by hand
   largeAmount: number; // risk check flags payments above this
   recentModifySec: number; // hidden risk assessment flags primary accounts changed this recently
@@ -41,8 +44,7 @@ export interface GameConfig {
   traceCooldownSec: number;
   lockoutAfterFails: number; // consecutive failures before a workstation locks
   lockoutSec: number;
-  autoProcess: boolean; // DEBUG: a bot settles NPC payments that pass the risk check
-  autoProcessDelaySec: number;
+  automation: Automation; // the payment stages' automation at the start of the game (players change it in play)
   requestIntervalSec: number; // derived: one client request (bank-wide) every N seconds
   requestChangeShare: number; // share of requests that ask for an account change instead of a payment (0..1)
   requestDeadlineSec: number; // a request expires if what it asks for has not happened within this
@@ -55,6 +57,21 @@ export interface GameConfig {
   revokeCountdownSec: number; // how long anyone has to cancel a "revoke all access"
   unlockSec: number; // Access / Unlock workstation: seconds until the new workstation login is made
   crackRevealSec: number; // Access / Code crack: seconds between digit reveals (4 digits ~= a minute)
+}
+
+/**
+ * The bank's payment automation, one setting per stage, changed by anyone with WRITE on that stage's module.
+ * Risk Check scores LOW every queued payment that passes all four tests; Authorization approves risk-checked
+ * payments scored at or below `approveUpTo`; Settlement settles approved payments up to `settleMax`.
+ * An amount of 0 (or NONE) switches that stage's automation off. Held payments are never touched.
+ */
+export interface Automation {
+  scoreMax: number; // amount at or under which a payment can be scored automatically
+  scoreSource: 'AUTOMATIC' | 'ALL'; // automatic payments only, or manual ones too
+  scoreOrigin: 'CUSTOMER' | 'ANY'; // paid from a customer's account only, or from a floating one too
+  scorePayee: 'VERIFIED' | 'ANY'; // the payee's primary must be verified, or anything goes
+  approveUpTo: 'NONE' | RiskResult;
+  settleMax: number;
 }
 
 /** A Firewall block on an address (a workstation IP or a system address). */
@@ -282,7 +299,6 @@ export interface Transaction {
 
 export interface TargetAccount {
   account: string;
-  status: 'READY' | 'PREPARE' | 'ABORT';
 }
 
 export interface BlacknetMessage {
@@ -378,6 +394,7 @@ export interface GameState {
   cracks: CodeCrack[];
   unlocks: WorkstationUnlock[];
   alertMuteUntil: number; // game seconds: while now < this, tier 1-2 alerts are suppressed (Cleanup / Alert mute)
+  automation: Automation; // the payment stages' current automation (starts as config.automation)
   hostLog: HostLogEntry[];
   revocations: Revocation[];
   lastRequestAt: number; // game seconds

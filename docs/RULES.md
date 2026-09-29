@@ -41,19 +41,22 @@ Decisions marked **assumed** were not in the design brief. Change them in `catal
   IP does not cut it off and its credentials are not revoked. (A timed Firewall block still does.)
 - Planted users (Infiltration) are terminated the same way once they have been issued a credential.
 - **Volume scales with the table** (`scaledConfig` in `setup.ts`). Each Personal Banker gets a client
-  request about every **90 seconds** on average. Automatic traffic fills the rest, up to about $18M per
-  player in total, but automatic volume is capped at **80% of the bank target**, so the bank cannot win
-  without acting on requests. Offered volume ends up at about 1.1x the target: the team has to act on
-  most payment requests. Amounts are capped by balances (see Customers and accounts), so the averages
-  used for this (about $1.9M automatic, $1.2M requested) were measured by simulating games. The rates below
-  are game-wide averages; the time of day speeds them up and slows them down:
+  request about every **90 seconds** on average. Automatic traffic fills the rest, up to about $17.4M per
+  player in total (1.16x the target), but automatic volume is capped at **80% of the bank target**, so the
+  bank cannot win without acting on requests. Offered volume ends up at about 1.15-1.2x the target (measured):
+  the team has to act on most payment requests. The design is **many small automatic payments** (which the
+  stage automation can handle) and **fewer, bigger requested payments** (which need people). Amounts are
+  capped by balances (see Customers and accounts), so the averages used for this (about $0.7M automatic,
+  $2.5M requested) were measured by simulating games. Requests are a larger share at bigger tables, where
+  a larger share of players are bankers. The rates below are game-wide averages; the time of day speeds
+  them up and slows them down:
 
 | Players | Bank target | Hacker target | Automatic | Requests (payment share) |
 |---|---|---|---|---|
-| 6 | $90M | $2M | every 33s, ~$72M | every 45s, ~$23M |
-| 10 | $150M | $3M | every 20s, ~$120M | every 23s, ~$46M |
-| 20 | $300M | $6M | every 10s, ~$240M | every 10s, ~$104M |
-| 30 | $450M | $10M | every 7s, ~$360M | every 6s, ~$162M |
+| 6 | $90M | $2M | every 14s, ~$59M | every 45s, ~$46M |
+| 10 | $150M | $3M | every 10s, ~$82M | every 23s, ~$92M |
+| 20 | $300M | $6M | every 6s, ~$142M | every 10s, ~$206M |
+| 30 | $450M | $10M | every 4s, ~$201M | every 6s, ~$321M |
 
 - **Time of day** (`pacing.ts`): the day runs by share of the game elapsed. New client requests and
   automatic payments arrive at the phase's pace; busy is 4x slow and medium 2x slow, rescaled so the
@@ -178,9 +181,11 @@ account already paid it on.
 
 Automatic payments and payment requests are sized to what the paying account holds: the customer
 paying is picked in proportion to their wealth, the account in proportion to its balance, and the amount
-is at most 40% of that account's balance (at least $10k). Payees are also picked in proportion to wealth, so
-money does not drain from rich to poor customers. A customer too poor to pay anything asks to add an
-account instead. An automatic payment the chosen account cannot afford is skipped.
+is at most 40% of that account's balance (at least $10k). Automatic payments are $165k-$1.32M within that.
+A payment request picks $500k-$5M within that, then **x2.18**, but never more than the account holds or the
+$10M a banker may pay by hand (so a request can ask for up to ~87% of an account). Payees are also picked in
+proportion to wealth, so money does not drain from rich to poor customers. A customer too poor to pay
+anything asks to add an account instead. An automatic payment the chosen account cannot afford is skipped.
 
 Every payment keeps a full history (created, risk checked, held, approved, rejected, settled, failed, reversed):
 time, the credential owner the records show, the player who actually did it, and details such as risk
@@ -199,7 +204,21 @@ check but does **not** require LOW: humans decide.
 The system still computes its own hidden assessment at check time (ground truth only, never shown):
 beneficiary's primary unverified, beneficiary's primary changed in the last 5 minutes, amount over
 $3.5M, manual entry.
-Verification clears only the first flag. The debug auto-processor uses it (0 flags = LOW).
+Verification clears only the first flag.
+
+**Automation.** Each stage can handle routine payments by itself. Anyone with WRITE on the stage's module
+changes its setting; the change is logged under the credential owner, and the stage's queue view shows
+the current setting on its first line. Automation never touches a held payment, and its steps show as
+"Automation" in the stage views (SYSTEM in the history).
+
+| Stage | Setting | Default |
+| --- | --- | --- |
+| Risk Check | score LOW every queued payment up to a **max amount** that also passes three switches: automatic payments only, or manual too; paid from a customer's account only, or from a floating one too; payee's primary verified only, or unverified too | $1,000,000; automatic only; customer accounts; verified primaries |
+| Authorization | approve risk-checked payments scored at or below **NONE / LOW / MEDIUM / HIGH**, whoever scored them. Setting HIGH raises a Suspicious security activity alert (tier 2, so Alert mute hides it) | LOW |
+| Settlement | settle approved payments up to a **max amount**, automatic or manual | $1,000,000 |
+
+A max amount of 0 (or NONE) switches that stage off. A stage's bell stays quiet for payments its
+automation will take. Money settled by automation counts like any other.
 
 Settled payments can be reversed for 3 minutes, if the account paid still holds the money.
 
@@ -393,8 +412,7 @@ of "potential targets for fraudulent transactions").
 | Authorization | a payment waiting for approval |
 | Settlement | a payment ready to settle |
 
-The debug auto-processor's own scoring and approvals are silent, except a risky payment it leaves for
-Authorization.
+A stage whose automation will take a payment is not rung for it.
 
 ## Workstations
 
@@ -425,6 +443,9 @@ Authorization.
   are dealt at random each game: every operative gets exactly one. With more kits than operatives, the
   rest go unused; with more operatives than kits (15+ players), kits repeat so everyone has one. Operatives can share kit codes
   like any other credential.
+- **Target Ledger** is read-only: the total diverted against the goal, then each of the 3 mule accounts
+  with the customer it is on (marked `(primary)` when it is that customer's primary) or `floating`, and
+  its balance. It can auto-update every second like Blacknet.
 - **Kit tools** (tier in brackets):
   - **Infiltration / Create proxy** (3): set up a typed, unused IP address as a proxy. An address already
     on the network (a workstation, planted or real, a bank system, the host, another proxy) is refused.
@@ -498,7 +519,7 @@ Authorization.
   - a pair, the real one and a random decoy in random order: "one of two workstations: A or B."
   - one number of the server's address: "The server's IP address is x.143.x.x."
   - what was done: "Activity performed: posted on Blacknet." (also: read the board, viewed the target
-    ledger, changed a target's status, viewed the credential cache, connected, failed login attempt)
+    ledger, viewed the credential cache, connected, failed login attempt)
 - White Hats find the address from trace clues (one number of it at a time, or all of it from a loud
   tool's trace), use **Connect** to make the system appear, then need a credential: guess one, get one
   from a reckless tool's trace, get one shared, or find one on a Black Hat's workstation. Permissions

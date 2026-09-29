@@ -59,6 +59,7 @@ const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
       'Every account change waits in Verification until someone verifies it. You can see the queue but cannot verify.',
       'A payment is paid into the payee\'s primary account at the moment it settles, not when it was created. Changing a primary account redirects payments already on their way.',
       'Approval needs a risk check first, but not a LOW score. Hold and Reject need a typed reason.',
+      `Authorization approves payments by itself up to a risk level (${c.automation.approveUpTo} at the start). Anyone with Authorization write can change it; setting HIGH raises an alert.`,
       `Manual payments are capped at ${money(c.maxManualAmount)}.`,
     ],
   }),
@@ -75,6 +76,7 @@ const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
       'The Bank Manager, who also verifies account changes and settles payments.',
     ],
     rules: [
+      `Routine payments move by themselves: Risk Check scores automatic payments up to ${money(c.automation.scoreMax)} LOW when they come from a customer account and the payee's primary is verified, and Settlement settles approved payments up to ${money(c.automation.settleMax)}. You can change both settings; each queue shows the current one.`,
       'The risk queue marks a payment "UNVERIFIED" when the payee\'s primary account, or the account it is paid from, has an unverified change.',
       'A payment is paid into the payee\'s primary account at the moment it settles. Check the primary before you settle.',
       `A settled payment can be reversed for ${secs(c.reversalWindowSec)}, as long as the account it was paid into still holds the money.`,
@@ -123,6 +125,7 @@ const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
       'A payment is paid into the payee\'s primary account at the moment it settles. A primary changed just before settlement is the classic way money goes missing.',
       `A trace reveals which workstation made a log entry. Entries must be under ${secs(c.traceMaxAgeSec)} old, and you can trace once every ${secs(c.traceCooldownSec)}.`,
       `A settled payment can be reversed for ${secs(c.reversalWindowSec)}.`,
+      `Settlement settles approved payments up to ${money(c.automation.settleMax)} by itself; you can change the amount (0 switches it off).`,
       'You can issue a credential in anyone\'s name. Its owner is told.',
       `Revoking a Firewall or Permissions write credential takes ${secs(c.revokeCountdownSec)}, and anyone with Permissions write can cancel it. If yours is being revoked, you can cancel it yourself.`,
       `Customers write to you when a request passes its deadline, naming the banker who had it. After ${c.strikesToSuspend} missed requests a customer stops doing business with the bank for the day.`,

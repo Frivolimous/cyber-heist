@@ -2,7 +2,7 @@
 // own accounts. Requests are written in words (names, not codes), so acting on one means looking things up.
 
 import { activeCustomers, affordableAmount, payingAccount, paymentFor, wealthWeight } from './bank';
-import { addLog, gameTime, money, nextId, unusedAccountNumber } from './core';
+import { addLog, balanceOf, gameTime, money, nextId, unusedAccountNumber } from './core';
 import { notify } from './notify';
 import { pick, rand, randInt, weightedPick } from './rng';
 import type { ClientRequest, Customer, GameState, Player, RequestKind } from './types';
@@ -125,6 +125,18 @@ export function requestTimes(s: GameState, t: number, urgent: boolean): Pick<Cli
   return { urgent, dueAt: t + window, remindAt: t + window / 2, reminders: [], outcome: null };
 }
 
+/**
+ * What a customer asks to pay from `account`: an affordable amount in the request range, scaled up by
+ * requestAmountFactor (requests are the bank's big payments), but never more than the account holds or a
+ * banker may pay by hand. Null when the account cannot afford a payment at all.
+ */
+function requestAmount(s: GameState, account: string): number | null {
+  const base = affordableAmount(s, account, s.config.requestMinAmount, s.config.requestMaxAmount);
+  if (base === null) return null;
+  const scaled = Math.round((base * s.config.requestAmountFactor) / 1000) * 1000;
+  return Math.min(scaled, Math.floor(balanceOf(s, account) / 1000) * 1000, s.config.maxManualAmount);
+}
+
 /** Spawns a request from a customer still doing business with the bank (null if there is none). */
 export function spawnRequest(s: GameState): ClientRequest | null {
   const active = activeCustomers(s);
@@ -140,7 +152,7 @@ export function spawnRequest(s: GameState): ClientRequest | null {
   let amount: number | null = null;
   if (kind === 'PAYMENT') {
     originAccount = payingAccount(s, cust);
-    amount = affordableAmount(s, originAccount, s.config.npcMinAmount, s.config.maxManualAmount);
+    amount = requestAmount(s, originAccount);
     if (amount === null) {
       kind = 'ADD_ACCOUNT';
       originAccount = null;
