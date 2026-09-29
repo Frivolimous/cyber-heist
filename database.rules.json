@@ -1,0 +1,57 @@
+{
+  "rules": {
+    "games": {
+      "$code": {
+        "meta": {
+          ".read": "auth != null",
+          ".write": "auth != null && ((!data.exists() && newData.child('hostUid').val() === auth.uid) || data.child('hostUid').val() === auth.uid)"
+        },
+        "lobby": {
+          ".read": "auth != null",
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid && root.child('games/' + $code + '/meta/status').val() === 'LOBBY'",
+            ".validate": "newData.hasChildren(['name', 't']) && newData.child('name').isString() && newData.child('name').val().length <= 16 && newData.child('t').isNumber()"
+          }
+        },
+        "seats": {
+          ".read": "auth != null",
+          ".write": "root.child('games/' + $code + '/meta/hostUid').val() === auth.uid"
+        },
+        "claims": {
+          ".read": "root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid && root.child('games/' + $code + '/meta/dev').val() === true",
+            ".validate": "newData.isString() && newData.val().length <= 12"
+          }
+        },
+        "actions": {
+          ".read": "root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          ".write": "root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          "$key": {
+            ".write": "auth != null && !data.exists() && newData.child('uid').val() === auth.uid && root.child('games/' + $code + '/seats/' + auth.uid).exists()",
+            ".validate": "newData.child('action').isString() && newData.child('action').val().length <= 4000"
+          }
+        },
+        "results": {
+          ".write": "root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          "$uid": {
+            ".read": "auth != null && auth.uid === $uid",
+            "$key": {
+              ".write": "auth != null && auth.uid === $uid && !newData.exists()"
+            }
+          }
+        },
+        "views": {
+          ".write": "root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          "$pid": {
+            ".read": "auth != null && (root.child('games/' + $code + '/seats/' + auth.uid).val() === $pid || root.child('games/' + $code + '/meta/hostUid').val() === auth.uid)"
+          }
+        },
+        "hostState": {
+          ".read": "root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          ".write": "root.child('games/' + $code + '/meta/hostUid').val() === auth.uid"
+        }
+      }
+    }
+  }
+}

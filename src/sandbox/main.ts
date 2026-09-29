@@ -1,6 +1,7 @@
-// Local single-browser sandbox. The yellow bar at the top is sandbox tooling; everything below it is the
-// player screen exactly as one player would see it. It talks to the engine the way a client will later
-// talk to the server: applyAction(state, action, now).
+// The game screen. The yellow bar at the top is sandbox tooling; everything below it is the player screen
+// exactly as one player sees it. It runs three ways (see mode.ts): the offline sandbox (this tab holds the
+// game), the online sandbox host (the same, and other tabs and devices play along through the database),
+// and a remote screen (one seat, whose view and actions go through the host).
 
 import './style.css';
 import {
@@ -23,7 +24,11 @@ import {
   TERMINATED_TEXT,
   WATCHABLE,
 } from '../engine';
-import type { Action, EndMember, EndTeam, GameState, Pace, PlayerId, PlayerView, SystemId, WorkstationView } from '../engine';
+import type { Action, ActionResult, EndMember, EndTeam, GameState, Pace, PlayerId, PlayerView, SystemId, WorkstationView } from '../engine';
+import { boot } from './mode';
+import { HostSession, startTicker } from '../net/host';
+import type { HostSnapshot } from '../net/host';
+import { createRoom } from '../net/room';
 
 const NAMES = ['Jeremy', 'Sarah', 'Mike', 'David', 'Lisa', 'Anna', 'Omar', 'Priya', 'Chen', 'Rosa', 'Tariq', 'Mei', 'Hugo', 'Zara', 'Ivan', 'Nina', 'Kofi', 'Elena', 'Raj', 'Sofia'];
 /** Sandbox seats p0..p(n-1); past the name list, seats are numbered. */
@@ -66,7 +71,13 @@ interface Win {
 }
 
 // ---- Sandbox state ----------------------------------------------------------------
-let game: GameState;
+const MODE = boot.current;
+/** A remote screen: everything comes from the host. */
+const client = MODE.kind === 'client' ? MODE.session : null;
+/** Online sandbox: this tab runs the game for the other tabs and devices too. */
+let hostSession: HostSession | null = null;
+let lastView: PlayerView | null = null;
+let game: GameState; // offline and host only
 let vNow = 0; // virtual "now" in ms, advanced by the timer
 let speed = 1; // 0 = paused
 let selected: PlayerId = MASTER_SEAT;
@@ -106,7 +117,19 @@ const esc = (v: unknown): string =>
   String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
 const slug = (id: string): string => id.toLowerCase().replace(/_/g, '-');
-const view = (): PlayerView => getPlayerView(game, selected);
+const view = (): PlayerView => {
+  if (client) return (lastView = client.view ?? lastView)!;
+  return getPlayerView(game, selected);
+};
+
+/** Plays an action as the selected seat: here, or through the host when this is a remote screen. */
+async function act(action: Action): Promise<ActionResult> {
+  if (client) return client.send(action);
+  const r = applyAction(game, action, vNow);
+  game = r.state;
+  hostSession?.publish();
+  return r.result;
+}
 
 const ICONS: Record<SystemId, string> = {
   SECURITY: '<path d="M24 5 8 11v11c0 10 7 17 16 21 9-4 16-11 16-21V11z"/><path d="m17 24 5 5 9-10"/>',
@@ -134,17 +157,67 @@ function newGame(seed: number): void {
   if (!game.players[selected]) selected = MASTER_SEAT;
   tab = 'profile';
   renderAll();
+  void hostSession?.reset();
+}
+
+/** Online sandbox host after a reload: carry on with the saved game. */
+function resumeGame(snap: HostSnapshot): void {
+  game = snap.state;
+  vNow = snap.vNow;
+  speed = snap.speed;
+  playerCount = game.playerOrder.filter((id) => !game.players[id].fake).length;
+  for (const id of game.playerOrder) seenNotices[id] = Number.MAX_SAFE_INTEGER; // no backlog of pop-ups
+  renderAll();
+}
+
+/** Offline sandbox -> online sandbox: open a room and serve this game to other tabs and devices. */
+async function goOnline(): Promise<void> {
+  const { openDb } = await import('../net/config');
+  const db = await openDb();
+  const code = await createRoom(db, true);
+  serve(db, code);
+  const url = new URL(location.href);
+  url.search = '';
+  url.searchParams.set('host', code);
+  if (db.kind === 'local') url.searchParams.set('net', 'local');
+  history.replaceState(null, '', url);
+  renderDev();
+}
+
+function serve(db: import('../net/db').Db, code: string): void {
+  hostSession = new HostSession(db, code, { apply: (a) => {
+    const r = applyAction(game, a, vNow);
+    game = r.state;
+    refresh();
+    return r.result;
+  }, state: () => game }, true);
+  hostSession.start(() => {
+    renderDev();
+    renderRail();
+  });
+}
+
+/** The link that opens a tester screen on this online sandbox. */
+function testerLink(): string {
+  if (!hostSession) return '';
+  const url = new URL(location.href);
+  url.search = '';
+  url.searchParams.set('test', hostSession.code);
+  if (hostSession.db.kind === 'local') url.searchParams.set('net', 'local');
+  return url.toString();
 }
 
 // ---- Sandbox controls (not part of the game) ----------------------------------------
 function renderDev(): void {
+  if (client) return renderTesterBar();
+  const online = hostSession?.remoteSeats() ?? {};
   const btn = (act: string, label: string, on: boolean): string =>
     `<button data-act="${act}" class="${on ? 'on' : ''}">${label}</button>`;
   $('dev').innerHTML = `
     <span class="dev-tag">Sandbox</span>
     <label>Viewing as <select data-f="seat">${game.playerOrder
       .filter((id) => !game.players[id].fake) // planted users are records, not seats you can control
-      .map((id) => `<option value="${id}" ${id === selected ? 'selected' : ''}>${esc(game.players[id].name)}${id === MASTER_SEAT ? ' (master access)' : ''}</option>`)
+      .map((id) => `<option value="${id}" ${id === selected ? 'selected' : ''}>${esc(game.players[id].name)}${id === MASTER_SEAT ? ' (master access)' : ''}${online[id] ? ` · ${online[id]} online` : ''}</option>`)
       .join('')}</select></label>
     <span class="grp">${btn('speed:0', 'Pause', speed === 0)}${btn('speed:1', '1x', speed === 1)}${btn('speed:5', '5x', speed === 5)}${btn('speed:20', '20x', speed === 20)}<button data-act="skip:30">+30s</button></span>
     <label><input type="checkbox" data-f="auto" ${game.config.autoProcess ? 'checked' : ''}> auto-process routine payments</label>
@@ -153,13 +226,33 @@ function renderDev(): void {
     <label>seed <input type="number" data-f="seed" value="${game.seed >>> 0}"></label>
     <button data-act="newgame">New game</button>
     <button data-act="truth" class="${truthOpen ? 'on' : ''}">Ground truth</button>
+    ${hostSession
+      ? `<span class="grp online">Online: room <b>${esc(hostSession.code)}</b>${hostSession.db.kind === 'local' ? ' (this browser only)' : ''} <a href="${esc(testerLink())}" target="_blank" rel="noopener">Open a tester screen</a></span>`
+      : '<button data-act="online" title="Let other tabs and devices play seats of this game">Go online</button>'}
+    <span class="dev-note">Everything below this bar is the game.</span>`;
+}
+
+/** A remote screen's bar: testers pick a seat; real players get no bar at all. */
+function renderTesterBar(): void {
+  const dev = $('dev');
+  if (MODE.kind !== 'client' || !MODE.dev) {
+    dev.hidden = true;
+    return;
+  }
+  const v = view();
+  dev.innerHTML = `
+    <span class="dev-tag">Online sandbox</span>
+    <label>Viewing as <select data-f="claim">${v.table
+      .map((p) => `<option value="${p.id}" ${p.id === selected ? 'selected' : ''}>${esc(p.name)}</option>`)
+      .join('')}</select></label>
+    <span>Room <b>${esc(client!.code)}</b>: the host's tab runs the clock${client!.db.kind === 'local' ? ' (this browser only)' : ''}.</span>
     <span class="dev-note">Everything below this bar is the game.</span>`;
 }
 
 function renderTruth(): void {
   const el = $('truth');
-  el.hidden = !truthOpen;
-  if (!truthOpen) return;
+  el.hidden = !truthOpen || !!client;
+  if (el.hidden) return;
   const s = game;
   const t = (x: number): string => fmtClock(x);
   const people = s.playerOrder
@@ -197,7 +290,7 @@ function renderTruth(): void {
 // ---- Game: status bar -----------------------------------------------------------------
 function renderStatus(): void {
   const v = view();
-  const ended = game.status === 'ENDED';
+  const ended = v.status === 'ENDED';
   const banner = ended && v.end
     ? `<div class="banner ${v.end.winner === 'WHITE' ? 'white' : v.end.winner === 'BLACK' ? 'black' : 'none'}">${esc(v.end.headline)}. ${esc(v.end.text)}${endHidden ? ' <button data-act="endshow">Show results</button>' : ''}</div>`
     : '';
@@ -265,14 +358,13 @@ function updateClock(): void {
 
 // ---- Game: employee sidebar ------------------------------------------------------------
 function renderRail(): void {
-  $('rail').innerHTML = `<h3>Employees</h3>${game.playerOrder
-    .filter((id) => !game.players[id].fake) // planted users are records, not real people: only the system views show them
-    .map((id) => {
-      const p = game.players[id];
-      const v = getPlayerView(game, id);
-      return `<div class="pl ${id === selected ? 'me' : ''}">
-        <span class="nm">${esc(p.name)}${id === selected ? ' <small>(you)</small>' : ''}</span><span class="rl">${esc(v.me.roleLabel)}${p.terminated ? ' <b class="gone">Terminated</b>' : ''}</span>
-        ${god ? `<i class="tag ${p.allegiance}" title="Sandbox: allegiance">${p.allegiance === 'BLACK' ? 'Black' : 'White'}</i>` : ''}
+  // The people at the table (planted users are records, not people: only the system views show them).
+  $('rail').innerHTML = `<h3>Employees</h3>${view()
+    .table.map((p) => {
+      const side = god && game ? game.players[p.id].allegiance : null;
+      return `<div class="pl ${p.id === selected ? 'me' : ''}">
+        <span class="nm">${esc(p.name)}${p.id === selected ? ' <small>(you)</small>' : ''}</span><span class="rl">${esc(p.roleLabel)}${p.terminated ? ' <b class="gone">Terminated</b>' : ''}</span>
+        ${side ? `<i class="tag ${side}" title="Sandbox: allegiance">${side === 'BLACK' ? 'Black' : 'White'}</i>` : ''}
       </div>`;
     })
     .join('')}`;
@@ -323,7 +415,7 @@ const ACCESS_TEXT = { WRITE: 'Read & write', READ: 'Read only', NONE: 'No access
 function winTitle(w: Win): string {
   if (w.kind === 'personal') return 'My workstation';
   const r = route(w);
-  if (r?.kind === 'workstation') return `${game.players[r.playerId]?.name ?? r.address}'s workstation`;
+  if (r?.kind === 'workstation') return `${view().players.find((p) => p.id === r.playerId)?.name ?? r.address}'s workstation`;
   if (r?.kind === 'proxy') return 'Proxy relay';
   if (!r || r.kind === 'noroute') return 'Network';
   return findSystem(r.system)?.label ?? r.system;
@@ -451,18 +543,17 @@ function fitWin(w: Win): void {
 }
 
 /** Address bar: "10.0.0.30" (a system) or "10.0.0.30/settlement" (one of its modules). */
-function goAddress(w: Win): void {
+async function goAddress(w: Win): Promise<void> {
   const raw = w.addr.trim();
   const [host = '', modSlug, extra] = raw.replace(/^[a-z]+:\/\//i, '').split('/').filter(Boolean);
   let sys = view().systems.find((s) => s.address === host);
   if (!sys) {
     // Unknown address: ask the network. This is how the hidden host and other workstations are found.
-    const r = applyAction(game, { type: 'CONNECT', playerId: selected, address: host }, vNow);
-    game = r.state;
+    const result = await act({ type: 'CONNECT', playerId: selected, address: host });
     refresh();
-    if (!r.result.ok) return navigate(w, { kind: 'noroute', address: raw, message: r.result.message });
-    if (r.result.workstation) return navigate(w, { kind: 'workstation', playerId: r.result.workstation, address: host });
-    if (r.result.proxy) return navigate(w, { kind: 'proxy', address: host, relaying: r.result.proxy.relaying });
+    if (!result.ok) return navigate(w, { kind: 'noroute', address: raw, message: result.message });
+    if (result.workstation) return navigate(w, { kind: 'workstation', playerId: result.workstation, address: host });
+    if (result.proxy) return navigate(w, { kind: 'proxy', address: host, relaying: result.proxy.relaying });
     sys = view().systems.find((s) => s.address === host);
     if (!sys) return;
   }
@@ -614,7 +705,7 @@ function terminalHtml(w: Win): string {
 }
 
 /** Runs one function with the window's credential code and prints the result to the window's terminal. */
-function execute(w: Win, system: SystemId, module: string, fn: string, params: Record<string, string>): boolean {
+async function execute(w: Win, system: SystemId, module: string, fn: string, params: Record<string, string>): Promise<boolean> {
   const def = findFn(system, module, fn);
   const action: Action = {
     type: 'EXECUTE',
@@ -626,15 +717,14 @@ function execute(w: Win, system: SystemId, module: string, fn: string, params: R
     params,
     encCodes: (w.form.enc ?? '').split(/[\s,]+/).filter(Boolean),
   };
-  const res = applyAction(game, action, vNow);
-  game = res.state;
-  w.out.push({ cls: 'cmd', text: `[${findModule(system, module)?.label ?? module}] > ${def?.label ?? fn}` }, { cls: res.result.ok ? 'ok' : 'bad', text: res.result.message });
-  for (const line of res.result.lines ?? []) w.out.push({ cls: 'row', text: line });
+  const result = await act(action);
+  w.out.push({ cls: 'cmd', text: `[${findModule(system, module)?.label ?? module}] > ${def?.label ?? fn}` }, { cls: result.ok ? 'ok' : 'bad', text: result.message });
+  for (const line of result.lines ?? []) w.out.push({ cls: 'row', text: line });
   if (w.out.length > TERMINAL_LINES) w.out.splice(0, w.out.length - TERMINAL_LINES);
   w.scrollEnd = true;
   renderWin(w);
   refresh();
-  return res.result.ok;
+  return result.ok;
 }
 
 /** Redraw just the terminal (not the whole window), keeping the scroll at the bottom if it was there. */
@@ -650,33 +740,36 @@ function renderTerminal(w: Win): void {
  * Live monitors (Master Log, Blacknet): once a second, re-read quietly (the engine only allows this after a
  * logged read) and replace the previous output block, unless something else was printed after it.
  */
+const monitorBusy = new Set<Win>(); // remote screens: a refresh still waiting for the host
 function tickMonitors(): void {
   for (const w of wins()) {
     const r = route(w);
-    if (w.min || !r || r.kind !== 'module' || w.form['p:monitor'] !== 'YES') continue;
+    if (w.min || !r || r.kind !== 'module' || w.form['p:monitor'] !== 'YES' || monitorBusy.has(w)) continue;
     const spec = MODULE_PAGES[`${r.system}.${r.module}`]?.monitor?.(w);
     if (!spec) continue;
-    const res = applyAction(
-      game,
-      { type: 'EXECUTE', playerId: selected, code: (w.form.code ?? '').trim(), system: r.system, module: r.module, fn: spec.fn, params: spec.params, quiet: true },
-      vNow,
-    );
-    game = res.state;
-    if (!res.result.ok) {
-      w.form['p:monitor'] = 'NO';
-      w.out.push({ cls: 'bad', text: `Auto-update stopped: ${res.result.message}` });
-      renderWin(w);
-      continue;
-    }
-    const title = `[${findModule(r.system, r.module)?.label ?? r.module}] > ${findFn(r.system, r.module, spec.fn)?.label ?? spec.fn} (live)`;
-    const block: Line[] = [{ cls: 'cmd', text: title }, { cls: 'ok', text: res.result.message }, ...(res.result.lines ?? []).map((text) => ({ cls: 'row', text }))];
-    // Replace the previous live block if it is still the last thing in the terminal.
-    const start = w.liveEnd !== undefined && w.liveEnd === w.out.length ? w.out.map((l) => l.cls).lastIndexOf('cmd') : w.out.length;
-    w.out.splice(start, w.out.length - start, ...block);
-    if (w.out.length > TERMINAL_LINES) w.out.splice(0, w.out.length - TERMINAL_LINES);
-    w.liveEnd = w.out.length;
-    renderTerminal(w);
+    monitorBusy.add(w);
+    void act({ type: 'EXECUTE', playerId: selected, code: (w.form.code ?? '').trim(), system: r.system, module: r.module, fn: spec.fn, params: spec.params, quiet: true })
+      .then((result) => showMonitor(w, r, spec.fn, result))
+      .finally(() => monitorBusy.delete(w));
   }
+}
+
+/** Shows a live refresh: it replaces the previous live block if that is still the last thing in the terminal. */
+function showMonitor(w: Win, r: ModuleRoute, fn: string, result: ActionResult): void {
+  if (w.form['p:monitor'] !== 'YES') return; // switched off while waiting
+  if (!result.ok) {
+    w.form['p:monitor'] = 'NO';
+    w.out.push({ cls: 'bad', text: `Auto-update stopped: ${result.message}` });
+    renderWin(w);
+    return;
+  }
+  const title = `[${findModule(r.system, r.module)?.label ?? r.module}] > ${findFn(r.system, r.module, fn)?.label ?? fn} (live)`;
+  const block: Line[] = [{ cls: 'cmd', text: title }, { cls: 'ok', text: result.message }, ...(result.lines ?? []).map((text) => ({ cls: 'row', text }))];
+  const start = w.liveEnd !== undefined && w.liveEnd === w.out.length ? w.out.map((l) => l.cls).lastIndexOf('cmd') : w.out.length;
+  w.out.splice(start, w.out.length - start, ...block);
+  if (w.out.length > TERMINAL_LINES) w.out.splice(0, w.out.length - TERMINAL_LINES);
+  w.liveEnd = w.out.length;
+  renderTerminal(w);
 }
 setInterval(tickMonitors, 1000);
 
@@ -730,8 +823,8 @@ const btn = (w: Win, cmd: string, label: string, style = '', submit = false): st
 /**
  * Run a command whose typed inputs must be entered fresh each time: on success the `clear` fields are emptied.
  */
-function runFresh(w: Win, system: SystemId, module: string, fn: string, params: Record<string, string>, clear: string[]): void {
-  if (execute(w, system, module, fn, params)) {
+async function runFresh(w: Win, system: SystemId, module: string, fn: string, params: Record<string, string>, clear: string[]): Promise<void> {
+  if (await execute(w, system, module, fn, params)) {
     for (const k of clear) w.form[`p:${k}`] = '';
     renderWin(w);
   }
@@ -938,7 +1031,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         .flatMap((sys) => sys.modules.filter((m) => !(sys.id === 'SECURITY' && m.id === 'FIREWALL')).map((m) => ({ value: `${sys.id}.${m.id}`, label: `${sys.label} / ${m.label}` })));
       const confirming = w.form['p:revConfirm'] === 'YES';
       const revoke = confirming
-        ? `<p class="warn full">This action is irreversible. After a ${game.config.revokeCountdownSec}s countdown, <b>${esc(w.form['p:revAddr'] ?? '')}</b> loses all access permanently (a workstation's owner also loses every credential). It can only be cancelled from the Firewall before then.</p>` +
+        ? `<p class="warn full">This action is irreversible. After a ${view().settings.revokeCountdownSec}s countdown, <b>${esc(w.form['p:revAddr'] ?? '')}</b> loses all access permanently (a workstation's owner also loses every credential). It can only be cancelled from the Firewall before then.</p>` +
           btns(btn(w, 'revokeConfirm', 'Confirm: revoke all access', 'danger') + btn(w, 'revokeBack', 'Back', 'alt'))
         : input(w, 'revAddr', 'Address', 'workstation or system', true, true) + btns(btn(w, 'revokeAsk', 'Revoke all access…', 'danger', true));
       return (
@@ -956,7 +1049,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
           `${w.id}:module:OFFLINE`,
         ) +
         card(
-          `Block an address (${game.config.blockSec}s)`,
+          `Block an address (${view().settings.blockSec}s)`,
           'WRITE',
           input(w, 'blockAddr', 'Address', 'workstation or system', true, true) + btns(btn(w, 'block', 'Block', 'danger', true) + btn(w, 'unblock', 'Unblock', 'alt', true)),
           `${w.id}:block`,
@@ -1312,12 +1405,11 @@ function remoteHtml(w: Win, r: Extract<Route, { kind: 'workstation' }>): string 
     </div></div>`;
 }
 
-function unlock(w: Win): void {
+async function unlock(w: Win): Promise<void> {
   const r = route(w);
   if (!r || r.kind !== 'workstation') return;
-  const res = applyAction(game, { type: 'ACCESS_WORKSTATION', playerId: selected, targetId: r.playerId, code: (w.form.code ?? '').trim() }, vNow);
-  game = res.state;
-  w.notice = res.result.ok ? [] : [{ cls: 'bad', text: res.result.message }];
+  const result = await act({ type: 'ACCESS_WORKSTATION', playerId: selected, targetId: r.playerId, code: (w.form.code ?? '').trim() });
+  w.notice = result.ok ? [] : [{ cls: 'bad', text: result.message }];
   w.form.manualCode = '';
   w.form.wtab = 'profile';
   renderWin(w);
@@ -1334,19 +1426,17 @@ function renderPersonal(force = false): void {
   }
 }
 
-function doShare(w: Win, credId: string): void {
-  const r = applyAction(game, { type: 'SHARE_CREDENTIAL', playerId: selected, credentialId: credId, toPlayerId: w.form.shareTo }, vNow);
-  game = r.state;
-  w.notice = [{ cls: r.result.ok ? 'ok' : 'bad', text: r.result.message }];
+async function doShare(w: Win, credId: string): Promise<void> {
+  const result = await act({ type: 'SHARE_CREDENTIAL', playerId: selected, credentialId: credId, toPlayerId: w.form.shareTo });
+  w.notice = [{ cls: result.ok ? 'ok' : 'bad', text: result.message }];
   refresh();
   renderPersonal(true);
 }
 
-function doSend(w: Win): void {
-  const r = applyAction(game, { type: 'SEND_MESSAGE', playerId: selected, toPlayerId: w.form.msgTo, text: w.form.msgText ?? '' }, vNow);
-  game = r.state;
-  if (r.result.ok) w.form.msgText = '';
-  w.notice = r.result.ok ? [] : [{ cls: 'bad', text: r.result.message }];
+async function doSend(w: Win): Promise<void> {
+  const result = await act({ type: 'SEND_MESSAGE', playerId: selected, toPlayerId: w.form.msgTo, text: w.form.msgText ?? '' });
+  if (result.ok) w.form.msgText = '';
+  w.notice = result.ok ? [] : [{ cls: 'bad', text: result.message }];
   refresh();
   renderPersonal(true);
 }
@@ -1366,18 +1456,17 @@ function bellHtml(key: string): string {
   return `<button class="bell ${on ? 'on' : ''}" data-act="watch:${key}" title="Notify me about ${esc(what)}" aria-pressed="${on}">${BELL_SVG}<span>${on ? 'On' : 'Off'}</span></button>`;
 }
 
-function toggleWatch(w: Win | undefined, key: string): void {
+async function toggleWatch(w: Win | undefined, key: string): Promise<void> {
   const [system, module] = key.split('.') as [SystemId, string];
   const on = !view().watching.includes(key);
-  const r = applyAction(game, { type: 'SET_WATCH', playerId: selected, system, module, on }, vNow);
-  game = r.state;
-  if (!r.result.ok) toast(r.result.message, 'Notifications', true);
+  const result = await act({ type: 'SET_WATCH', playerId: selected, system, module, on });
+  if (!result.ok) toast(result.message, 'Notifications', true);
   if (w) renderWin(w);
 }
 
 /** Pops up every notification this seat has not seen yet. Switching seats skips the backlog. */
 function pollNotices(skip = false): void {
-  const list = game.players[selected]?.notifications ?? [];
+  const list = view().notifications;
   const seen = seenNotices[selected] ?? 0;
   const fresh = list.filter((n) => noticeNum(n.id) > seen);
   if (fresh.length) seenNotices[selected] = noticeNum(fresh[fresh.length - 1].id);
@@ -1463,6 +1552,9 @@ app.addEventListener('click', (e) => {
       newGame(Number.isFinite(n) && raw !== '' ? n : Math.floor(Math.random() * 1e9));
       break;
     }
+    case 'online':
+      void goOnline();
+      break;
     case 'truth':
       truthOpen = !truthOpen;
       renderDev();
@@ -1599,6 +1691,9 @@ app.addEventListener('input', (e) => {
     return;
   }
   switch (key) {
+    case 'claim':
+      void client?.claim(el.value);
+      break;
     case 'seat':
       selected = el.value;
       pollNotices(true); // a seat you just sat down at shows only what arrives from now on
@@ -1672,19 +1767,61 @@ $('wins').addEventListener('dblclick', (e) => {
 });
 
 // ---- Clock ---------------------------------------------------------------------------------------
-setInterval(() => {
+/** Offline and host: the game's clock. It keeps running in a background tab (see startTicker). */
+function tickClock(): void {
+  tickCount++;
+  // The host sends everyone their views about once a second, and saves the game now and then.
+  if (hostSession && tickCount % Math.round(1000 / TICK_MS) === 0) hostSession.publish();
+  if (hostSession && tickCount % Math.round(10000 / TICK_MS) === 0) void hostSession.saveSnapshot({ state: game, vNow, speed });
   if (speed === 0 || game.status !== 'RUNNING') return;
   vNow += TICK_MS * speed;
   advanceState(game, vNow);
-  tickCount++;
-  if (game.status !== 'RUNNING') return refresh();
+  if (game.status !== 'RUNNING') {
+    hostSession?.publish();
+    return refresh();
+  }
   updateClock();
   pollNotices();
   if (tickCount % 8 === 0) renderTruth();
-}, TICK_MS);
+}
+
+/** Remote screens: every update from the host. Only the clock ticking? Then only the clock is redrawn. */
+let lastShape = '';
+function onRemoteView(): void {
+  if (!client?.view || !client.seat) return; // between seats
+  if (client.seat !== selected || !lastView) {
+    selected = client.seat;
+    lastView = client.view;
+    pollNotices(true); // a seat you just sat down at shows only what arrives from now on
+    lastShape = '';
+    renderAll();
+    return;
+  }
+  const v = client.view;
+  const shape = JSON.stringify({ ...v, t: 0, clock: '', me: { ...v.me, lockedForSec: 0 } });
+  if (shape === lastShape) {
+    updateClock();
+    return;
+  }
+  lastShape = shape;
+  refresh();
+}
 
 // Handy in the browser console: cyberHeist.state
-Object.defineProperty(window, 'cyberHeist', { get: () => ({ state: game, now: vNow }) });
+Object.defineProperty(window, 'cyberHeist', { get: () => ({ state: game, now: vNow, view: view() }) });
 
-const urlSeed = Number(new URLSearchParams(location.search).get('seed'));
-newGame(Number.isFinite(urlSeed) && urlSeed > 0 ? urlSeed : 1);
+if (client) {
+  client.onChange(onRemoteView);
+  onRemoteView();
+} else {
+  startTicker(TICK_MS, tickClock);
+  if (MODE.kind === 'host') {
+    if (MODE.snapshot) resumeGame(MODE.snapshot);
+    else newGame(Math.floor(Math.random() * 1e9));
+    serve(MODE.db, MODE.code);
+    renderDev();
+  } else {
+    const urlSeed = Number(new URLSearchParams(location.search).get('seed'));
+    newGame(Number.isFinite(urlSeed) && urlSeed > 0 ? urlSeed : 1);
+  }
+}

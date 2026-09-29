@@ -312,9 +312,8 @@ export function grantMasterAccess(s: GameState, playerId: string): void {
 }
 
 /**
- * Deals the hidden host's tool kits: every operative gets one. With more kits than operatives, each kit
- * left over has an even chance of going to a random operative as a second, so some go unused. With more
- * operatives than kits (15+ players), the shuffled kits repeat so nobody goes without.
+ * Deals the hidden host's tool kits: every operative gets exactly one. With more kits than operatives, the
+ * rest go unused. With more operatives than kits (15+ players), the shuffled kits repeat so nobody goes without.
  */
 function dealKits(s: GameState): void {
   const blacks = s.playerOrder.filter((id) => s.players[id].allegiance === 'BLACK');
@@ -325,5 +324,4 @@ function dealKits(s: GameState): void {
     s.players[owner].heldCredentialIds.push(cred.id);
   };
   blacks.forEach((owner, i) => give(owner, kits[i % kits.length]));
-  for (const kit of kits.slice(blacks.length)) if (rand(s) < 0.5) give(pick(s, blacks), kit);
 }

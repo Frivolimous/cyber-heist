@@ -63,7 +63,12 @@ export interface PlayerView {
   me: WorkstationView;
   /** Other workstations this player is logged in to (only while the credential used is still active). */
   remote: Record<PlayerId, WorkstationView>;
+  /** Every employee on record, planted users included (they can be messaged and issued credentials). */
   players: { id: PlayerId; name: string; roleLabel: string }[];
+  /** The real people at the table (everyone on the call knows who they are), and who has been terminated. */
+  table: { id: PlayerId; name: string; roleLabel: string; terminated: boolean }[];
+  /** Rule numbers the screens quote. */
+  settings: { blockSec: number; revokeCountdownSec: number };
   systems: SystemDef[]; // only systems this player knows about
   /** Modules whose security is off (SYSTEM.MODULE): usable without a code. */
   openModules: string[];
@@ -149,6 +154,10 @@ export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
     me: workstationView(s, p),
     remote,
     players: s.playerOrder.map((id) => ({ id, name: s.players[id].name, roleLabel: ROLES[s.players[id].role].label })),
+    table: s.playerOrder
+      .filter((id) => !s.players[id].fake)
+      .map((id) => ({ id, name: s.players[id].name, roleLabel: ROLES[s.players[id].role].label, terminated: !!s.players[id].terminated })),
+    settings: { blockSec: s.config.blockSec, revokeCountdownSec: s.config.revokeCountdownSec },
     systems: SYSTEMS.filter((sys) => p.knownSystems.includes(sys.id)).map((sys) => ({ ...sys, address: systemAddress(s, sys.id) })),
     openModules: Object.entries(s.modules).filter(([, m]) => m.open).map(([k]) => k),
     watching: [...p.watching],

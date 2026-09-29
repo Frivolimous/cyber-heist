@@ -413,7 +413,8 @@ test('Black Hats win as soon as stolen money reaches the target', () => {
   const add = sim.run(pb.id, sim.code(pb.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS'), 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: ben, account: mule, makePrimary: 'YES' });
   assert.ok(add.ok, add.message);
   const q = sim.code(pb.id, 'TRANSACTIONS', 'PAYMENT_QUEUE');
-  const from = sim.s.customers.find((c) => c.id !== ben)!.primary;
+  // Paid from a customer who can afford it.
+  const from = sim.s.customers.find((c) => c.id !== ben && (sim.s.balances[c.primary] ?? 0) >= 3_000_000)!.primary;
   const created = sim.run(pb.id, q, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'CREATE_TRANSACTION', { originAccount: from, beneficiaryId: ben, amount: '3000000' });
   assert.ok(created.ok, created.message);
   const id = sim.s.transactions[sim.s.transactions.length - 1].id;
@@ -902,7 +903,10 @@ test('client requests close by linking a payment or an account change, or by arc
 test('a banker cannot archive (or even see) another banker\'s request', () => {
   const sim = new Sim();
   const [a, b] = sim.byRole('PERSONAL_BANKER');
-  const theirs = sim.s.requests.find((r) => r.bankerId === b.id) ?? (sim.at(400), sim.s.requests.find((r) => r.bankerId === b.id))!;
+  // Wait until the other banker has an open request.
+  const open = () => sim.s.requests.find((r) => r.bankerId === b.id && r.status === 'OPEN');
+  for (let t = 0; !open() && t < 1200; t += 10) sim.at(t);
+  const theirs = open()!;
   const r = sim.run(a.id, sim.code(a.id, 'CLIENT_DATA', 'CLIENT_REQUESTS'), 'CLIENT_DATA', 'CLIENT_REQUESTS', 'ARCHIVE_REQUEST', { requestId: theirs.id, reason: 'mine now' });
   assert.equal(r.message, 'No such client request.');
   assert.equal(sim.s.requests.find((x) => x.id === theirs.id)!.status, 'OPEN');
@@ -1284,7 +1288,7 @@ test('hidden host: failures are also "Unknown server activity", and traces give 
   assert.deepEqual([...kinds].sort(), ['activity', 'pair', 'range', 'server']);
 });
 
-test('hidden host kits: every operative gets the shared modules and at least one kit; some kits go unused', () => {
+test('hidden host kits: every operative gets the shared modules and exactly one kit; the rest go unused', () => {
   for (const seed of [1, 2, 3, 4, 5]) {
     const sim = new Sim({}, seed);
     const blacks = Object.values(sim.s.players).filter((p) => p.allegiance === 'BLACK');
@@ -1294,11 +1298,11 @@ test('hidden host kits: every operative gets the shared modules and at least one
       const modules = hostCreds(b.id).map((c) => c.module!);
       for (const m of HOST_SHARED_MODULES) assert.ok(modules.includes(m), `${b.name} can use ${m}`);
       const kits = modules.filter((m) => HOST_KITS.includes(m));
-      assert.ok(kits.length >= 1 && kits.length <= 2, `${b.name} has ${kits.length} kits`);
+      assert.equal(kits.length, 1, `${b.name} has ${kits.length} kits`);
       assert.ok(hostCreds(b.id).every((c) => c.module !== null), 'no whole-host credentials');
       kits.forEach((k) => dealt.add(k));
     }
-    assert.ok(dealt.size >= blacks.length && dealt.size <= HOST_KITS.length);
+    assert.equal(dealt.size, Math.min(blacks.length, HOST_KITS.length), 'no kit dealt twice while some are unused');
   }
 });
 
@@ -1797,7 +1801,8 @@ test('request deadlines: a scam request is never chased and expires without a co
   const sim = new Sim({ requestIntervalSec: 99999, npcIntervalSec: 99999 });
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
   grantMasterAccess(sim.s, black.id);
-  const cust = sim.s.customers[0];
+  // A customer with no real request of their own, so no strike can come from elsewhere.
+  const cust = sim.s.customers.find((c) => !sim.s.requests.some((r) => r.customerId === c.id))!;
   sim.at(1);
   const made = sim.run(black.id, sim.code(black.id, 'BLACKHAT_DB', null), 'BLACKHAT_DB', 'SOCIAL', 'SCAM_REQUEST', { customer: cust.id, kind: 'SET_PRIMARY', account: sim.s.targets[0].account });
   assert.ok(made.ok, made.message);

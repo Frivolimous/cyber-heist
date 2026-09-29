@@ -5,24 +5,56 @@ at a bank; a few are secret Black Hats diverting money to mule accounts. Credent
 codes, and the logs name the credential's owner rather than the person who typed it. Two racing progress
 bars decide the game: the bank's settled payments against the Black Hats' stolen money.
 
-This repo currently contains:
+This repo contains:
 
 1. **`src/engine/`** the rules engine. Pure TypeScript, no Firebase, no DOM. Every action is
-   `applyAction(state, action, now) -> { state, result }`, so the same code will later run inside a
-   Cloud Function as the authority.
-2. **`src/sandbox/`** a local single-browser UI. One person can play every seat by switching players in
-   the yellow bar. Use it to feel the rules before any networking exists.
-
-Firebase, lobby and real multiplayer come next (see "Roadmap").
+   `applyAction(state, action, now) -> { state, result }`.
+2. **`src/sandbox/`** the game screen, and the sandbox around it: one person can play every seat by
+   switching players in the yellow bar.
+3. **`src/net/`** and **`src/play/`** online play over Firebase Realtime Database: a lobby, a host screen
+   that runs the game, and each player's screen.
 
 ## Run it
 
 ```bash
 npm install
-npm run dev        # sandbox at http://localhost:5173  (add ?seed=7 to pick a game)
-npm test           # engine tests (node:test via tsx)
+npm run dev        # http://localhost:5173: start page (join, host, sandboxes); ?seed=7 opens the offline sandbox
+npm test           # engine and network tests (node:test via tsx)
 npm run typecheck
+npm run deploy     # build and deploy to Firebase Hosting, with the database rules
 ```
+
+## Online play
+
+The host's browser runs the game: it holds the whole game, applies every player's actions and sends
+each player only their own view (through Firebase Realtime Database). So the host is a facilitator who
+does not play, and must keep their tab open until the end (a reload picks up where it left off).
+
+- **Host a game**: the start page's "Open a room" gives a four-letter code. Players open the start page,
+  type the code and their name, and wait in the lobby. The host starts once 6 or more are in; roles and
+  sides are dealt at random. The host screen shows the clock, the bank's progress, a Pause button, and the
+  end screen. A player who reloads comes back to their seat.
+- **Online sandbox**: the start page's "Online sandbox", or "Go online" in the offline sandbox's yellow
+  bar. It is the sandbox (every seat, speed, ground truth) plus a room: "Open a tester screen" opens a
+  screen that plays one seat through the network, with its own seat picker.
+- **Offline sandbox**: `?sandbox` or `?seed=7`. No network at all.
+
+**Local mode.** Without a Firebase config (or with `&net=local` in the address), online play runs on a
+stand-in that shares games between the tabs of one browser. Good for trying the flow; useless across
+devices.
+
+**Setting up Firebase** (once):
+
+1. Create a project in the [Firebase console](https://console.firebase.google.com/). The free Spark plan
+   is enough: there are no Cloud Functions.
+2. Build > Authentication > Get started > enable **Anonymous**.
+3. Build > Realtime Database > Create database (any region, start in locked mode).
+4. Project settings > General > Your apps > add a **Web** app. Copy `.env.example` to `.env.local` and
+   fill it in from the app's config (the database URL is on the Realtime Database page).
+5. `npx firebase-tools login`, then `npx firebase-tools use --add` and pick the project.
+6. `npm run deploy:rules` puts the security rules in place (`database.rules.json`: each player can read
+   only their own view; only the host reads the actions and the full game). `npm run deploy` also
+   publishes the site on Firebase Hosting, so players can join from anywhere.
 
 ## The game in brief
 
@@ -104,7 +136,18 @@ src/engine/
   jobs.ts         job descriptions shown in each profile
   views.ts        getPlayerView: the only data a given player may see
   engine.test.ts  tests
-src/sandbox/      UI
+src/sandbox/
+  main.ts         the game screen (offline sandbox, online sandbox host, or one remote seat: see mode.ts)
+src/net/
+  db.ts           the database interface, and its local stand-in (tests, local mode)
+  firebaseDb.ts   the same over Firebase Realtime Database (anonymous auth)
+  protocol.ts     the data layout under games/{code}, views in parts, action checks
+  host.ts         HostSession: applies players' actions, publishes each player's view, saves the game
+  client.ts       ClientSession: follows your seat and view, sends actions and waits for the answer
+  room.ts         create, join, start
+src/play/pages.ts start page, player lobby, the host (facilitator) screen
+src/app.ts        entry point: picks the page from the address
+database.rules.json   Firebase security rules
 docs/RULES.md     the rules as implemented, assumptions, tuning knobs
 docs/BACKLOG.md   agreed work not built yet, deferred and rejected ideas
 ```
@@ -115,10 +158,5 @@ To add a mechanic: describe it in `catalog.ts`, add a handler in `handlers.ts`, 
 ## Roadmap
 
 1. Play the sandbox, tune `DEFAULT_CONFIG` in `catalog.ts` and the pacing in `pacing.ts`.
-2. Firebase layer: new Firebase project, anonymous auth, Firestore emulator for dev.
-   Data layout: `games/{id}` public state, `games/{id}/players/{uid}` public player info,
-   `games/{id}/private/{uid}` allegiance and other owner-only data.
-   Systems, logs and the hidden host stay server-only; players only see results of their own actions.
-   A callable Cloud Function `submitAction` wraps `applyAction`.
-3. Lobby (create / join / host / start), then real multiplayer across devices.
-4. Game features agreed but not built yet, and the deferred list: see [docs/BACKLOG.md](docs/BACKLOG.md).
+2. Online play: built (see "Online play"). Next: a real playtest across devices.
+3. Game features agreed but not built yet, and the deferred list: see [docs/BACKLOG.md](docs/BACKLOG.md).

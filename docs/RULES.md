@@ -422,9 +422,8 @@ Authorization.
   the other operatives are; they find each other on Blacknet).
 - Host modules: **Blacknet**, **Target Ledger**, **Host Log** and **Credential Cache** are shared: every
   operative starts with a credential for each. The **tool kits** (Infiltration, Social, Cleanup, Access)
-  are dealt at random each game: every operative gets one, and each kit left over has an even chance of
-  going to a random operative as a second. With more kits than operatives, some go unused; with more
-  operatives than kits (15+ players), kits repeat so everyone has one. Operatives can share kit codes
+  are dealt at random each game: every operative gets exactly one. With more kits than operatives, the
+  rest go unused; with more operatives than kits (15+ players), kits repeat so everyone has one. Operatives can share kit codes
   like any other credential.
 - **Kit tools** (tier in brackets):
   - **Infiltration / Create proxy** (3): set up a typed, unused IP address as a proxy. An address already

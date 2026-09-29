@@ -6,19 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Cyber-Heist: a real-time browser social-deduction game (6-30 players over a video call, each on their own
 PC). Bank employees keep payments flowing; secret Black Hats divert money to mule accounts. Two racing
-progress bars decide it. Today the repo is a pure rules engine plus a single-browser sandbox UI; Firebase
-and real multiplayer come later (the engine is written to run unchanged inside a Cloud Function).
+progress bars decide it. The repo is a pure rules engine, the game screen with its sandbox, and online play
+over Firebase Realtime Database where the host's browser runs the engine.
 
 ## Commands
 
 ```bash
-npm run dev          # sandbox at http://localhost:5173 (?seed=7 picks a game)
-npm test             # all engine tests (node:test via tsx)
+npm run dev          # start page at http://localhost:5173 (?seed=7: offline sandbox; &net=local: online play between tabs)
+npm test             # engine and network tests (node:test via tsx)
 npm run typecheck    # tsc --noEmit (strict)
 npx tsx --test --test-name-pattern="time of day" src/engine/engine.test.ts   # one test by name
 ```
 
-There is no linter. All tests live in `src/engine/engine.test.ts`; its `Sim` helper wraps a seeded game
+There is no linter. Engine tests live in `src/engine/engine.test.ts` (network tests in `src/net/net.test.ts`); its `Sim` helper wraps a seeded game
 (`sim.at(sec)`, `sim.run(pid, code, system, module, fn, params)`, `sim.code(pid, system, module)`,
 `sim.byRole(role)`, `sim.bankerOf(customerId)`). Games are deterministic per seed, so changing the order of
 RNG calls in setup reshuffles every seeded test.
@@ -59,10 +59,21 @@ alert that points at the entry without containing the leak; the trace reveals mo
 Adding a kit tool touches: catalog `fns`, a handler that calls `raiseExposure`, `HIDDEN_ACTIVITY` wording
 in engine.ts, and a `MODULE_PAGES` entry in the sandbox.
 
-**Sandbox (`src/sandbox/main.ts`).** The yellow bar at the top is dev tooling (seat switcher, speed,
+**Game screen and sandbox (`src/sandbox/main.ts`).** The yellow bar at the top is dev tooling (seat switcher, speed,
 player count, seed, Ground truth); everything below it is the player's screen. Module pages come from
 the `MODULE_PAGES` registry (`commands` renders cards, `run` executes). The unregistered host's windows
 get a dark theme and its tool kits a purple one via the `host`/`kit` classes.
+
+**Online play (`src/net/`, `src/play/`).** The host's browser holds the `GameState` and runs the engine;
+there are no Cloud Functions (free Spark plan). `HostSession` reads actions from `games/{code}/actions`,
+applies each as the sender's seat (never the playerId they sent: `parseAction`), answers in `results`, and
+publishes each seated player's `getPlayerView` to `views/{pid}` in JSON-text parts, rewriting only parts
+that changed. `database.rules.json` lets a player read only their own view. Because the host sees
+everything, a real game's host is a non-playing facilitator. Everything goes through the `Db` interface
+(db.ts): Firebase in production, `LocalDb` in tests (memory) and in local mode (localStorage shared by
+tabs). The game screen (main.ts) runs in one of three modes set by app.ts in mode.ts: offline, online
+sandbox host, or remote seat; on a remote seat there is no `GameState`, so screen code reads only
+`view()` and plays actions through `act()`. Anything the screen needs must be in `PlayerView`.
 
 ## Design rules to respect
 
