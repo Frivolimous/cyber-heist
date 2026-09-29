@@ -4,9 +4,9 @@ import { DEFAULT_CONFIG, hackerCount, HIDDEN_HOST, HOST_KITS, HOST_SHARED_MODULE
 import { addLog, keyOf, money } from './core';
 import { createCredential } from './credentials';
 import { spawnNpc } from './bank';
-import { assignBankers, spawnRequest } from './requests';
+import { assignBankers, assignContacts, schedulePhishing, spawnRequest } from './requests';
 import { pick, rand, randInt, shuffle } from './rng';
-import type { GameConfig, GameState, Player, RoleId } from './types';
+import type { GameConfig, GameState, Player, RoleId, WealthTier } from './types';
 
 export interface NewGameOptions {
   id?: string;
@@ -65,24 +65,37 @@ export const CUSTOMER_NAMES = [
   'Summit Outdoor Gear',
 ];
 
+/** The private people in CUSTOMER_NAMES (everyone else is a company, which writes through a made-up contact). */
+export const PERSON_CUSTOMERS: ReadonlySet<string> = new Set([
+  'Marisol Ortega', 'Nadia Volkov', 'Delphine Arceneaux', 'Tomasz Wieczorek', 'Priyanka Raghavan',
+  'Elias Brandt', 'Mateo Figueroa', 'Yuki Hashimoto', 'Amara Nwosu', 'Corinne Dubois',
+]);
+
 /**
  * The values that scale with the table, from the per-player settings in `base`:
  * - targets: whiteTargetPerPlayer x players, blackTargetPerHacker x Black Hats;
  * - client requests: each Personal Banker gets one about every requestEverySecPerBanker seconds;
  * - automatic payments fill the rest, so that automatic payments plus requested payments add up to about
- *   volumePerPlayer x players over the game. Manual payments count toward the target only when they fulfil
- *   a payment request (see bank.ts), so the requested share is money the team has to earn by acting on requests.
+ *   volumePerPlayer x players over the game, but never more than MAX_AUTO_SHARE of the bank target. Manual
+ *   payments count toward the target only when they fulfil a payment request (see bank.ts), so the requested
+ *   share is money the team has to earn by acting on requests: automatic traffic alone can never win.
+ * Amounts are capped by what the paying account holds (affordableAmount in bank.ts), so the average payment is
+ * below the middle of its range; the factors below are measured averages over simulated games.
  */
+const NPC_AMOUNT_FACTOR = 0.87; // average automatic payment / middle of npcMinAmount..npcMaxAmount
+const REQUEST_AMOUNT_FACTOR = 0.45; // average requested payment / middle of npcMinAmount..maxManualAmount
+const MAX_AUTO_SHARE = 0.8; // automatic volume is capped at this share of the bank target
 export function scaledConfig(base: GameConfig, n: number, hackers: number): Pick<GameConfig, 'whiteTarget' | 'blackTarget' | 'npcIntervalSec' | 'requestIntervalSec'> {
   const bankers = roleCounts(n).PERSONAL_BANKER;
   const requestIntervalSec = base.requestEverySecPerBanker / bankers;
   const requests = base.durationSec / requestIntervalSec;
-  const avgRequested = (base.npcMinAmount + base.maxManualAmount) / 2; // request amounts are uniform in this range
+  const avgRequested = (REQUEST_AMOUNT_FACTOR * (base.npcMinAmount + base.maxManualAmount)) / 2;
   const requestedVolume = requests * (1 - base.requestChangeShare) * avgRequested;
-  const avgNpc = (base.npcMinAmount + base.npcMaxAmount) / 2;
-  const npcVolume = Math.max(base.volumePerPlayer * n - requestedVolume, avgNpc); // at least one payment's worth
+  const avgNpc = (NPC_AMOUNT_FACTOR * (base.npcMinAmount + base.npcMaxAmount)) / 2;
+  const whiteTarget = base.whiteTargetPerPlayer * n;
+  const npcVolume = Math.max(Math.min(base.volumePerPlayer * n - requestedVolume, MAX_AUTO_SHARE * whiteTarget), avgNpc); // at least one payment's worth
   return {
-    whiteTarget: base.whiteTargetPerPlayer * n,
+    whiteTarget,
     blackTarget: base.blackTargetPerHacker * hackers,
     npcIntervalSec: base.durationSec / (npcVolume / avgNpc),
     requestIntervalSec,
@@ -135,7 +148,9 @@ export function createGame(o: NewGameOptions): GameState {
     hostLog: [],
     revocations: [],
     lastRequestAt: 0,
+    phishSchedule: [],
     transactions: [],
+    balances: {},
     targets: [],
     blacknet: [],
     totals: { processed: 0, stolen: 0 },
@@ -171,7 +186,7 @@ export function createGame(o: NewGameOptions): GameState {
   const customerCount = Math.min(CUSTOMER_NAMES.length, counts.PERSONAL_BANKER * config.customersPerBanker);
   s.customers = shuffle(s, CUSTOMER_NAMES).slice(0, customerCount).map((name, i) => {
     const accounts = Array.from({ length: randInt(s, 1, 3) }, () => newAccount());
-    return { id: `CU${i + 1}`, name, bankerId: null, accounts, primary: accounts[0], originalPrimary: accounts[0], lastModifiedAt: null, history: [] };
+    return { id: `CU${i + 1}`, name, bankerId: null, accounts, primary: accounts[0], originalPrimary: accounts[0], lastModifiedAt: null, history: [], wealth: 'SMALL' as WealthTier, person: false, contact: '', strikes: 0, suspended: false };
   });
   const statuses = ['READY', 'PREPARE', 'ABORT'] as const;
   s.targets = statuses.map((status) => ({ account: newAccount(), status }));
@@ -224,11 +239,50 @@ export function createGame(o: NewGameOptions): GameState {
   dealKits(s);
 
   assignBankers(s);
+  fundAccounts(s);
 
   addLog(s, { actor: 'SYSTEM', kind: 'BOOT', message: 'Bank network online. Shift started.', sourceIp: null, actualPlayerId: null });
   for (let i = 0; i < 3; i++) spawnNpc(s);
   for (let i = 0; i < 2; i++) spawnRequest(s);
+  assignContacts(s, PERSON_CUSTOMERS);
+  schedulePhishing(s);
   return s;
+}
+
+/**
+ * Customer wealth, as a fixed split every game: 20% wealthy, 30% mid-sized, the rest (half) small.
+ * The range is the customer's total starting money across all their accounts.
+ */
+export const WEALTH_TIERS: { tier: WealthTier; share: number; min: number; max: number }[] = [
+  { tier: 'WEALTHY', share: 0.2, min: 30_000_000, max: 60_000_000 },
+  { tier: 'MID', share: 0.3, min: 5_000_000, max: 15_000_000 },
+  { tier: 'SMALL', share: 0.5, min: 250_000, max: 2_000_000 }, // takes the remainder, so the counts always add up
+];
+
+/**
+ * Opens the books: every customer gets a wealth tier and money spread over their accounts (the primary holds
+ * 60-85%, the rest is split at random), players get $1,000-$100,000 in their own account, and the Target
+ * Ledger (mule) accounts start empty.
+ */
+function fundAccounts(s: GameState): void {
+  const n = s.customers.length;
+  const wealthy = Math.round(n * WEALTH_TIERS[0].share);
+  const mid = Math.round(n * WEALTH_TIERS[1].share);
+  const tiers = s.customers.map((_, i): WealthTier => (i < wealthy ? 'WEALTHY' : i < wealthy + mid ? 'MID' : 'SMALL'));
+  shuffle(s, tiers).forEach((tier, i) => {
+    const c = s.customers[i];
+    const range = WEALTH_TIERS.find((w) => w.tier === tier)!;
+    const total = randInt(s, range.min / 1000, range.max / 1000) * 1000;
+    c.wealth = tier;
+    const others = c.accounts.filter((a) => a !== c.primary);
+    const primary = others.length ? Math.round((total * (0.6 + rand(s) * 0.25)) / 1000) * 1000 : total;
+    s.balances[c.primary] = primary;
+    const cuts = others.map(() => rand(s) + 0.1);
+    const cutTotal = cuts.reduce((a, b) => a + b, 0);
+    others.forEach((a, j) => (s.balances[a] = Math.round(((total - primary) * cuts[j]) / cutTotal / 1000) * 1000));
+  });
+  for (const tg of s.targets) s.balances[tg.account] = 0;
+  for (const id of s.playerOrder) s.balances[s.players[id].bankAccount] = randInt(s, 1000, 100_000);
 }
 
 /** Sandbox/testing: give one player a whole-system WRITE credential for every system, hidden host included. */

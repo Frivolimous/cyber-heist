@@ -133,7 +133,10 @@ export const SYSTEMS: SystemDef[] = [
             { name: 'scope', label: 'Scope', kind: 'scope' },
             { name: 'permission', label: 'Permission', kind: 'select', options: ['READ', 'WRITE'] },
           ]),
-          fn('REVOKE_CREDENTIAL', 'Revoke credential', 'WRITE', 'Disable a credential.', [
+          fn('REVOKE_CREDENTIAL', 'Revoke credential', 'WRITE', 'Disable a credential. Firewall or Permissions write credentials are revoked after a countdown.', [
+            { name: 'credentialId', label: 'Credential', kind: 'text', placeholder: 'C5' },
+          ]),
+          fn('CANCEL_REVOKE', 'Cancel a revocation', 'WRITE', 'Stop a credential revocation that is still counting down.', [
             { name: 'credentialId', label: 'Credential', kind: 'text', placeholder: 'C5' },
           ]),
         ],
@@ -262,7 +265,6 @@ export const SYSTEMS: SystemDef[] = [
         fns: [
           fn('READ_MESSAGES', 'Read messages', 'READ', 'The operatives message board.', [limit]),
           fn('POST_MESSAGE', 'Post message', 'WRITE', 'Post under an alias.', [
-            { name: 'text', label: 'Message', kind: 'text' },
             { name: 'alias', label: 'Alias', kind: 'text', optional: true, placeholder: 'ghost' },
           ]),
         ],
@@ -339,12 +341,11 @@ export const SYSTEMS: SystemDef[] = [
             'SCAM_REQUEST',
             'Scam request',
             'WRITE',
-            'Plant a fake Client Request from a customer to their banker, e.g. "we moved banks, make account X our primary". It looks like any other request in the queue.',
+            'Plant a fake Client Request from a customer to their banker, e.g. "we moved banks, make account X our primary". It is worded like real requests and looks like any other request in the queue.',
             [
               { name: 'customer', label: 'From customer', kind: 'text', placeholder: 'Tanaka Holdings or CU3' },
               { name: 'kind', label: 'Asking for', kind: 'select', options: ['SET_PRIMARY', 'ADD_AND_PRIMARY', 'ADD_ACCOUNT', 'REMOVE_ACCOUNT'] },
               { name: 'account', label: 'Account (5 digits)', kind: 'text', placeholder: '18392' },
-              { name: 'text', label: 'Message', kind: 'text' },
             ],
           ),
         ],
@@ -493,17 +494,17 @@ export const hackerCount = (n: number): number => Math.floor(n / 3);
 
 export const DEFAULT_CONFIG: GameConfig = {
   durationSec: 20 * 60,
-  whiteTargetPerPlayer: 20_000_000,
+  whiteTargetPerPlayer: 15_000_000,
   blackTargetPerHacker: 1_000_000,
-  volumePerPlayer: 25_000_000, // 1.25x the target: room for held, rejected and missed payments
-  requestEverySecPerBanker: 120,
+  volumePerPlayer: 18_000_000, // 1.2x the target: room for held, rejected and missed payments
+  requestEverySecPerBanker: 90,
   customersPerBanker: 3,
   // Derived at game creation (scaledConfig); these are the 10-player values, for reference only.
-  whiteTarget: 200_000_000,
+  whiteTarget: 150_000_000,
   blackTarget: 3_000_000,
   timeoutWinner: 'BLACK',
   blackHatCount: null,
-  npcIntervalSec: 16,
+  npcIntervalSec: 19.6,
   npcMinAmount: 500_000,
   npcMaxAmount: 4_000_000,
   maxManualAmount: 5_000_000,
@@ -517,8 +518,14 @@ export const DEFAULT_CONFIG: GameConfig = {
   clockStart: 8 * 3600 + 30 * 60,
   autoProcess: false,
   autoProcessDelaySec: 15,
-  requestIntervalSec: 30, // derived
+  requestIntervalSec: 22.5, // derived
   requestChangeShare: 0.3,
+  requestDeadlineSec: 120,
+  urgentDeadlineSec: 60,
+  urgentShare: 0.25,
+  strikesToSuspend: 2,
+  phishPerBankerMin: 1,
+  phishPerBankerMax: 5,
   blockSec: 60,
   revokeCountdownSec: 30,
   crackRevealSec: 15,

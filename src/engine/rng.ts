@@ -29,3 +29,14 @@ export function shuffle<T>(h: RngHolder, arr: readonly T[]): T[] {
   }
   return a;
 }
+
+/** Picks one item with probability proportional to its weight (weights must be positive). */
+export function weightedPick<T>(h: RngHolder, arr: readonly T[], weight: (x: T) => number): T {
+  const total = arr.reduce((sum, x) => sum + weight(x), 0);
+  let r = rand(h) * total;
+  for (const x of arr) {
+    r -= weight(x);
+    if (r < 0) return x;
+  }
+  return arr[arr.length - 1];
+}

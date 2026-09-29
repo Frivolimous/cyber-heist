@@ -33,6 +33,12 @@ npm run typecheck
 - **Black Hats** (a third of the table) have normal jobs as cover, plus a hidden host (`10.66.6.6`) with
   a message board, a list of mule accounts and tool kits. Stronger tools are easier for the bank to
   trace.
+- **Money:** every account has a balance. Customers are small, mid-sized or wealthy, and a payment the
+  paying account cannot cover fails at settlement. Money moves at once, so a reversal only works while
+  the account paid still holds it.
+- **Customers wait:** every request has a deadline (2 minutes, 1 if urgent). Customers chase halfway, complain
+  to the Bank Manager when a deadline passes, and walk away for the day after a second miss. Obvious
+  phishing messages turn up among the requests too.
 - **The heist:** a payment lands in the payee's primary account at the moment it settles, so making a
   mule account a customer's primary diverts every payment to them.
 - **Time:** 20 minutes, running through a working day (slow morning, lunch rush, busy end of day, close

@@ -50,8 +50,10 @@ const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
     ],
     rules: [
       'You only see and change your own customers, and only read requests sent to you.',
-      'A payment you create counts toward the bank\'s target only if it carries the request id and pays the payee and amount the customer asked for.',
+      'A payment you create counts toward the bank\'s target only if it pays the payee and amount a customer asked for. Put the request id on it; a payment made exactly as asked is matched to the request anyway.',
+      `Customers expect action within ${secs(c.requestDeadlineSec)} (${secs(c.urgentDeadlineSec)} when urgent). Halfway there they chase you in your messages, and an archived request comes back. When a deadline passes they complain to the Bank Manager, naming you; after ${c.strikesToSuspend} missed requests a customer stops doing business with the bank for the day.`,
       'Requests are written in words. Look up account numbers and customer tags (CU3) in Customer Records.',
+      'Not every request is genuine. Phishing messages claim customer tags and accounts that do not exist: archive them.',
       'Every account change waits in Verification until someone verifies it. You can see the queue but cannot verify.',
       'A payment is paid into the payee\'s primary account at the moment it settles, not when it was created. Changing a primary account redirects payments already on their way.',
       'Approval needs a risk check first, but not a LOW score. Hold and Reject need a typed reason.',
@@ -73,7 +75,8 @@ const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
     rules: [
       'The risk queue marks a payment "UNVERIFIED" when the payee\'s primary account, or the account it is paid from, has an unverified change.',
       'A payment is paid into the payee\'s primary account at the moment it settles. Check the primary before you settle.',
-      `A settled payment can be reversed for ${secs(c.reversalWindowSec)}.`,
+      `A settled payment can be reversed for ${secs(c.reversalWindowSec)}, as long as the account it was paid into still holds the money.`,
+      "A payment fails at settlement if the account it is paid from holds too little. Customer Records shows every account's balance.",
       `The bank wins by settling ${money(c.whiteTarget)} of customer payments. Every payment held, rejected or reversed slows the bank down.`,
     ],
   }),
@@ -96,6 +99,8 @@ const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
       `"Revoke all access" is permanent once its ${secs(c.revokeCountdownSec)} countdown ends; only the Firewall can cancel it. Revoking one of the bank's own systems shuts the bank down, and everybody loses.`,
       'While the Master Log is offline nothing is recorded, but the entry numbers keep counting, so the gap shows.',
       'You can issue a credential in anyone\'s name. Its owner is told.',
+      'Blocking an address, switching security off, taking a module offline, and issuing or revoking a credential raise a "Suspicious security activity" alert naming you. Starting a "revoke all access", and issuing or revoking Firewall or Permissions write, raise a "Fatal" one.',
+      `Revoking a Firewall or Permissions write credential takes ${secs(c.revokeCountdownSec)}. Its owner is told, and anyone with Permissions write can cancel it.`,
     ],
   }),
   BANK_MANAGER: (c) => ({
@@ -117,6 +122,8 @@ const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
       `A trace reveals which workstation made a log entry. Entries must be under ${secs(c.traceMaxAgeSec)} old, and you can trace once every ${secs(c.traceCooldownSec)}.`,
       `A settled payment can be reversed for ${secs(c.reversalWindowSec)}.`,
       'You can issue a credential in anyone\'s name. Its owner is told.',
+      `Revoking a Firewall or Permissions write credential takes ${secs(c.revokeCountdownSec)}, and anyone with Permissions write can cancel it. If yours is being revoked, you can cancel it yourself.`,
+      `Customers write to you when a request passes its deadline, naming the banker who had it. After ${c.strikesToSuspend} missed requests a customer stops doing business with the bank for the day.`,
     ],
   }),
 };
@@ -126,7 +133,7 @@ const OPERATIVE = (c: GameConfig): string[] => [
   'Anything you do on the unregistered host leaves an "Unknown server activity" entry in the Master Log. Tracing it gives the bank a partial clue.',
   'Kit tools are marked noisy, loud or reckless. The louder the tool, the more a trace of its alert gives away: a partial clue, then your exact IP or the server\'s address, then your IP and your host code.',
   'Your Host Log warns you when the bank gets an alert about you, and when someone traces one of your entries.',
-  `Money only counts once it settles into a Target Ledger account. A settled payment can be reversed for ${secs(c.reversalWindowSec)}.`,
+  `Money counts while it sits in a Target Ledger account. A settled payment can be reversed for ${secs(c.reversalWindowSec)}, but only while the account it went to still holds the money: a mule account can pay it on first.`,
 ];
 
 export function jobDescription(role: RoleId, allegiance: Allegiance, c: GameConfig): JobDescription {

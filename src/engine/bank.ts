@@ -1,8 +1,8 @@
 // The bank's payment pipeline: NPC traffic, risk scoring, settlement and reversal.
 
-import { pick, rand } from './rng';
-import { accountVerified, addLog, gameTime, money, nextId } from './core';
-import type { GameState, PlayerId, RiskResult, Transaction, TxEvent } from './types';
+import { pick, rand, weightedPick } from './rng';
+import { accountVerified, addLog, balanceOf, gameTime, money, moveMoney, nextId } from './core';
+import type { ClientRequest, Customer, GameState, PlayerId, RiskResult, Transaction, TxEvent, TxStatus } from './types';
 
 /** Who did something to a payment: the credential owner the records will show, and who really did it. */
 export interface TxActor {
@@ -32,6 +32,47 @@ export function computeRisk(s: GameState, tx: Transaction): { result: RiskResult
   return { result, flags };
 }
 
+/** Customers still doing business with the bank today (not suspended after missed requests). */
+export const activeCustomers = (s: GameState): Customer[] => s.customers.filter((c) => !c.suspended);
+
+/** Payments that went nowhere: they answer no request. */
+const DEAD: TxStatus[] = ['REJECTED', 'FAILED', 'REVERSED'];
+
+/** A manual payment made exactly as a request asked: from one of the customer's accounts, to the payee, for the amount. */
+const madeAsAsked = (tx: Transaction, r: ClientRequest): boolean =>
+  tx.origin === 'PLAYER' && tx.customerId === r.customerId && tx.beneficiaryId === r.payeeId && tx.amount === r.amount && tx.createdAt >= r.t;
+
+/** Links a payment to the request it answers and marks the request done (credited to whoever created the payment). */
+function linkPayment(s: GameState, r: ClientRequest, tx: Transaction): void {
+  tx.requestId = r.id;
+  r.txId = tx.id;
+  r.status = 'DONE';
+  r.closedAt = gameTime(s);
+  r.closedBy = tx.createdBy;
+  r.closedByActual = tx.history.find((e) => e.action === 'CREATED')?.actualPlayerId ?? null;
+}
+
+/**
+ * The live payment answering a payment request, if any: the one linked to it, or else an unlinked payment made
+ * exactly as asked, which gets linked now. So paying as requested counts even if the request was archived
+ * instead of linked. Expired requests are answered by nothing.
+ */
+export function paymentFor(s: GameState, r: ClientRequest): Transaction | null {
+  if (r.kind !== 'PAYMENT' || r.outcome === 'MISSED') return null; // past its deadline with nothing done
+  const linked = r.txId ? s.transactions.find((tx) => tx.id === r.txId) : undefined;
+  if (linked && !DEAD.includes(linked.status)) return linked;
+  const tx = s.transactions.find((x) => !x.requestId && !DEAD.includes(x.status) && madeAsAsked(x, r));
+  if (!tx) return null;
+  linkPayment(s, r, tx);
+  return tx;
+}
+
+/** At settlement: an unlinked manual payment made exactly as an undecided request asked answers that request. */
+function matchRequest(s: GameState, tx: Transaction): void {
+  const r = s.requests.find((x) => x.kind === 'PAYMENT' && x.outcome === null && x.status !== 'EXPIRED' && madeAsAsked(tx, x) && paymentFor(s, x) === null);
+  if (r && !tx.requestId) linkPayment(s, r, tx);
+}
+
 /**
  * Does this payment count toward the bank's target? Automatic payments always do. A manual payment counts
  * only when it fulfils a customer's payment request: linked to it, to the payee and for the amount asked.
@@ -43,27 +84,39 @@ export function countsForBank(s: GameState, tx: Transaction): boolean {
   return !!req && req.kind === 'PAYMENT' && req.payeeId === tx.beneficiaryId && req.amount === tx.amount;
 }
 
-/** Pays the transaction into whatever account is the beneficiary's primary RIGHT NOW. */
-export function settleTransaction(s: GameState, tx: Transaction, who: TxActor): { account: string; fraud: boolean } {
+/**
+ * Moves the money at once: out of the originator account, into whatever account is the beneficiary's primary
+ * RIGHT NOW. If the originator account holds too little at that moment, the payment FAILS instead.
+ */
+export function settleTransaction(s: GameState, tx: Transaction, who: TxActor): { ok: boolean; account: string; fraud: boolean } {
   const account = s.customers.find((c) => c.id === tx.beneficiaryId)!.primary;
   const from = tx.originAccount;
+  if (balanceOf(s, from) < tx.amount) {
+    tx.status = 'FAILED';
+    recordTx(s, tx, 'FAILED', who, `insufficient funds in ${from}`);
+    return { ok: false, account, fraud: false };
+  }
   const fraud = s.targets.some((tg) => tg.account === account);
   tx.status = 'SETTLED';
   tx.settledAt = gameTime(s);
   tx.settledTo = account;
   tx.debitedFrom = from;
   tx.fraud = fraud;
+  moveMoney(s, from, account, tx.amount); // the stolen total follows the Target Ledger balances
   recordTx(s, tx, 'SETTLED', who, `${money(tx.amount)} from ${from} to ${account}`);
-  if (fraud) s.totals.stolen += tx.amount;
-  else if (countsForBank(s, tx)) s.totals.processed += tx.amount;
-  return { account, fraud };
+  if (!tx.requestId) matchRequest(s, tx);
+  if (!fraud && countsForBank(s, tx)) s.totals.processed += tx.amount;
+  return { ok: true, account, fraud };
 }
 
-export function reverseTransaction(s: GameState, tx: Transaction, who: TxActor): void {
-  if (tx.fraud) s.totals.stolen -= tx.amount;
-  else if (countsForBank(s, tx)) s.totals.processed -= tx.amount;
+/** Claws the money back from the account it was paid into. Fails (false) if that account no longer holds it all. */
+export function reverseTransaction(s: GameState, tx: Transaction, who: TxActor): boolean {
+  if (balanceOf(s, tx.settledTo!) < tx.amount) return false;
+  moveMoney(s, tx.settledTo!, tx.debitedFrom!, tx.amount);
+  if (!tx.fraud && countsForBank(s, tx)) s.totals.processed -= tx.amount;
   tx.status = 'REVERSED';
   recordTx(s, tx, 'REVERSED', who, `${money(tx.amount)} returned from ${tx.settledTo} to ${tx.debitedFrom}`);
+  return true;
 }
 
 /** Where automatic payments come in from. Shown as "created by" so players see a source, not a fake person. */
@@ -80,12 +133,39 @@ const NOISE = [
   'Session cleanup removed idle connections',
 ];
 
+// ---- Who pays whom, and how much ------------------------------------------------
+/** The smallest payment customers make (automatic payments and payment requests). */
+export const MIN_PAYMENT = 10_000;
+/** Automatic payments and payment requests take at most this share of the paying account's balance. */
+export const MAX_BALANCE_SHARE = 0.4;
+
+export const customerMoney = (s: GameState, c: Customer): number => c.accounts.reduce((sum, a) => sum + balanceOf(s, a), 0);
+/** Customers pay and get paid roughly in proportion to their wealth, so money does not just drain from rich to poor. */
+export const wealthWeight = (s: GameState, c: Customer): number => customerMoney(s, c) + 250_000;
+/** The account a customer pays from: the richer the account, the likelier. */
+export const payingAccount = (s: GameState, c: Customer): string => weightedPick(s, c.accounts, (a) => balanceOf(s, a) + 1);
+
+/**
+ * An amount between min and max (rounded to $1,000) that the account can afford right now, or null if it cannot
+ * afford even MIN_PAYMENT. A small account pays between a quarter of its cap and its cap, not always the cap.
+ */
+export function affordableAmount(s: GameState, account: string, min: number, max: number): number | null {
+  const cap = Math.floor((balanceOf(s, account) * MAX_BALANCE_SHARE) / 1000) * 1000;
+  if (cap < MIN_PAYMENT) return null;
+  const hi = Math.min(max, cap);
+  const lo = Math.max(MIN_PAYMENT, Math.min(min, hi / 4));
+  return Math.round((lo + rand(s) * (hi - lo)) / 1000) * 1000;
+}
+
+/** An automatic payment between two customers. Skipped when the chosen account cannot afford one. */
 export function spawnNpc(s: GameState): void {
-  const c = pick(s, s.customers);
-  const payee = pick(s, s.customers.filter((x) => x.id !== c.id));
-  const from = pick(s, c.accounts);
-  const raw = s.config.npcMinAmount + rand(s) * (s.config.npcMaxAmount - s.config.npcMinAmount);
-  const amount = Math.round(raw / 1000) * 1000;
+  const active = activeCustomers(s); // suspended customers neither pay nor get paid
+  if (active.length < 2) return;
+  const c = weightedPick(s, active, (x) => wealthWeight(s, x));
+  const payee = weightedPick(s, active.filter((x) => x.id !== c.id), (x) => wealthWeight(s, x));
+  const from = payingAccount(s, c);
+  const amount = affordableAmount(s, from, s.config.npcMinAmount, s.config.npcMaxAmount);
+  if (amount === null) return;
   const tx: Transaction = {
     id: nextId(s, 'tx', 'TX-', 4),
     amount,
@@ -136,11 +216,11 @@ export function autoProcess(s: GameState): void {
     if (r.result !== 'LOW') continue; // leave for humans
     tx.status = 'AUTHORIZED';
     recordTx(s, tx, 'APPROVED', SYSTEM_ACTOR);
-    settleTransaction(s, tx, SYSTEM_ACTOR);
+    const settled = settleTransaction(s, tx, SYSTEM_ACTOR);
     addLog(s, {
       actor: 'SYSTEM',
       kind: 'AUTO_SETTLE',
-      message: `Auto-processor settled ${tx.id}`,
+      message: settled.ok ? `Auto-processor settled ${tx.id}` : `Auto-processor: ${tx.id} failed, insufficient funds`,
       sourceIp: null,
       actualPlayerId: null,
     });

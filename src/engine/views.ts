@@ -2,7 +2,7 @@
 
 import { ROLES, SYSTEMS } from './catalog';
 import type { SystemDef } from './catalog';
-import { fmtClock, gameTime, nameOf } from './core';
+import { accountExists, balanceOf, fmtClock, gameTime, nameOf } from './core';
 import { credScopeText } from './handlers';
 import { jobDescription } from './jobs';
 import { dayPhaseAt } from './pacing';
@@ -21,6 +21,7 @@ export interface WorkstationView {
   motivation: string;
   ip: string;
   bankAccount: string;
+  bankBalance: number | null; // null: the account does not exist (a planted user's made-up number)
   lockedForSec: number;
   job: JobDescription;
   knownSystems: SystemId[];
@@ -75,6 +76,7 @@ function workstationView(s: GameState, p: Player): WorkstationView {
     motivation: p.motivation,
     ip: p.ip,
     bankAccount: p.bankAccount,
+    bankBalance: accountExists(s, p.bankAccount) ? balanceOf(s, p.bankAccount) : null,
     lockedForSec: Math.max(0, Math.ceil(p.lockedUntil - t)),
     job: jobDescription(p.role, p.allegiance, s.config),
     knownSystems: p.knownSystems,

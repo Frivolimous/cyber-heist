@@ -1,6 +1,7 @@
 // Small helpers shared by the engine, handlers and setup code.
 
 import { findModule } from './catalog';
+import { randInt } from './rng';
 import type { ActionResult, Alert, Block, Customer, GameConfig, GameState, LogEntry, Player, Reroute } from './types';
 
 export const keyOf = (system: string, module: string): string => `${system}.${module}`;
@@ -132,4 +133,25 @@ export function effectiveIp(s: GameState, p: Player, t: number): string {
 /** Adds an entry to the hidden host's own log. */
 export function addHostLog(s: GameState, message: string, alert = false): void {
   s.hostLog.push({ id: nextId(s, 'host', 'H'), t: gameTime(s), message, alert });
+}
+
+// ---- Money --------------------------------------------------------------------
+/** An account exists only if it is in the registry (GameState.balances); anything else is refused. */
+export const accountExists = (s: GameState, account: string): boolean => account in s.balances;
+export const balanceOf = (s: GameState, account: string): number => s.balances[account] ?? 0;
+
+/** Moves money between two existing accounts; the stolen total follows the Target Ledger balances. */
+export function moveMoney(s: GameState, from: string, to: string, amount: number): void {
+  s.balances[from] = balanceOf(s, from) - amount;
+  s.balances[to] = balanceOf(s, to) + amount;
+  s.totals.stolen = s.targets.reduce((sum, tg) => sum + balanceOf(s, tg.account), 0);
+}
+
+/** A fresh account number that nothing uses yet (not registered, not a player's or planted user's number). */
+export function unusedAccountNumber(s: GameState): string {
+  const players = new Set(Object.values(s.players).map((p) => p.bankAccount));
+  for (;;) {
+    const a = `ACC-${randInt(s, 10000, 99999)}`;
+    if (!accountExists(s, a) && !players.has(a)) return a;
+  }
 }

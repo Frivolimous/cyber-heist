@@ -3,6 +3,9 @@
 
 import { ENCRYPTION_ENABLED, findModule, findSystem, ROLES, SYSTEMS } from './catalog';
 import {
+  accountExists,
+  balanceOf,
+  unusedAccountNumber,
   addAlert,
   addLog,
   fmtClock,
@@ -29,8 +32,9 @@ import {
 } from './core';
 import { createCredential } from './credentials';
 import { pick, rand, randInt } from './rng';
-import { computeRisk, recordTx, reverseTransaction, settleTransaction } from './bank';
+import { computeRisk, paymentFor, recordTx, reverseTransaction, settleTransaction } from './bank';
 import type { TxActor } from './bank';
+import { accountRequestText, requestTimes } from './requests';
 import type { AccountChange, ClientRequest, CodeCrack, Credential, Customer, Message, RequestKind, Revocation, GameState, LogEntry, Player, RoleId, SystemId, Transaction, TxEvent, TxStatus } from './types';
 
 export interface Ctx {
@@ -80,6 +84,16 @@ const scopeText = (cr: Credential): string => `${cr.system}.${cr.module ?? '*'}$
 export const credScopeText = scopeText;
 
 const H: Record<string, Handler> = {};
+
+/**
+ * Logs a security change and raises a Master Log alert for it, naming the credential owner like the log does.
+ * SUSPICIOUS (tier 2) can be muted by Alert mute; FATAL (tier 3) always gets through.
+ */
+function securityAlert(c: Ctx, detail: string, level: 'SUSPICIOUS' | 'FATAL'): void {
+  const entry = c.log(detail);
+  const what = level === 'FATAL' ? 'Fatal security activity' : 'Suspicious security activity';
+  addAlert(c.s, `SECURITY_${level}`, `${what}: ${c.owner.name} ${detail}`, entry.id, level === 'FATAL' ? 3 : 2);
+}
 
 // ---- Security: Firewall ---------------------------------------------------
 H['SECURITY.FIREWALL.ADD_ENCRYPTION'] = (c, q) => {
@@ -142,7 +156,7 @@ H['SECURITY.FIREWALL.VIEW_STATUS'] = (c) => {
   const summary = [offline ? `${offline} offline` : 'everything online', open ? `${open} with security off` : '', blocks.length ? `${blocks.length} blocked` : '', pending.length ? `${pending.length} revocation pending` : '']
     .filter(Boolean)
     .join(', ');
-  return good(`Firewall: ${summary}.`, [...pending, ...blocks, ...rows]);
+  return good(`Firewall: ${summary}.`, [...rows, ...pending, ...blocks]);
 };
 
 /** A network address: a workstation IP or a system address. */
@@ -163,9 +177,9 @@ H['SECURITY.FIREWALL.SET_SECURITY'] = (c, q) => {
   if (m.open === !on) return bad(`Security is already ${on ? 'on' : 'off'} for that module.`);
   m.open = !on;
   const label = targetLabel(tgt.system, tgt.module);
-  return on
-    ? good(`Security is back on for ${label}. Codes are required again.`, undefined, `switched security back on for ${label}`)
-    : good(`Security is off for ${label}: anyone can use it without a code, and it is logged as Anonymous.`, undefined, `switched security OFF for ${label} (open access)`);
+  if (on) return good(`Security is back on for ${label}. Codes are required again.`, undefined, `switched security back on for ${label}`);
+  securityAlert(c, `switched security OFF for ${label} (open access)`, 'SUSPICIOUS');
+  return good(`Security is off for ${label}: anyone can use it without a code, and it is logged as Anonymous.`);
 };
 
 H['SECURITY.FIREWALL.BLOCK_ADDRESS'] = (c, q) => {
@@ -175,7 +189,8 @@ H['SECURITY.FIREWALL.BLOCK_ADDRESS'] = (c, q) => {
   if (current) return bad(`${a} is already blocked ${blockText(c.s, current)}.`);
   c.s.blocks = c.s.blocks.filter((b) => b.address !== a);
   c.s.blocks.push({ address: a, until: c.t + c.s.config.blockSec, byOwner: c.owner.id, actualPlayerId: c.actor.id });
-  return good(`${a} is blocked for ${c.s.config.blockSec}s.`, undefined, `blocked ${a} for ${c.s.config.blockSec}s`);
+  securityAlert(c, `blocked ${a} for ${c.s.config.blockSec}s`, 'SUSPICIOUS');
+  return good(`${a} is blocked for ${c.s.config.blockSec}s.`);
 };
 
 H['SECURITY.FIREWALL.UNBLOCK_ADDRESS'] = (c, q) => {
@@ -213,11 +228,8 @@ H['SECURITY.FIREWALL.REVOKE_ALL_ACCESS'] = (c, q) => {
     cancelledBy: null,
   };
   c.s.revocations.push(r);
-  return good(
-    `${r.id}: all access for ${a} will be revoked in ${c.s.config.revokeCountdownSec}s. It can be cancelled from the Firewall until then.`,
-    undefined,
-    `started ${r.id}: revoke all access for ${a} in ${c.s.config.revokeCountdownSec}s`,
-  );
+  securityAlert(c, `started ${r.id}: revoke all access for ${a} in ${c.s.config.revokeCountdownSec}s`, 'FATAL');
+  return good(`${r.id}: all access for ${a} will be revoked in ${c.s.config.revokeCountdownSec}s. It can be cancelled from the Firewall until then.`);
 };
 
 H['SECURITY.FIREWALL.SET_MODULE_STATUS'] = (c, q) => {
@@ -231,7 +243,7 @@ H['SECURITY.FIREWALL.SET_MODULE_STATUS'] = (c, q) => {
   if (m.status === status) return bad(`Module is already ${status.toLowerCase()}.`);
   const label = targetLabel(tgt.system, tgt.module);
   if (status === 'OFFLINE') {
-    c.log(`took ${label} offline`); // written first: if this is the Master Log, nothing after it is recorded
+    securityAlert(c, `took ${label} offline`, 'SUSPICIOUS'); // written first: if this is the Master Log, nothing after it is recorded
     m.status = 'OFFLINE';
     return good(`${label} is now offline.`);
   }
@@ -363,7 +375,27 @@ function requestStatusText(c: Ctx, r: ClientRequest): string {
   if (r.status === 'OPEN') return '[OPEN]';
   const by = r.closedBy ? ` by ${nameOf(c.s, r.closedBy)}` : '';
   if (r.status === 'DONE') return `[DONE${r.txId ? `: ${r.txId}` : ''}${by}]`;
+  if (r.status === 'EXPIRED') return '[EXPIRED]';
   return `[ARCHIVED${by}${r.archiveReason ? `: "${r.archiveReason}"` : ''}]`;
+}
+
+/** A request in the view: header (status, urgency, time left, REMINDER), the customer's words, then follow-ups. */
+function requestLines(c: Ctx, r: ClientRequest): string[] {
+  const cust = c.s.customers.find((x) => x.id === r.customerId);
+  const to = r.bankerId ? nameOf(c.s, r.bankerId) : 'nobody';
+  const tags: string[] = [];
+  if (r.urgent) tags.push('URGENT');
+  if (r.outcome === null) tags.push(`due in ${Math.max(0, Math.ceil(r.dueAt - c.t))}s`);
+  if (r.reminders.length && r.status === 'OPEN') tags.push('REMINDER');
+  const lines = [
+    `${r.id.padEnd(7)} ${fmtClock(c.s.config, r.t)}  ${r.sender ?? cust?.name ?? '?'} -> ${to}  ${requestStatusText(c, r)}${tags.length ? '  ' + tags.join('  ') : ''}`,
+    `        "${r.text}"`,
+  ];
+  for (const m of r.reminders) lines.push(`        ${fmtClock(c.s.config, m.t)} follow-up: "${m.text}"`);
+  if (r.status === 'OPEN' && r.archiveReason) {
+    lines.push(`        (archived earlier${r.closedBy ? ` by ${nameOf(c.s, r.closedBy)}` : ''}: "${r.archiveReason}"; reopened by the follow-up)`);
+  }
+  return lines;
 }
 
 /** Optional request id to link to an action: null if blank, the open request of the right kind, or an error. */
@@ -380,8 +412,10 @@ function linkedRequest(c: Ctx, q: Params, kinds: RequestKind[]): ClientRequest |
   if (!raw) return null;
   const r = c.s.requests.find((x) => x.id === normReq(raw));
   if (!r) return 'No such client request.';
-  if (r.status !== 'OPEN') return `${r.id} is already ${r.status === 'DONE' ? 'done' : 'archived'}.`;
   if (!kinds.includes(r.kind)) return `${r.id} asks for ${KIND_TEXT[r.kind]}, not this.`;
+  // Open and archived requests can be acted on (archiving is not final); a done one only if its payment fell through.
+  if (r.outcome === 'MISSED') return `${r.id} has expired.`;
+  if (r.status === 'DONE' && (r.kind !== 'PAYMENT' || paymentFor(c.s, r))) return `${r.id} is already done.`;
   return r;
 }
 
@@ -396,13 +430,11 @@ function closeRequest(c: Ctx, r: ClientRequest, status: 'DONE' | 'ARCHIVED', ext
 
 H['CLIENT_DATA.CLIENT_REQUESTS.VIEW_REQUESTS'] = (c, q) => {
   const all = str(q, 'show') === 'ALL';
-  const rows = c.s.requests.filter((r) => canSeeRequest(c, r) && (all || r.status === 'OPEN')).slice(-30);
+  let rows = c.s.requests.filter((r) => canSeeRequest(c, r) && (all || r.status === 'OPEN')).slice(-30);
+  // Open view: requests the customer has already chased come first.
+  if (!all) rows = [...rows.filter((r) => r.reminders.length), ...rows.filter((r) => !r.reminders.length)];
   const whose = seesAllRequests(c) ? 'All client requests' : `Client requests for ${c.owner.name}`;
-  const lines = rows.flatMap((r) => {
-    const cust = c.s.customers.find((x) => x.id === r.customerId);
-    const to = r.bankerId ? nameOf(c.s, r.bankerId) : 'nobody';
-    return [`${r.id.padEnd(7)} ${fmtClock(c.s.config, r.t)}  ${cust?.name ?? '?'} -> ${to}  ${requestStatusText(c, r)}`, `        "${r.text}"`];
-  });
+  const lines = rows.flatMap((r) => requestLines(c, r));
   const n = rows.length;
   return good(`${whose} (${all ? 'all' : 'open'}): ${n} request${n === 1 ? '' : 's'}.`, n ? lines : ['Nothing here.']);
 };
@@ -428,6 +460,10 @@ function scopeLabel(cr: Credential): string {
   return `${access} · ${where}`;
 }
 
+/** Write access to the Firewall or to Permissions (directly or through all of Security): revoking one waits. */
+export const isSecurityWrite = (cr: Credential): boolean =>
+  cr.system === 'SECURITY' && cr.permission === 'WRITE' && (cr.module === null || cr.module === 'FIREWALL' || cr.module === 'PERMISSIONS');
+
 H['SECURITY.PERMISSIONS.VIEW_PERMISSIONS'] = (c, q) => {
   const all = str(q, 'show') === 'ALL';
   const rows = Object.values(c.s.credentials)
@@ -438,7 +474,10 @@ H['SECURITY.PERMISSIONS.VIEW_PERMISSIONS'] = (c, q) => {
       const by = cr.issuedBy === null ? 'start of shift' : nameOf(c.s, cr.issuedBy);
       return `${cr.id.padEnd(4)} ${nameOf(c.s, cr.owner).padEnd(10)} ${scopeLabel(cr).padEnd(44)} ${cr.status.padEnd(8)} issued: ${by}`;
     });
-  return good(`Permissions registry (${all ? 'all' : 'active'}, codes hidden): ${rows.length}.`, rows);
+  const pending = Object.values(c.s.credentials)
+    .filter((cr) => cr.pendingRevoke && cr.status === 'ACTIVE')
+    .map((cr) => `PENDING  revoke ${cr.id} (${nameOf(c.s, cr.owner)}, ${scopeLabel(cr)}) in ${Math.ceil(cr.pendingRevoke!.at - c.t)}s  (started by ${nameOf(c.s, cr.pendingRevoke!.byOwner)}; cancel from Permissions)`);
+  return good(`Permissions registry (${all ? 'all' : 'active'}, codes hidden): ${rows.length}${pending.length ? `, ${pending.length} revocation pending` : ''}.`, [...pending, ...rows]);
 };
 
 H['SECURITY.PERMISSIONS.CREATE_CREDENTIAL'] = (c, q) => {
@@ -459,23 +498,43 @@ H['SECURITY.PERMISSIONS.CREATE_CREDENTIAL'] = (c, q) => {
   });
   for (const p of [owner, c.actor]) if (!p.heldCredentialIds.includes(cred.id)) p.heldCredentialIds.push(cred.id);
   if (owner.id !== c.actor.id) note(owner, c.t, `A new credential ${cred.id} (${scopeText(cred)}) was issued to you. Code ${cred.code}.`);
-  return good(`Credential ${cred.id} (${scopeLabel(cred)}) issued to ${owner.name}. Code: ${cred.code}`, undefined, `issued credential ${cred.id} to ${owner.name} (${scopeText(cred)})`);
+  securityAlert(c, `issued credential ${cred.id} to ${owner.name} (${scopeText(cred)})`, isSecurityWrite(cred) ? 'FATAL' : 'SUSPICIOUS');
+  return good(`Credential ${cred.id} (${scopeLabel(cred)}) issued to ${owner.name}. Code: ${cred.code}`);
 };
 
 H['SECURITY.PERMISSIONS.REVOKE_CREDENTIAL'] = (c, q) => {
   const cr = c.s.credentials[normCred(str(q, 'credentialId'))];
   if (!cr) return bad('No such credential.');
   if (cr.status === 'REVOKED') return bad('Already revoked.');
-  cr.status = 'REVOKED';
+  if (cr.pendingRevoke) return bad(`${cr.id} is already being revoked.`);
   const owner = c.s.players[cr.owner];
+  if (isSecurityWrite(cr)) {
+    // Control of the Firewall or of Permissions: a takeover move, so it waits and can be cancelled.
+    const sec = c.s.config.revokeCountdownSec;
+    cr.pendingRevoke = { at: c.t + sec, byOwner: c.owner.id, actualPlayerId: c.actor.id };
+    note(owner, c.t, `Your credential ${cr.id} (${scopeText(cr)}) will be revoked in ${sec}s. Anyone with Permissions write can cancel it.`);
+    securityAlert(c, `started revoking credential ${cr.id} (${owner.name}, ${scopeLabel(cr)}) in ${sec}s`, 'FATAL');
+    return good(`Credential ${cr.id} will be revoked in ${sec}s. It can be cancelled from Permissions until then.`);
+  }
+  cr.status = 'REVOKED';
   if (owner.id !== c.actor.id) note(owner, c.t, `Your credential ${cr.id} (${scopeText(cr)}) was revoked.`);
-  return good(`Credential ${cr.id} revoked.`, undefined, `revoked credential ${cr.id} (${owner.name})`);
+  securityAlert(c, `revoked credential ${cr.id} (${owner.name})`, 'SUSPICIOUS');
+  return good(`Credential ${cr.id} revoked.`);
+};
+
+H['SECURITY.PERMISSIONS.CANCEL_REVOKE'] = (c, q) => {
+  const cr = c.s.credentials[normCred(str(q, 'credentialId'))];
+  if (!cr?.pendingRevoke || cr.status !== 'ACTIVE') return bad('That credential is not being revoked.');
+  cr.pendingRevoke = null;
+  const owner = c.s.players[cr.owner];
+  if (owner.id !== c.actor.id) note(owner, c.t, `The revocation of your credential ${cr.id} was cancelled.`);
+  return good(`Revocation of ${cr.id} cancelled. ${owner.name} keeps it.`, undefined, `cancelled the revocation of credential ${cr.id} (${owner.name})`);
 };
 
 // ---- Client Data: Customer Records ------------------------------------------------------------------
-// Payments to a customer land in their PRIMARY account at settlement. Accounts can be added (any number
-// nobody else owns, including "floating" ones), made primary, or removed (never the primary). Every change
-// gets an id and waits in the Verification queue.
+// Payments to a customer land in their PRIMARY account at settlement. Accounts can be added (any existing
+// account on no customer: a "floating" one), made primary, or removed (never the primary; it floats away with
+// its money). Every change gets an id and waits in the Verification queue.
 
 const findCustomer = (c: Ctx, q: Params): Customer | undefined => c.s.customers.find((x) => x.id === normCust(str(q, 'customerId')));
 
@@ -490,13 +549,13 @@ function ownCustomer(c: Ctx, q: Params): Customer | string {
 /** Like Client Requests: Personal Bankers see their own customers (by credential owner); every other role sees all. */
 const seesAllCustomers = (c: Ctx): boolean => !ownCustomersOnly(c);
 
-const accountText = (x: Customer, a: string): string => `${a}${accountVerified(x, a) ? '' : ' (unverified)'}`;
+const accountText = (c: Ctx, x: Customer, a: string): string => `${a} ${money(balanceOf(c.s, a))}${accountVerified(x, a) ? '' : ' (unverified)'}`;
 
 function customerLines(c: Ctx, x: Customer): string[] {
   const others = x.accounts.filter((a) => a !== x.primary);
   return [
-    `${x.id.padEnd(5)} ${x.name.padEnd(22)} primary ${accountText(x, x.primary)}  banker: ${x.bankerId ? nameOf(c.s, x.bankerId) : '-'}`,
-    `      other accounts: ${others.length ? others.map((a) => accountText(x, a)).join(', ') : 'none'}`,
+    `${x.id.padEnd(5)} ${x.name.padEnd(22)} primary ${accountText(c, x, x.primary)}  banker: ${x.bankerId ? nameOf(c.s, x.bankerId) : '-'}${x.suspended ? '  SUSPENDED: no business today' : ''}`,
+    `      other accounts: ${others.length ? others.map((a) => accountText(c, x, a)).join(', ') : 'none'}`,
   ];
 }
 
@@ -540,6 +599,7 @@ H['CLIENT_DATA.CUSTOMER_RECORDS.ADD_ACCOUNT'] = (c, q) => {
   if (typeof x === 'string') return bad(x);
   const acc = normAccount(str(q, 'account'));
   if (!acc) return bad('Account must be 5 digits.');
+  if (!accountExists(c.s, acc)) return bad(`There is no account ${acc}.`);
   if (x.accounts.includes(acc)) return bad(`${acc} is already on ${x.id}.`);
   if (accountOwner(c.s, acc)) return bad(`${acc} belongs to another customer.`);
   const primary = str(q, 'makePrimary').toUpperCase() === 'YES';
@@ -621,10 +681,11 @@ H['CLIENT_DATA.VERIFICATION.INVESTIGATE_CHANGES'] = (c, q) => {
   const raw = str(q, 'target');
   const acc = normAccount(raw);
   if (acc) {
+    if (!accountExists(c.s, acc)) return bad(`There is no account ${acc}.`);
     const rows = allChanges(c.s).filter((h) => h.account === acc || (h.action === 'SET_PRIMARY' && h.previousPrimary === acc));
     const owner = accountOwner(c.s, acc);
     const now = owner ? `on ${owner.id} ${owner.name}${owner.primary === acc ? ' (primary)' : ''}` : 'floating (no customer)';
-    return good(`${acc}: now ${now}. ${rows.length} change${rows.length === 1 ? '' : 's'}.`, rows.map((h) => changeLine(c, h)), `investigated changes to account ${acc}`);
+    return good(`${acc}: now ${now}, balance ${money(balanceOf(c.s, acc))}. ${rows.length} change${rows.length === 1 ? '' : 's'}.`, rows.map((h) => changeLine(c, h)), `investigated changes to account ${acc}`);
   }
   const x = c.s.customers.find((y) => y.id === normCust(raw));
   if (!x) return bad('Enter a customer (CU3) or a 5-digit account.');
@@ -654,10 +715,13 @@ const who = (c: Ctx): TxActor => ({ by: c.owner.id, actualPlayerId: c.actor.id }
 const reasonOf = (q: Params): string | null => str(q, 'reason').trim().slice(0, 200) || null;
 
 const ACTIVE = ['QUEUED', 'RISK_CHECKED', 'AUTHORIZED', 'HELD'];
-/** "CU5 ACC-13845 -> CU2 ACC-79039": originator and the account used, then the payee and their CURRENT primary. */
+/**
+ * "CU5 ACC-13845 -> CU2 ACC-79039": originator and the account used, then the payee and their CURRENT primary.
+ * A payment from a floating account shows its originator as UNKNOWN.
+ */
 function payLine(c: Ctx, tx: Transaction): string {
   const payee = c.s.customers.find((x) => x.id === tx.beneficiaryId);
-  return `${tx.customerId} ${tx.originAccount} -> ${tx.beneficiaryId} ${payee?.primary ?? '?'}`;
+  return `${tx.customerId ?? 'UNKNOWN'} ${tx.originAccount} -> ${tx.beneficiaryId} ${payee?.primary ?? '?'}`;
 }
 
 function txLine(c: Ctx, tx: Transaction): string {
@@ -672,9 +736,10 @@ H['TRANSACTIONS.PAYMENT_QUEUE.VIEW_QUEUE'] = (c, q) => {
 };
 
 H['TRANSACTIONS.PAYMENT_QUEUE.CREATE_TRANSACTION'] = (c, q) => {
+  // Any existing account can pay, including a floating one (the payment then shows it as UNKNOWN).
   const acc = normAccount(str(q, 'originAccount'));
-  const origin = acc ? accountOwner(c.s, acc) : undefined;
-  if (!acc || !origin) return bad('No customer account with that number.');
+  if (!acc || !accountExists(c.s, acc)) return bad('There is no account with that number.');
+  const origin = accountOwner(c.s, acc);
   const b = c.s.customers.find((x) => x.id === normCust(str(q, 'beneficiaryId')));
   if (!b) return bad('No such customer to pay.');
   const amount = Math.round(Number(str(q, 'amount')));
@@ -685,7 +750,7 @@ H['TRANSACTIONS.PAYMENT_QUEUE.CREATE_TRANSACTION'] = (c, q) => {
   const tx: Transaction = {
     id: nextId(c.s, 'tx', 'TX-', 4),
     amount,
-    customerId: origin.id,
+    customerId: origin?.id ?? null,
     originAccount: acc,
     beneficiaryId: b.id,
     origin: 'PLAYER',
@@ -708,7 +773,7 @@ H['TRANSACTIONS.PAYMENT_QUEUE.CREATE_TRANSACTION'] = (c, q) => {
   const forReq = req ? ` for ${req.id}` : '';
   recordTx(c.s, tx, 'CREATED', who(c), `manual: ${money(amount)} from ${acc} to ${b.id}${forReq}`);
   if (req) closeRequest(c, req, 'DONE', { txId: tx.id });
-  return good(`Queued ${tx.id}.${req ? ` ${req.id} is done.` : ''}`, undefined, `created payment ${tx.id} (${money(amount)}) from ${origin.name} to ${b.name}${forReq}`);
+  return good(`Queued ${tx.id}.${req ? ` ${req.id} is done.` : ''}`, undefined, `created payment ${tx.id} (${money(amount)}) from ${origin?.name ?? acc} to ${b.name}${forReq}`);
 };
 
 H['TRANSACTIONS.RISK_CHECK.RUN_RISK_CHECK'] = (c, q) => {
@@ -765,6 +830,7 @@ H['TRANSACTIONS.SETTLEMENT.SETTLE'] = (c, q) => {
   if (typeof tx === 'string') return bad(tx);
   if (tx.status !== 'AUTHORIZED') return bad(`${tx.id} is ${tx.status}; only approved payments can be settled.`);
   const r = settleTransaction(c.s, tx, who(c));
+  if (!r.ok) return good(`${tx.id} FAILED: insufficient funds in ${tx.originAccount}.`, undefined, `tried to settle ${tx.id}: failed, insufficient funds`);
   return good(`${tx.id} settled: ${money(tx.amount)} paid to ${r.account} (${tx.beneficiaryId}'s primary).`, undefined, `settled ${tx.id}`);
 };
 
@@ -773,7 +839,7 @@ H['TRANSACTIONS.SETTLEMENT.REVERSE'] = (c, q) => {
   if (typeof tx === 'string') return bad(tx);
   if (tx.status !== 'SETTLED' || tx.settledAt === null) return bad(`${tx.id} is ${tx.status}; only settled payments can be reversed.`);
   if (c.t - tx.settledAt > c.s.config.reversalWindowSec) return bad('The reversal window has closed.');
-  reverseTransaction(c.s, tx, who(c));
+  if (!reverseTransaction(c.s, tx, who(c))) return bad(`Reversal failed: ${tx.settledTo} no longer holds ${money(tx.amount)}.`);
   return good(`${tx.id} reversed.`, undefined, `reversed ${tx.id}`);
 };
 
@@ -804,6 +870,7 @@ const PAST: Record<TxEvent['action'], string> = {
   HELD: 'held',
   REJECTED: 'rejected',
   SETTLED: 'settled',
+  FAILED: 'failed',
   REVERSED: 'reversed',
 };
 
@@ -865,7 +932,7 @@ H['TRANSACTIONS.AUTHORIZATION.VIEW_AUTH_QUEUE'] = (c, q) =>
   );
 
 H['TRANSACTIONS.SETTLEMENT.VIEW_SETTLEMENT'] = (c, q) =>
-  stageView(c, q, 'SETTLE', 'Settlement queue', ['AUTHORIZED'], (tx) => ['AUTHORIZED', 'SETTLED', 'REVERSED'].includes(tx.status));
+  stageView(c, q, 'SETTLE', 'Settlement queue', ['AUTHORIZED'], (tx) => ['AUTHORIZED', 'SETTLED', 'FAILED', 'REVERSED'].includes(tx.status));
 
 // ---- Hidden host: tool kits & exposure ----------------------------------------
 // Black Hat tools have no cooldowns or charges; they are balanced by exposure. Each tool tags its "Unknown
@@ -925,7 +992,7 @@ function plantUser(s: GameState, name: string, role: RoleId, ip: string): Player
     objective: '',
     motivation: '',
     ip,
-    bankAccount: '',
+    bankAccount: unusedAccountNumber(s), // a made-up number: it does not exist, so it cannot hold or move money
     heldCredentialIds: [],
     knownSystems: ['SECURITY', 'CLIENT_DATA', 'TRANSACTIONS'],
     activity: [],
@@ -1084,8 +1151,7 @@ H['BLACKHAT_DB.SOCIAL.SCAM_REQUEST'] = (c, q) => {
   if (!(['SET_PRIMARY', 'ADD_AND_PRIMARY', 'ADD_ACCOUNT', 'REMOVE_ACCOUNT'] as RequestKind[]).includes(kind)) return bad('Pick what the request asks for.');
   const account = normAccount(str(q, 'account'));
   if (!account) return bad('Enter a 5-digit account number.');
-  const text = str(q, 'text').trim().slice(0, 300);
-  if (!text) return bad('Write the message the customer would send.');
+  const text = accountRequestText(c.s, cust, kind as Exclude<RequestKind, 'PAYMENT'>, account); // worded from the same forms as real requests
   const req: ClientRequest = {
     id: nextId(c.s, 'req', 'REQ-'),
     t: c.t,
@@ -1097,6 +1163,8 @@ H['BLACKHAT_DB.SOCIAL.SCAM_REQUEST'] = (c, q) => {
     amount: null,
     originAccount: null,
     account,
+    ...requestTimes(c.s, c.t, false), // shows a deadline like any request, but no customer will chase it
+    scam: true,
     status: 'OPEN',
     closedAt: null,
     closedBy: null,
@@ -1110,7 +1178,7 @@ H['BLACKHAT_DB.SOCIAL.SCAM_REQUEST'] = (c, q) => {
   note(c.actor, c.t, `Planted scam request ${req.id} from ${cust.name} (${kind} ${account}).`);
   raiseExposure(c, 2);
   const to = cust.bankerId ? nameOf(c.s, cust.bankerId) : 'their banker';
-  return good(`Scam request ${req.id} planted, from ${cust.name} to ${to}.`);
+  return good(`Scam request ${req.id} planted, from ${cust.name} to ${to}.`, [`"${text}"`]);
 };
 
 H['BLACKHAT_DB.INFILTRATION.REROUTE_IP'] = (c, q) => {

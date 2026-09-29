@@ -167,7 +167,7 @@ function renderTruth(): void {
     .join('\n');
   const txs = s.transactions
     .slice(-25)
-    .map((x) => `${x.id} ${money(x.amount).padStart(11)} ${x.status.padEnd(12)} ${x.origin.padEnd(6)} from ${x.customerId} ${x.originAccount} to ${x.beneficiaryId} ${x.settledTo ?? ''} ${x.fraud ? 'FRAUD' : ''}`)
+    .map((x) => `${x.id} ${money(x.amount).padStart(11)} ${x.status.padEnd(12)} ${x.origin.padEnd(6)} from ${x.customerId ?? 'UNKNOWN'} ${x.originAccount} to ${x.beneficiaryId} ${x.settledTo ?? ''} ${x.fraud ? 'FRAUD' : ''}`)
     .join('\n');
   const who = (id: string | null): string => (id === null || id === 'SYSTEM' ? 'SYSTEM' : (s.players[id]?.name ?? id));
   const history = s.transactions
@@ -786,7 +786,6 @@ const MODULE_PAGES: Record<string, ModulePage> = {
             true,
           ) +
           input(w, 'scamAcct', 'Account', '18392') +
-          input(w, 'scamText', 'Message', 'the con', true, true) +
           btns(btn(w, 'scam', 'Plant request · noisy', '', true)),
         `${w.id}:scam`,
       ),
@@ -794,7 +793,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       if (cmd === 'spoof')
         runFresh(w, 'BLACKHAT_DB', 'SOCIAL', 'SPOOFED_MESSAGE', { to: w.form['p:spoofTo'] ?? '', from: w.form['p:spoofFrom'] ?? '', text: w.form['p:spoofText'] ?? '' }, ['spoofText']);
       else if (cmd === 'scam')
-        runFresh(w, 'BLACKHAT_DB', 'SOCIAL', 'SCAM_REQUEST', { customer: w.form['p:scamCust'] ?? '', kind: w.form['p:scamKind'] ?? '', account: w.form['p:scamAcct'] ?? '', text: w.form['p:scamText'] ?? '' }, ['scamText', 'scamAcct']);
+        runFresh(w, 'BLACKHAT_DB', 'SOCIAL', 'SCAM_REQUEST', { customer: w.form['p:scamCust'] ?? '', kind: w.form['p:scamKind'] ?? '', account: w.form['p:scamAcct'] ?? '' }, ['scamAcct']);
     },
   },
   'BLACKHAT_DB.CLEANUP': {
@@ -924,6 +923,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       return (
         card('View credentials', 'READ', btn(w, 'view:ACTIVE', 'Active') + btn(w, 'view:ALL', 'All, incl. revoked', 'alt')) +
         card('Revoke a credential', 'WRITE', input(w, 'credentialId', 'Credential', 'C12 or 12', true, true) + btns(btn(w, 'revoke', 'Revoke', 'danger', true)), `${w.id}:revoke`) +
+        card('Cancel a revocation', 'WRITE', input(w, 'cancelCred', 'Credential', 'C12 or 12', true, true) + btns(btn(w, 'cancelRevoke', 'Cancel it', '', true)), `${w.id}:cancelRevoke`) +
         card(
           'Issue a credential',
           'WRITE',
@@ -939,6 +939,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       const f = (k: string): string => w.form[`p:${k}`] ?? '';
       if (cmd === 'view') execute(w, 'SECURITY', 'PERMISSIONS', 'VIEW_PERMISSIONS', { show: arg ?? 'ACTIVE' });
       else if (cmd === 'revoke') runFresh(w, 'SECURITY', 'PERMISSIONS', 'REVOKE_CREDENTIAL', { credentialId: f('credentialId') }, ['credentialId']);
+      else if (cmd === 'cancelRevoke') runFresh(w, 'SECURITY', 'PERMISSIONS', 'CANCEL_REVOKE', { credentialId: f('cancelCred') }, ['cancelCred']);
       else execute(w, 'SECURITY', 'PERMISSIONS', 'CREATE_CREDENTIAL', { owner: f('owner'), scope: f('scope'), permission: f('permission') });
     },
   },
@@ -1134,7 +1135,7 @@ function workstationHtml(w: Win, ws: WorkstationView, current: Tab, remote: bool
     const job = ws.job;
     const list = (items: string[]): string => `<ul class="job-list">${items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
     body = `
-      <dl class="kv"><dt>Name</dt><dd>${esc(ws.name)}</dd><dt>Role</dt><dd>${esc(ws.roleLabel)}</dd><dt>IP</dt><dd>${esc(ws.ip)}</dd><dt>Account</dt><dd>${esc(ws.bankAccount)}</dd></dl>
+      <dl class="kv"><dt>Name</dt><dd>${esc(ws.name)}</dd><dt>Role</dt><dd>${esc(ws.roleLabel)}</dd><dt>IP</dt><dd>${esc(ws.ip)}</dd><dt>Account</dt><dd>${esc(ws.bankAccount)}${ws.bankBalance === null ? "" : " · " + money(ws.bankBalance)}</dd></dl>
       <h4>${their} objective</h4><div class="note">${esc(ws.objective)}</div>
       <p class="hint">${esc(ws.motivation)}</p>
       <h4>Job: ${esc(ws.roleLabel)}</h4><p class="job-summary">${esc(job.summary)}</p>

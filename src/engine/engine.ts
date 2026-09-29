@@ -3,7 +3,7 @@
 
 import { findFn, findSystem, SYSTEMS } from './catalog';
 import { autoProcess, spawnNpc } from './bank';
-import { spawnRequest } from './requests';
+import { advanceRequests, spawnRequest } from './requests';
 import {
   activeBlock,
   activeReroute,
@@ -67,6 +67,7 @@ export function advanceState(s: GameState, now: number): void {
   s.now = Math.max(s.now, s.startedAt + targetT * 1000);
   runDueRevocations(s);
   advanceCracks(s);
+  advanceRequests(s);
   if (s.config.autoProcess) autoProcess(s);
   checkWin(s);
   if (s.status === 'RUNNING' && targetT >= endT) {
@@ -392,20 +393,40 @@ function accessWorkstation(s: GameState, p: Player, targetId: string, code: stri
 
 // ---- Firewall revocations ------------------------------------------------------
 
-/** Mutating: carries out every pending "revoke all access" whose countdown has run out. */
+/** Mutating: carries out every pending credential revocation and "revoke all access" whose countdown has run out. */
 function runDueRevocations(s: GameState): void {
   const t = gameTime(s);
+  // Security credentials whose revocation countdown ran out (Permissions > Revoke credential).
+  for (const cr of Object.values(s.credentials)) {
+    if (!cr.pendingRevoke || cr.pendingRevoke.at > t) continue;
+    const by = cr.pendingRevoke.byOwner;
+    cr.pendingRevoke = null;
+    if (cr.status !== 'ACTIVE') continue; // revoked meanwhile by a firewall revocation
+    cr.status = 'REVOKED';
+    const owner = s.players[cr.owner];
+    note(owner, t, `Your credential ${cr.id} was revoked.`);
+    const message = `Credential ${cr.id} (${owner.name}) revoked, as started by ${nameOf(s, by)}`;
+    const entry = addLog(s, { actor: 'SYSTEM', kind: 'CRED_REVOKED', message, sourceIp: null, actualPlayerId: null });
+    addAlert(s, 'SECURITY_FATAL', `Fatal security activity: ${message}`, entry.id, 3);
+  }
   for (const r of s.revocations) {
     if (r.status !== 'PENDING' || r.executeAt > t) continue;
     r.status = 'DONE';
     s.blocks = s.blocks.filter((b) => b.address !== r.address);
     s.blocks.push({ address: r.address, until: null, byOwner: r.byOwner, actualPlayerId: r.actualPlayerId });
     const victim = Object.values(s.players).find((p) => p.ip === r.address);
+    let revoked = 0;
     if (victim) {
-      for (const cr of Object.values(s.credentials)) if (cr.owner === victim.id) cr.status = 'REVOKED';
+      for (const cr of Object.values(s.credentials)) {
+        if (cr.owner !== victim.id || cr.status === 'REVOKED') continue;
+        cr.status = 'REVOKED';
+        revoked++;
+      }
       note(victim, t, 'The firewall revoked all access for your workstation. Your credentials no longer work.');
     }
-    addLog(s, { actor: 'SYSTEM', kind: 'REVOKED_ALL', message: `Firewall: all access revoked for ${r.address} (${r.id})`, sourceIp: null, actualPlayerId: null });
+    const message = `Firewall: all access revoked for ${r.address} (${r.id})${victim ? `, ${revoked} of ${victim.name}'s credential${revoked === 1 ? '' : 's'} revoked` : ''}`;
+    const entry = addLog(s, { actor: 'SYSTEM', kind: 'REVOKED_ALL', message, sourceIp: null, actualPlayerId: null });
+    addAlert(s, 'SECURITY_FATAL', `Fatal security activity: ${message}`, entry.id, 3);
     // The nuclear option: cutting off one of the bank's own systems shuts the bank down, and everybody loses.
     const bankSystem = SYSTEMS.find((sys) => !sys.hidden && sys.address === r.address);
     if (bankSystem && s.status === 'RUNNING') {

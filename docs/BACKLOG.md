@@ -5,12 +5,11 @@ Move an item out of here when it ships.
 
 ## Bank and customers
 
-- **Customer balances.** Balances per account; settling a payment debits the originator account it was
-  paid from (`originAccount` / `debitedFrom`); a payment fails if funds are short. Opens up draining a
-  specific customer, or an "unusual originator" risk signal.
-- **Client needs and reminders.** Customers have needs; unmet requests send reminders and escalate;
-  fulfilled or ignored requests may feed the bank's progress bar. Requests already keep the asked-for
-  details (payee, amount, account) hidden, so a payment linked to a request can be checked against it.
+- **"We never asked for this."** When a scam request is acted on, the real customer could write back
+  confused. Discussed, not agreed.
+- **Customer senders and spoofing.** Customers now write personal messages ("Cody (Cobalt Payroll)"), so
+  a Social / Spoofed message posing as a customer looks normal, and a made-up sender name is no longer
+  an easy tell. Watch in playtests; the spoof tool may want a customer-sender option.
 - **Scam client requests.** Some incoming requests are fraud, e.g. a fake "our supplier changed banks,
   make account X their primary", like real business email compromise. Needs customers to have a known
   contact to verify against.
@@ -45,7 +44,8 @@ Agreed 2026-09-28. The Black Hat tool list itself is kept by the designer and no
     text). Lands only in the recipient's inbox, never the impersonated sender's history, so comparing
     notes exposes it; made-up names render as typed (not in the roster, so easier to spot). Tier 2.
   - _Social / Scam request_ — plant a fake Client Request from a customer to their banker (account-redirect
-    kinds: set primary / add & primary / add / remove). Looks like a normal request in the queue and adds
+    kinds: set primary / add & primary / add / remove). No free text: it is worded from the same form messages as
+    real requests (the operative sees the wording). Looks like a normal request in the queue and adds
     the usual "Client request received" system log; the leak is the hidden-host tier-2 alert. Payment-type
     scam requests (payee + amount) are an easy follow-up if wanted.
   - _Cleanup / Log wiper_ (tier 2) — delete one Master Log entry. It drops out of the log view leaving a
@@ -92,11 +92,16 @@ Agreed 2026-09-28. The Black Hat tool list itself is kept by the designer and no
   (the nuclear option), and at 6-7 players there is just one; Personal Bankers now hold both Customer Records write and Payment Queue write,
   so one banker can divert a customer and start payments to them (verification and risk sit with other
   roles); Employee Records write (reset a lockout) is IT-only.
-- **Economy balance** (scaling shipped 2026-09-29, numbers are a first guess). Targets ($20M per player,
-  $1M per Black Hat), volume ($25M per player, automatic + requested) and request rate (one per banker
-  every 2 minutes) all scale with the table; see RULES.md > Win conditions. To check in playtests:
+- **Economy balance** (retuned for balances 2026-09-29, numbers are a first guess). Targets ($15M per
+  player, $1M per Black Hat), volume (automatic capped at 80% of the target, about 1.1x offered in total)
+  and request rate (one per banker every 90s) all scale with the table; see RULES.md > Win conditions.
+  To check in playtests:
   - automatic traffic alone is below the bank target at every size, so the bank must act on requests to
-    win: is the request workload right?
+    win: is the request workload right? The margin is now tight (about 1.1x offered).
+  - wealth tiers ($250k-$2M / $5M-$15M / $30M-$60M) and the 40%-of-balance cap on payment sizes: small
+    customers mostly make small payments, so their requests are worth less to the bank;
+  - the amount factors in `scaledConfig` (0.87 automatic, 0.45 requested) were measured by simulation;
+    re-measure if payment sizing or tiers change;
   - the hacker target grows with Black Hats, but their chances per payment do not change;
   - the 20-minute timer is new (was 40);
   - time-of-day pacing (busy = 4x slow) is a first guess, and automatic payments follow it too; the

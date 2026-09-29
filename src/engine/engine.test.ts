@@ -49,6 +49,10 @@ class Sim {
   bankerOf(customerId: string): Player {
     return this.s.players[this.s.customers.find((c) => c.id === customerId)!.bankerId!];
   }
+  /** Opens floating accounts (by their 5 digits) so tests can add them to customers or pay from them. */
+  open(balance: number, ...digits: string[]): void {
+    for (const d of digits) this.s.balances[`ACC-${d}`] = balance;
+  }
   lastLog(): string {
     return this.s.logs[this.s.logs.length - 1].message;
   }
@@ -112,16 +116,17 @@ test('the economy scales with the table: targets, customers, requests and automa
     const c = s.config;
     const bankers = roleCounts(n).PERSONAL_BANKER;
     assert.equal(c.durationSec, 20 * 60);
-    assert.equal(c.whiteTarget, 20_000_000 * n, `n=${n} bank target`);
+    assert.equal(c.whiteTarget, 15_000_000 * n, `n=${n} bank target`);
     assert.equal(c.blackTarget, 1_000_000 * hackerCount(n), `n=${n} hacker target`);
     assert.equal(s.customers.length, 3 * bankers, `n=${n} customers`);
     assert.ok(new Set(s.customers.map((x) => x.name)).size === s.customers.length, 'no duplicate customers');
-    // Each banker gets a request about every 2 minutes.
-    assert.ok(Math.abs((c.requestIntervalSec * bankers) - 120) < 1e-9, `n=${n} request rate`);
-    // Expected offered volume (automatic + requested payments) is about $25m per player.
-    const requested = (c.durationSec / c.requestIntervalSec) * (1 - c.requestChangeShare) * ((c.npcMinAmount + c.maxManualAmount) / 2);
-    const automatic = (c.durationSec / c.npcIntervalSec) * ((c.npcMinAmount + c.npcMaxAmount) / 2);
-    assert.ok(Math.abs(requested + automatic - 25_000_000 * n) < 1, `n=${n} volume ${requested + automatic}`);
+    // Each banker gets a request about every 90 seconds.
+    assert.ok(Math.abs((c.requestIntervalSec * bankers) - 90) < 1e-9, `n=${n} request rate`);
+    // Expected offered volume (automatic + requested, at the measured average amounts) is at most $18m per
+    // player, and automatic traffic is capped at 80% of the bank target so it can never win on its own.
+    const requested = (c.durationSec / c.requestIntervalSec) * (1 - c.requestChangeShare) * ((0.45 * (c.npcMinAmount + c.maxManualAmount)) / 2);
+    const automatic = (c.durationSec / c.npcIntervalSec) * ((0.87 * (c.npcMinAmount + c.npcMaxAmount)) / 2);
+    assert.ok(Math.abs(automatic - Math.min(18_000_000 * n - requested, 0.8 * c.whiteTarget)) < 1, `n=${n} automatic volume ${automatic}`);
   }
   // Customers are drawn at random: different seeds, different line-ups.
   const names = (seed: number) => createGame({ seed, players: table(10), now: T0 }).customers.map((x) => x.name).join();
@@ -337,14 +342,24 @@ test('fraud pipeline: making a mule account the payee\'s primary diverts a payme
   const st = sim.run(ar.id, arCode('SETTLEMENT'), 'TRANSACTIONS', 'SETTLEMENT', 'SETTLE', { txId: tx.id });
   assert.ok(st.ok, st.message);
   assert.ok(st.message.includes(mule));
-  assert.equal(sim.s.totals.stolen, 2_000_000);
+  assert.equal(sim.s.totals.stolen, tx.amount, 'stolen = what sits in the Target Ledger accounts');
+  assert.equal(sim.s.balances[mule], tx.amount);
   assert.equal(sim.s.totals.processed, 0);
   assert.equal(sim.s.status, 'RUNNING');
 
-  // Reverse inside the window.
+  // A clawback fails while the mule account no longer holds the money...
   sim.at(100);
+  const payerBefore = sim.s.balances[tx.originAccount];
+  sim.s.balances[mule] = tx.amount - 1;
+  const blocked = sim.run(ar.id, arCode('SETTLEMENT'), 'TRANSACTIONS', 'SETTLEMENT', 'REVERSE', { txId: tx.id });
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.message, /no longer holds/);
+  assert.equal(sim.s.transactions[0].status, 'SETTLED');
+  // ...and works once it does: the money goes back to the account it came from.
+  sim.s.balances[mule] = tx.amount;
   const rev = sim.run(ar.id, arCode('SETTLEMENT'), 'TRANSACTIONS', 'SETTLEMENT', 'REVERSE', { txId: tx.id });
   assert.ok(rev.ok, rev.message);
+  assert.equal(sim.s.balances[tx.originAccount], payerBefore + tx.amount);
   assert.equal(sim.s.totals.stolen, 0);
 
   // A reversed payment cannot be reversed again; and the window closes.
@@ -365,6 +380,7 @@ test('the hidden system assessment flags recent primary changes; verifying clear
   const tx = sim.s.transactions[0];
   const payee = tx.beneficiaryId;
   sim.at(20);
+  sim.open(0, '12345');
   const add = sim.run(pb.id, sim.code(pb.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS'), 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: payee, account: '12345', makePrimary: 'YES' });
   assert.ok(add.ok, add.message);
   sim.run(ar.id, sim.code(ar.id, 'TRANSACTIONS', 'RISK_CHECK'), 'TRANSACTIONS', 'RISK_CHECK', 'RUN_RISK_CHECK', { txId: tx.id });
@@ -611,8 +627,7 @@ test('manual payments come from a typed customer account, and the queue shows bo
   const create = (originAccount: string) =>
     sim.run('p0', code, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'CREATE_TRANSACTION', { originAccount, beneficiaryId: 'CU2', amount: '1000000' });
 
-  assert.equal(create('00000').message, 'No customer account with that number.');
-  assert.equal(create(sim.s.targets[0].account).message, 'No customer account with that number.', 'a floating account is not an originator');
+  assert.equal(create('00000').message, 'There is no account with that number.');
   assert.ok(create(from.replace('ACC-', '')).ok, 'digits alone are accepted');
 
   const tx = sim.s.transactions.at(-1)!;
@@ -621,6 +636,14 @@ test('manual payments come from a typed customer account, and the queue shows bo
   const row = sim.run('p0', code, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'VIEW_QUEUE', {}).lines!.find((l) => l.startsWith(tx.id))!;
   assert.ok(row.includes(`${cust.id} ${from} -> CU2 ${ben.primary}`), row);
   assert.ok(!row.includes(cust.name) && !row.includes(ben.name), 'queue rows show codes, not names');
+
+  // A floating account can pay too; its originator shows as UNKNOWN.
+  const mule = sim.s.targets[0].account;
+  assert.ok(create(mule).ok);
+  const floating = sim.s.transactions.at(-1)!;
+  assert.equal(floating.customerId, null);
+  const frow = sim.run('p0', code, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'VIEW_QUEUE', {}).lines!.find((l) => l.startsWith(floating.id))!;
+  assert.ok(frow.includes(`UNKNOWN ${mule} -> CU2`), frow);
 });
 
 test('payment history records every step with the credential owner and the real actor', () => {
@@ -754,7 +777,7 @@ test('client requests: bankers are assigned, requests arrive over time, and each
 });
 
 test('client requests close by linking a payment or an account change, or by archiving with a reason', () => {
-  const sim = new Sim({ requestChangeShare: 0.5 });
+  const sim = new Sim({ requestChangeShare: 0.5, requestDeadlineSec: 9999, urgentDeadlineSec: 9999 }); // deadlines are tested separately
   grantMasterAccess(sim.s, 'p0');
   sim.at(sim.s.config.requestIntervalSec * 12 + 1);
   const pay = sim.s.requests.find((r) => r.kind === 'PAYMENT')!;
@@ -816,6 +839,7 @@ test('Permissions lives in Security; every account change waits in the Verificat
   const view = (show: string) => sim.run(pb.id, ver, 'CLIENT_DATA', 'VERIFICATION', 'VIEW_VERIFICATION', { show }).lines!;
   sim.at(5);
   assert.deepEqual(view('PENDING'), ['Nothing here.']);
+  sim.open(0, '54321');
   sim.run(pb.id, sim.code(pb.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS'), 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: 'CU2', account: '54321', makePrimary: 'YES' });
   // Adding an account as primary is two changes: the account, then the new primary. Each waits for verification.
   const pending = view('PENDING');
@@ -914,6 +938,7 @@ test('the risk queue flags unverified payee primaries and unverified originator 
   const cd = sim.code('p0', 'CLIENT_DATA', null);
   const tx = sim.code('p0', 'TRANSACTIONS', null);
   sim.at(1);
+  sim.open(5_000_000, '11111', '22222');
   // CU3 gets a new primary (unverified); CU4 gets a new account (unverified) that then sends money.
   sim.run('p0', cd, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: 'CU3', account: '11111', makePrimary: 'YES' });
   sim.run('p0', cd, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: 'CU4', account: '22222' });
@@ -943,6 +968,7 @@ test('bankers can only change their own customers\' accounts; a whole-system Cli
   const add = (customerId: string, account: string) =>
     sim.run(a.id, code, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId, account });
   sim.at(1);
+  sim.open(0, '31313', '32323', '34343');
   assert.ok(add(mine.id, '31313').ok);
   assert.equal(add(theirs.id, '32323').message, `${theirs.id} is not one of ${a.name}'s customers.`);
   assert.match(sim.run(a.id, code, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'SET_PRIMARY', { customerId: theirs.id, account: theirs.accounts[0] }).message, /not one of/);
@@ -972,7 +998,7 @@ test('Firewall shows every module and its status; the registry lists active cred
   const [it] = sim.byRole('IT_SPECIALIST');
   const perms = sim.code(it.id, 'SECURITY', 'PERMISSIONS');
   const reg = (show: string) => sim.run(it.id, perms, 'SECURITY', 'PERMISSIONS', 'VIEW_PERMISSIONS', { show }).lines!;
-  const victim = Object.values(sim.s.credentials).find((c) => c.owner === admin.id)!;
+  const victim = Object.values(sim.s.credentials).find((c) => c.owner === admin.id && c.system !== 'SECURITY')!;
   sim.run(it.id, perms, 'SECURITY', 'PERMISSIONS', 'REVOKE_CREDENTIAL', { credentialId: victim.id });
   assert.ok(!reg('ACTIVE').some((l) => l.startsWith(victim.id + ' ')));
   assert.ok(reg('ALL').some((l) => l.startsWith(victim.id + ' ') && l.includes('REVOKED')));
@@ -1319,14 +1345,13 @@ test('Social / Scam request: plants an open Client Request in the banker\'s queu
   const hostCode = sim.code(black.id, 'BLACKHAT_DB', null);
   const cust = sim.s.customers[0];
   const banker = sim.s.players[cust.bankerId!];
-  const scam = (customer: string, kind: string, account: string, text: string) => sim.run(black.id, hostCode, 'BLACKHAT_DB', 'SOCIAL', 'SCAM_REQUEST', { customer, kind, account, text });
+  const scam = (customer: string, kind: string, account: string) => sim.run(black.id, hostCode, 'BLACKHAT_DB', 'SOCIAL', 'SCAM_REQUEST', { customer, kind, account });
 
-  assert.match(scam('Nobody Inc', 'SET_PRIMARY', '18392', 'x').message, /No customer/);
-  assert.match(scam(cust.name, 'SET_PRIMARY', 'nope', 'x').message, /account/);
-  assert.match(scam(cust.name, 'SET_PRIMARY', '18392', '').message, /message/i);
+  assert.match(scam('Nobody Inc', 'SET_PRIMARY', '18392').message, /No customer/);
+  assert.match(scam(cust.name, 'SET_PRIMARY', 'nope').message, /account/);
 
   sim.at(5);
-  const r = scam(cust.name, 'SET_PRIMARY', '18392', 'We moved banks, pay us at 18392 from now on.');
+  const r = scam(cust.name, 'SET_PRIMARY', '18392');
   assert.ok(r.ok, r.message);
   const req = sim.s.requests.at(-1)!;
   assert.equal(req.customerId, cust.id);
@@ -1334,10 +1359,13 @@ test('Social / Scam request: plants an open Client Request in the banker\'s queu
   assert.equal(req.kind, 'SET_PRIMARY');
   assert.equal(req.account, 'ACC-18392');
   assert.equal(req.status, 'OPEN');
+  // Worded from the same forms as real requests: the customer's name, the account, no tell-tale free text.
+  assert.ok(req.text.includes('18392') && req.text.includes(cust.name), req.text);
+  assert.ok(r.lines!.some((l) => l.includes(req.text)), 'the operative sees what was sent');
 
   // The banker sees it as an ordinary open request.
   const seen = sim.run(banker.id, sim.code(banker.id, 'CLIENT_DATA', 'CLIENT_REQUESTS'), 'CLIENT_DATA', 'CLIENT_REQUESTS', 'VIEW_REQUESTS');
-  assert.ok(seen.lines!.some((l) => l.includes(req.id)) && seen.lines!.some((l) => l.includes('We moved banks')), 'the scam request is in the queue');
+  assert.ok(seen.lines!.some((l) => l.includes(req.id)) && seen.lines!.some((l) => l.includes(req.text)), 'the scam request is in the queue');
 
   // Looks like a normal incoming request in the Master Log; the leak is the hidden-host tier-2 alert.
   assert.ok(sim.s.logs.some((l) => l.kind === 'CLIENT_REQUEST' && l.message.includes(req.id)));
@@ -1506,4 +1534,313 @@ test('Employee Records: reset a lockout', () => {
   assert.ok(r.ok, r.message);
   assert.equal(sim.lastLog(), `${analyst.name} reset the lockout on ${pb.ip} (${pb.name})`);
   assert.ok(sim.run(pb.id, sim.code(pb.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS'), 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS').ok, 'unlocked right away');
+});
+
+test('balances: fixed wealth split, every account funded, and only existing accounts can be added or pay', () => {
+  const sim = new Sim({ autoProcess: false });
+  const s = sim.s;
+  // 12 customers at 10 players: 20% wealthy, 30% mid, the rest small.
+  const tiers = s.customers.map((c) => c.wealth);
+  assert.deepEqual([tiers.filter((t) => t === 'WEALTHY').length, tiers.filter((t) => t === 'MID').length, tiers.filter((t) => t === 'SMALL').length], [2, 4, 6]);
+  const total = (id: string) => s.customers.find((c) => c.id === id)!.accounts.reduce((a, acc) => a + s.balances[acc], 0);
+  for (const c of s.customers) {
+    const t = total(c.id);
+    if (c.wealth === 'SMALL') assert.ok(t >= 240_000 && t <= 2_010_000, `${c.id} ${t}`);
+    if (c.wealth === 'WEALTHY') assert.ok(t >= 29_990_000, `${c.id} ${t}`);
+  }
+  assert.ok(Object.values(s.balances).some((b) => b > 0 && b < 1_000_000), 'some accounts start under $1M');
+  for (const tg of s.targets) assert.equal(s.balances[tg.account], 0, 'mule accounts start empty');
+  for (const id of s.playerOrder) {
+    const b = s.balances[s.players[id].bankAccount];
+    assert.ok(b >= 1000 && b <= 100_000);
+  }
+
+  grantMasterAccess(s, 'p0');
+  const cd = sim.code('p0', 'CLIENT_DATA', null);
+  const txc = sim.code('p0', 'TRANSACTIONS', null);
+  const go = (module: string, fn: string, params: Record<string, string>) => sim.run('p0', txc, 'TRANSACTIONS', module, fn, params);
+  sim.at(1);
+  // A made-up number does not exist; a player's own account floats and can be added or pay.
+  assert.equal(sim.run('p0', cd, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: 'CU1', account: '00001' }).message, 'There is no account ACC-00001.');
+  const own = sim.s.players.p5.bankAccount;
+  assert.ok(sim.run('p0', cd, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: 'CU1', account: own }).ok);
+
+  // Settling moves the money at once; a payment the originator cannot cover FAILS at settlement.
+  const payer = sim.s.customers.find((c) => c.wealth === 'SMALL')!;
+  const payee = sim.s.customers.find((c) => c.id !== payer.id)!;
+  const pay = (amount: number) => {
+    go('PAYMENT_QUEUE', 'CREATE_TRANSACTION', { originAccount: payer.primary, beneficiaryId: payee.id, amount: String(amount) });
+    const id = sim.s.transactions.at(-1)!.id;
+    go('RISK_CHECK', 'RUN_RISK_CHECK', { txId: id });
+    go('AUTHORIZATION', 'APPROVE', { txId: id });
+    return { id, r: go('SETTLEMENT', 'SETTLE', { txId: id }) };
+  };
+  const before = sim.s.balances[payer.primary];
+  const into = sim.s.balances[payee.primary];
+  const small = pay(10_000);
+  assert.equal(sim.s.balances[payer.primary], before - 10_000);
+  assert.equal(sim.s.balances[payee.primary], into + 10_000);
+  assert.ok(small.r.ok);
+  const big = pay(before);
+  assert.match(big.r.message, /FAILED: insufficient funds/);
+  const failed = sim.s.transactions.find((t) => t.id === big.id)!;
+  assert.equal(failed.status, 'FAILED');
+  assert.equal(sim.s.balances[payer.primary], before - 10_000, 'nothing moved');
+  assert.ok(go('SETTLEMENT', 'VIEW_SETTLEMENT', { show: 'ALL' }).lines!.some((l) => l.startsWith(big.id) && l.includes('[FAILED]')));
+
+  // A planted user's account number is made up: it does not exist.
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  grantMasterAccess(sim.s, black.id);
+  sim.run(black.id, sim.code(black.id, 'BLACKHAT_DB', null), 'BLACKHAT_DB', 'INFILTRATION', 'CREATE_USER', { name: 'Ghost', role: 'PERSONAL_BANKER', ip: '10.1.0.99' });
+  const fake = Object.values(sim.s.players).find((p) => p.fake)!;
+  assert.match(fake.bankAccount, /^ACC-\d{5}$/);
+  assert.equal(fake.bankAccount in sim.s.balances, false);
+  assert.equal(getPlayerView(sim.s, 'p5').me.bankBalance, sim.s.balances[own]);
+});
+
+test('request deadlines: a follow-up halfway, then expiry, a complaint to the Bank Manager, and a walkout on the second', () => {
+  // Only the two opening requests (both payments, not urgent), and no automatic traffic to get in the way.
+  const sim = new Sim({ requestIntervalSec: 99999, npcIntervalSec: 99999, requestChangeShare: 0, urgentShare: 0 });
+  const [r1, r2] = sim.s.requests;
+  assert.equal(r1.dueAt, 120);
+  assert.equal(r1.remindAt, 60);
+  const [manager] = sim.byRole('BANK_MANAGER');
+  const req = (id: string) => sim.s.requests.find((r) => r.id === id)!;
+  const cust = () => sim.s.customers.find((c) => c.id === r1.customerId)!;
+  const banker = () => sim.s.players[r1.bankerId!];
+
+  // Archive the first; the halfway follow-up brings it back, on the same REQ id.
+  grantMasterAccess(sim.s, 'p0');
+  const cd = sim.code('p0', 'CLIENT_DATA', null);
+  sim.at(10);
+  assert.ok(sim.run('p0', cd, 'CLIENT_DATA', 'CLIENT_REQUESTS', 'ARCHIVE_REQUEST', { requestId: r1.id, reason: 'looks odd' }).ok);
+  assert.equal(req(r1.id).status, 'ARCHIVED');
+  sim.at(61);
+  assert.equal(req(r1.id).status, 'OPEN', 'the customer is still waiting: the request comes back');
+  assert.equal(req(r1.id).reminders.length, 1);
+  const inbox = banker().messages.at(-1)!;
+  assert.equal(inbox.text, req(r1.id).reminders[0].text, 'the banker is pinged with the same follow-up');
+  const who = cust().person ? cust().name : `${cust().contact} (${cust().name})`;
+  assert.equal(getPlayerView(sim.s, banker().id).me.messages.at(-1)!.fromName, who);
+  assert.ok(sim.s.logs.some((l) => l.message === `Client follow-up received on ${r1.id}`));
+  const view = sim.run('p0', cd, 'CLIENT_DATA', 'CLIENT_REQUESTS', 'VIEW_REQUESTS', {}).lines!;
+  assert.ok(view[0].startsWith(r1.id) && view[0].includes('REMINDER') && view[0].includes('due in 59s'), view[0]);
+  assert.ok(view.some((l) => l.includes('follow-up:')) && view.some((l) => l.includes('archived earlier by') && l.includes('looks odd')), view.join('\n'));
+
+  // Nobody acts: at the deadline it expires, the customer takes a strike and complains to the Bank Manager.
+  sim.at(121);
+  assert.equal(req(r1.id).status, 'EXPIRED');
+  assert.equal(req(r1.id).outcome, 'MISSED');
+  assert.equal(cust().strikes, 1);
+  assert.equal(cust().suspended, false);
+  const complaint = sim.s.players[manager.id].messages.find((m) => m.from === (cust().person ? cust().name : `${cust().contact} (${cust().name})`));
+  assert.ok(complaint && complaint.text.includes(banker().name), 'the complaint names the banker');
+  assert.ok(sim.s.logs.some((l) => l.message === `Customer complaint: ${r1.id} expired`));
+  // An expired request can no longer be acted on.
+  const txc = sim.code('p0', 'TRANSACTIONS', null);
+  const late = sim.run('p0', txc, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'CREATE_TRANSACTION', { originAccount: r1.originAccount!, beneficiaryId: r1.payeeId!, amount: String(r1.amount), requestId: r1.id });
+  assert.equal(late.message, `${r1.id} has expired.`);
+
+  // A second miss from the same customer: they stop doing business for the day.
+  cust().strikes = 1;
+  const again = { ...structuredClone(req(r2.id)), id: 'REQ-50', customerId: r1.customerId, bankerId: r1.bankerId, t: sim.sec, dueAt: sim.sec + 5, remindAt: sim.sec + 99, outcome: null, status: 'OPEN' as const, reminders: [] };
+  sim.s.requests.push(again);
+  sim.at(sim.sec + 6);
+  assert.equal(cust().suspended, true);
+  assert.equal(cust().strikes, 2);
+  assert.ok(sim.s.logs.some((l) => l.message === `${cust().id} suspended business with the bank for today`));
+  assert.ok(sim.run('p0', cd, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS', { show: 'ALL' }).lines!.some((l) => l.startsWith(cust().id) && l.includes('SUSPENDED')));
+  // No new requests or automatic payments involve them from now on.
+  sim.s.config.requestIntervalSec = 1;
+  sim.s.config.npcIntervalSec = 1;
+  const before = { req: sim.s.requests.length, tx: sim.s.transactions.length };
+  sim.at(sim.sec + 60);
+  const id = cust().id;
+  assert.ok(sim.s.requests.length > before.req && sim.s.transactions.length > before.tx);
+  assert.ok(!sim.s.requests.slice(before.req).some((r) => r.customerId === id || r.payeeId === id));
+  assert.ok(!sim.s.transactions.slice(before.tx).some((t) => t.customerId === id || t.beneficiaryId === id));
+});
+
+test('request deadlines: paying as asked counts even when the request was archived instead of linked', () => {
+  const sim = new Sim({ requestIntervalSec: 99999, npcIntervalSec: 99999, requestChangeShare: 0, urgentShare: 1 });
+  const r = sim.s.requests[0];
+  assert.equal(r.urgent, true);
+  assert.equal(r.dueAt, 60, 'urgent requests have a minute');
+  assert.ok(/urgent|time-critical|emergency|immediately|priority/i.test(r.text), r.text);
+  grantMasterAccess(sim.s, 'p0');
+  const cd = sim.code('p0', 'CLIENT_DATA', null);
+  const txc = sim.code('p0', 'TRANSACTIONS', null);
+  const go = (module: string, fn: string, params: Record<string, string>) => sim.run('p0', txc, 'TRANSACTIONS', module, fn, params);
+  sim.at(5);
+  assert.ok(sim.run('p0', cd, 'CLIENT_DATA', 'CLIENT_REQUESTS', 'ARCHIVE_REQUEST', { requestId: r.id, reason: 'will pay it directly' }).ok);
+  // The payment is made exactly as asked, without the request id.
+  assert.ok(go('PAYMENT_QUEUE', 'CREATE_TRANSACTION', { originAccount: r.originAccount!, beneficiaryId: r.payeeId!, amount: String(r.amount) }).ok);
+  const tx = sim.s.transactions.at(-1)!;
+  sim.at(31);
+  const now = () => sim.s.requests.find((x) => x.id === r.id)!;
+  assert.equal(now().reminders.length, 0, 'nothing to chase: the payment is on its way');
+  assert.equal(now().status, 'DONE');
+  assert.equal(now().txId, tx.id);
+  go('RISK_CHECK', 'RUN_RISK_CHECK', { txId: tx.id });
+  go('AUTHORIZATION', 'APPROVE', { txId: tx.id });
+  const before = sim.s.totals.processed;
+  assert.ok(go('SETTLEMENT', 'SETTLE', { txId: tx.id }).ok);
+  assert.equal(sim.s.totals.processed - before, r.amount, 'it counts toward the bank target');
+  sim.at(61);
+  assert.equal(now().outcome, 'MET');
+  assert.equal(sim.s.customers.find((c) => c.id === r.customerId)!.strikes, 0);
+});
+
+test('request deadlines: a scam request is never chased and expires without a complaint', () => {
+  const sim = new Sim({ requestIntervalSec: 99999, npcIntervalSec: 99999 });
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  grantMasterAccess(sim.s, black.id);
+  const cust = sim.s.customers[0];
+  sim.at(1);
+  const made = sim.run(black.id, sim.code(black.id, 'BLACKHAT_DB', null), 'BLACKHAT_DB', 'SOCIAL', 'SCAM_REQUEST', { customer: cust.id, kind: 'SET_PRIMARY', account: sim.s.targets[0].account });
+  assert.ok(made.ok, made.message);
+  const scam = sim.s.requests.at(-1)!;
+  assert.equal(scam.dueAt, 121, 'it shows a deadline like any other request');
+  const [manager] = sim.byRole('BANK_MANAGER');
+  const managerMail = sim.s.players[manager.id].messages.length;
+  sim.at(200);
+  const now = sim.s.requests.find((r) => r.id === scam.id)!;
+  assert.equal(now.reminders.length, 0);
+  assert.equal(now.status, 'EXPIRED');
+  assert.equal(sim.s.customers.find((c) => c.id === cust.id)!.strikes, 0);
+  assert.ok(!sim.s.logs.some((l) => l.message === `Customer complaint: ${scam.id} expired`));
+  assert.ok(sim.s.players[manager.id].messages.length >= managerMail);
+});
+
+test('phishing: every banker gets 1-5 obvious scam messages, from made-up customers, that lapse quietly', () => {
+  const sim = new Sim({ requestIntervalSec: 99999, npcIntervalSec: 99999 });
+  const bankers = sim.byRole('PERSONAL_BANKER').map((p) => p.id);
+  for (const id of bankers) {
+    const n = sim.s.phishSchedule.filter((x) => x.bankerId === id).length;
+    assert.ok(n >= 1 && n <= 5, `${id}: ${n}`);
+  }
+  assert.ok(sim.s.phishSchedule.every((x) => bankers.includes(x.bankerId)), 'only Personal Bankers get them');
+  const total = sim.s.phishSchedule.length;
+  const [first] = sim.s.phishSchedule;
+  sim.at(first.at);
+  const p = sim.s.requests.find((r) => r.phish)!;
+  assert.equal(p.bankerId, first.bankerId);
+  assert.ok(!sim.s.customers.some((c) => c.id === p.customerId), `${p.customerId} is not a real customer`);
+  assert.ok(p.text.includes(p.customerId), 'it claims the fake tag');
+  const acct = p.text.match(/account (\d{5})/)![1];
+  assert.equal(`ACC-${acct}` in sim.s.balances, false, 'the account it names does not exist');
+  assert.equal(p.originAccount, null);
+  assert.ok(sim.s.logs.some((l) => l.message === `Client request ${p.id} received`), 'logged like any request');
+
+  // The banker sees it like any other request, from its made-up sender.
+  const code = sim.code(p.bankerId!, 'CLIENT_DATA', 'CLIENT_REQUESTS');
+  const view = sim.run(p.bankerId!, code, 'CLIENT_DATA', 'CLIENT_REQUESTS', 'VIEW_REQUESTS').lines!;
+  assert.ok(view.some((l) => l.startsWith(p.id) && l.includes(`${p.sender} -> `)), view.join('\n'));
+
+  // Nobody chases it or complains; archived, it stays archived past the deadline.
+  assert.ok(sim.run(p.bankerId!, code, 'CLIENT_DATA', 'CLIENT_REQUESTS', 'ARCHIVE_REQUEST', { requestId: p.id, reason: 'obvious phishing' }).ok);
+  const mail = Object.values(sim.s.players).reduce((n, x) => n + x.messages.length, 0);
+  for (let t = sim.sec; t < sim.s.config.durationSec - 1; t += 10) sim.at(t);
+  const now = sim.s.requests.find((r) => r.id === p.id)!;
+  assert.equal(now.reminders.length, 0);
+  assert.equal(now.outcome, 'MISSED');
+  assert.equal(now.status, 'ARCHIVED');
+  assert.equal(Object.values(sim.s.players).reduce((n, x) => n + x.messages.length, 0) >= mail, true);
+  assert.equal(sim.s.requests.filter((r) => r.phish).length, total, 'all of them arrived');
+  assert.ok(sim.s.requests.filter((r) => r.phish && r.status === 'EXPIRED').length > 0, 'unarchived ones just expire');
+  assert.ok(sim.s.customers.every((c) => c.strikes === 0 || !sim.s.requests.some((r) => r.phish && r.customerId === c.id)));
+});
+
+test('security alerts: firewall shutdowns and credential revocations raise alerts naming the credential owner', () => {
+  const sim = new Sim();
+  const [admin] = sim.byRole('IT_SPECIALIST');
+  const [ar] = sim.byRole('ACCOUNTS_RECEIVABLES');
+  const fw = sim.code(admin.id, 'SECURITY', 'FIREWALL');
+  const fwRun = (fn: string, q: Record<string, string>) => sim.run(admin.id, fw, 'SECURITY', 'FIREWALL', fn, q);
+  const last = () => sim.s.alerts.at(-1)!;
+  sim.at(2);
+
+  assert.ok(fwRun('BLOCK_ADDRESS', { address: ar.ip }).ok);
+  assert.equal(last().kind, 'SECURITY_SUSPICIOUS');
+  assert.equal(last().message, `Suspicious security activity: ${admin.name} blocked ${ar.ip} for ${sim.s.config.blockSec}s`);
+  assert.equal(last().logId, sim.s.logs.at(-1)!.id);
+  assert.ok(fwRun('SET_SECURITY', { target: 'TRANSACTIONS.SETTLEMENT', security: 'OFF' }).ok);
+  assert.match(last().message, /switched security OFF for Settlement/);
+  assert.ok(fwRun('SET_MODULE_STATUS', { target: 'TRANSACTIONS.RISK_CHECK', status: 'OFFLINE' }).ok);
+  assert.match(last().message, /took .* offline/);
+
+  // Restoring things is not suspicious.
+  const n = sim.s.alerts.length;
+  assert.ok(fwRun('UNBLOCK_ADDRESS', { address: ar.ip }).ok);
+  assert.ok(fwRun('SET_SECURITY', { target: 'TRANSACTIONS.SETTLEMENT', security: 'ON' }).ok);
+  assert.ok(fwRun('SET_MODULE_STATUS', { target: 'TRANSACTIONS.RISK_CHECK', status: 'ONLINE' }).ok);
+  assert.equal(sim.s.alerts.length, n);
+
+  // Status lists the modules first, then pending revocations and blocks.
+  assert.ok(fwRun('BLOCK_ADDRESS', { address: ar.ip }).ok);
+  assert.ok(fwRun('REVOKE_ALL_ACCESS', { address: ar.ip }).ok);
+  assert.equal(last().kind, 'SECURITY_FATAL');
+  assert.equal(last().tier, 3);
+  const lines = fwRun('VIEW_STATUS', {}).lines!;
+  const firstExtra = lines.findIndex((l) => /^(PENDING|BLOCKED)/.test(l));
+  assert.ok(firstExtra > 0 && lines.slice(firstExtra).every((l) => /^(PENDING|BLOCKED)/.test(l)));
+
+  // The revocation going through is fatal too, and says how many credentials it took.
+  sim.at(sim.sec + sim.s.config.revokeCountdownSec + 1);
+  assert.equal(last().kind, 'SECURITY_FATAL');
+  const revoked = Object.values(sim.s.credentials).filter((cr) => cr.owner === ar.id).length;
+  assert.equal(last().message, `Fatal security activity: Firewall: all access revoked for ${ar.ip} (R1), ${revoked} of ${ar.name}'s credentials revoked`);
+
+  // Revoking a single credential.
+  const [banker] = sim.byRole('PERSONAL_BANKER');
+  const cred = Object.values(sim.s.credentials).find((cr) => cr.owner === banker.id)!;
+  assert.ok(sim.run(admin.id, sim.code(admin.id, 'SECURITY', 'PERMISSIONS'), 'SECURITY', 'PERMISSIONS', 'REVOKE_CREDENTIAL', { credentialId: cred.id }).ok);
+  assert.equal(last().message, `Suspicious security activity: ${admin.name} revoked credential ${cred.id} (${banker.name})`);
+});
+
+test('permissions: security write credentials are revoked after a cancellable countdown; issuing one is fatal', () => {
+  const sim = new Sim();
+  const [admin] = sim.byRole('IT_SPECIALIST');
+  const [manager] = sim.byRole('BANK_MANAGER');
+  const [banker] = sim.byRole('PERSONAL_BANKER');
+  const perms = (pid: string) => sim.code(pid, 'SECURITY', 'PERMISSIONS');
+  const run = (pid: string, fn: string, q: Record<string, string>) => sim.run(pid, perms(pid), 'SECURITY', 'PERMISSIONS', fn, q);
+  const last = () => sim.s.alerts.at(-1)!;
+  const mgrPerms = Object.values(sim.s.credentials).find((cr) => cr.owner === manager.id && cr.module === 'PERMISSIONS')!;
+  sim.at(2);
+
+  // Started, not done: the credential still works, the alert is fatal, and the owner is told.
+  assert.ok(run(admin.id, 'REVOKE_CREDENTIAL', { credentialId: mgrPerms.id }).ok);
+  assert.equal(sim.s.credentials[mgrPerms.id].status, 'ACTIVE');
+  assert.equal(last().kind, 'SECURITY_FATAL');
+  assert.ok(sim.s.players[manager.id].activity.some((a) => a.text.includes(`${mgrPerms.id}`) && a.text.includes('will be revoked')));
+  assert.match(run(admin.id, 'REVOKE_CREDENTIAL', { credentialId: mgrPerms.id }).message, /already being revoked/);
+  assert.ok(run(manager.id, 'VIEW_PERMISSIONS', {}).lines![0].startsWith(`PENDING  revoke ${mgrPerms.id}`));
+
+  // The owner cancels it with the very credential under threat.
+  assert.ok(run(manager.id, 'CANCEL_REVOKE', { credentialId: mgrPerms.id }).ok);
+  sim.at(2 + sim.s.config.revokeCountdownSec + 1);
+  assert.equal(sim.s.credentials[mgrPerms.id].status, 'ACTIVE');
+  assert.match(run(manager.id, 'CANCEL_REVOKE', { credentialId: mgrPerms.id }).message, /not being revoked/);
+
+  // Left alone, it goes through.
+  assert.ok(run(admin.id, 'REVOKE_CREDENTIAL', { credentialId: mgrPerms.id }).ok);
+  sim.at(sim.sec + sim.s.config.revokeCountdownSec + 1);
+  assert.equal(sim.s.credentials[mgrPerms.id].status, 'REVOKED');
+  assert.ok(last().message.endsWith(`Credential ${mgrPerms.id} (${manager.name}) revoked, as started by ${admin.name}`));
+
+  // Other credentials go at once.
+  const bankerCred = Object.values(sim.s.credentials).find((cr) => cr.owner === banker.id)!;
+  assert.ok(run(admin.id, 'REVOKE_CREDENTIAL', { credentialId: bankerCred.id }).ok);
+  assert.equal(sim.s.credentials[bankerCred.id].status, 'REVOKED');
+  assert.equal(last().kind, 'SECURITY_SUSPICIOUS');
+
+  // Issuing: any credential is suspicious, Firewall or Permissions write is fatal.
+  assert.ok(run(admin.id, 'CREATE_CREDENTIAL', { owner: banker.id, scope: 'CLIENT_DATA.CUSTOMER_RECORDS', permission: 'READ' }).ok);
+  assert.equal(last().kind, 'SECURITY_SUSPICIOUS');
+  assert.match(last().message, new RegExp(`${admin.name} issued credential C[0-9]+ to ${banker.name}`));
+  assert.ok(run(admin.id, 'CREATE_CREDENTIAL', { owner: banker.id, scope: 'SECURITY.PERMISSIONS', permission: 'WRITE' }).ok);
+  assert.equal(last().kind, 'SECURITY_FATAL');
+  assert.ok(run(admin.id, 'CREATE_CREDENTIAL', { owner: banker.id, scope: 'SECURITY.*', permission: 'WRITE' }).ok);
+  assert.equal(last().kind, 'SECURITY_FATAL');
 });

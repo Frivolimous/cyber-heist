@@ -13,6 +13,7 @@ export type TxStatus =
   | 'HELD'
   | 'REJECTED'
   | 'SETTLED'
+  | 'FAILED' // settlement found too little money in the originator account
   | 'REVERSED';
 export type RiskResult = 'LOW' | 'MEDIUM' | 'HIGH';
 
@@ -45,6 +46,12 @@ export interface GameConfig {
   autoProcessDelaySec: number;
   requestIntervalSec: number; // derived: one client request (bank-wide) every N seconds
   requestChangeShare: number; // share of requests that ask for an account change instead of a payment (0..1)
+  requestDeadlineSec: number; // a request expires if what it asks for has not happened within this
+  urgentDeadlineSec: number; // ...or this, for an urgent payment request
+  urgentShare: number; // share of payment requests that are urgent (0..1)
+  strikesToSuspend: number; // expired requests before a customer stops doing business for the day
+  phishPerBankerMin: number; // each Personal Banker gets this many phishing messages per game...
+  phishPerBankerMax: number; // ...up to this many
   blockSec: number; // how long a Firewall block lasts
   revokeCountdownSec: number; // how long anyone has to cancel a "revoke all access"
   crackRevealSec: number; // Access / Code crack: seconds between digit reveals (4 digits ~= a minute)
@@ -102,6 +109,8 @@ export interface Credential {
   status: 'ACTIVE' | 'REVOKED';
   issuedBy: PlayerId | null; // null = issued at game start
   createdAt: number;
+  /** A security credential being revoked: it stays ACTIVE until `at`, and can be cancelled until then. */
+  pendingRevoke?: { at: number; byOwner: PlayerId; actualPlayerId: PlayerId } | null;
 }
 
 export interface ModuleState {
@@ -173,7 +182,14 @@ export interface Customer {
   originalPrimary: string;
   lastModifiedAt: number | null;
   history: AccountChange[];
+  wealth: WealthTier; // ground truth: how much money they started with (balances live in GameState.balances)
+  person: boolean; // a private person rather than a company (changes how they sign their messages)
+  contact: string; // who writes for them: a made-up first name for a company, the person's own name otherwise
+  strikes: number; // requests the bank let expire
+  suspended: boolean; // stopped doing business with the bank for the day (after strikesToSuspend expiries)
 }
+
+export type WealthTier = 'SMALL' | 'MID' | 'WEALTHY';
 
 export type RequestKind = 'PAYMENT' | 'ADD_ACCOUNT' | 'ADD_AND_PRIMARY' | 'SET_PRIMARY' | 'REMOVE_ACCOUNT';
 
@@ -190,7 +206,15 @@ export interface ClientRequest {
   amount: number | null; // PAYMENT
   originAccount: string | null; // PAYMENT: which of their accounts to pay from
   account: string | null; // account requests: the account to add / make primary / remove
-  status: 'OPEN' | 'DONE' | 'ARCHIVED';
+  urgent: boolean; // shorter deadline (urgentDeadlineSec)
+  dueAt: number; // game seconds: if what was asked has not happened by then, the request expires
+  remindAt: number; // game seconds: halfway to the deadline, the customer chases it
+  reminders: { t: number; text: string }[]; // follow-ups on the same request, oldest first
+  outcome: 'MET' | 'MISSED' | null; // decided at the deadline
+  scam?: boolean; // ground truth: planted by a Black Hat (Social / Scam request); no real customer is waiting
+  phish?: boolean; // an obvious phishing message (fake customer tag, no real sender); customerId is then made up
+  sender?: string; // who the request claims to be from, when that is not a customer (phishing)
+  status: 'OPEN' | 'DONE' | 'ARCHIVED' | 'EXPIRED';
   closedAt: number | null;
   closedBy: PlayerId | null; // credential owner
   closedByActual: PlayerId | null; // who really did it
@@ -201,7 +225,7 @@ export interface ClientRequest {
 /** One step in a payment's life. `by` is what the records show (credential owner); `actualPlayerId` is the truth. */
 export interface TxEvent {
   t: number; // game seconds
-  action: 'CREATED' | 'RISK_CHECKED' | 'APPROVED' | 'HELD' | 'REJECTED' | 'SETTLED' | 'REVERSED';
+  action: 'CREATED' | 'RISK_CHECKED' | 'APPROVED' | 'HELD' | 'REJECTED' | 'SETTLED' | 'FAILED' | 'REVERSED';
   by: PlayerId | 'SYSTEM';
   actualPlayerId: PlayerId | null; // null for SYSTEM
   detail: string | null;
@@ -210,8 +234,8 @@ export interface TxEvent {
 export interface Transaction {
   id: string;
   amount: number;
-  customerId: string; // originator (the customer paying)
-  originAccount: string; // which of the originator's accounts it is paid from
+  customerId: string | null; // originator (the customer paying); null = a floating account, shown as UNKNOWN
+  originAccount: string; // the account it is paid from
   beneficiaryId: string; // the customer being paid (CU..); paid into their primary account at settlement
   origin: 'NPC' | 'PLAYER';
   createdBy: PlayerId | null;
@@ -305,10 +329,20 @@ export interface GameState {
   hostLog: HostLogEntry[];
   revocations: Revocation[];
   lastRequestAt: number; // game seconds
+  phishSchedule: { at: number; bankerId: PlayerId }[]; // phishing messages still to arrive, soonest first
   transactions: Transaction[];
+  /**
+   * Every account that exists, with its balance: customer accounts, Target Ledger (mule) accounts, player
+   * accounts, and accounts customers ask to add. A number not in here does not exist. Accounts not on any
+   * customer "float".
+   */
+  balances: Record<string, number>;
   targets: TargetAccount[];
   blacknet: BlacknetMessage[];
-  /** processed: legitimate money settled (automatic payments, plus manual ones that fulfil a payment request). */
+  /**
+   * processed: legitimate money settled (automatic payments, plus manual ones that fulfil a payment request).
+   * stolen: the money now sitting in Target Ledger accounts (they start empty).
+   */
   totals: { processed: number; stolen: number };
   hiddenHost: string;
   counters: { log: number; alert: number; cred: number; tx: number; msg: number; req: number; change: number; revoke: number; host: number; player: number; crack: number };
