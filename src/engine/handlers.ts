@@ -351,10 +351,12 @@ H['SECURITY.MASTER_LOG.TRACE'] = (c, q) => {
 
 // ---- Client Data ------------------------------------------------------------
 // ---- Client Requests -----------------------------------------------------------------------------
-// A banker sees requests addressed to the credential's OWNER (so a borrowed code shows its owner's
-// inbox). A whole-system Client Data credential is a supervisor and sees everyone's.
+// A Personal Banker sees requests addressed to the credential's OWNER (so a borrowed code shows its owner's
+// inbox). Any other role (e.g. the Bank Manager), or a whole-system Client Data credential, sees everyone's.
 
-const seesAllRequests = (c: Ctx): boolean => c.cred.system === 'CLIENT_DATA' && c.cred.module === null;
+/** Personal Bankers work only their own customers; everyone else (and any whole-system credential) sees all. */
+const ownCustomersOnly = (c: Ctx): boolean => c.owner.role === 'PERSONAL_BANKER' && !(c.cred.system === 'CLIENT_DATA' && c.cred.module === null);
+const seesAllRequests = (c: Ctx): boolean => !ownCustomersOnly(c);
 const canSeeRequest = (c: Ctx, r: ClientRequest): boolean => seesAllRequests(c) || r.bankerId === c.owner.id;
 
 function requestStatusText(c: Ctx, r: ClientRequest): string {
@@ -477,7 +479,7 @@ H['SECURITY.PERMISSIONS.REVOKE_CREDENTIAL'] = (c, q) => {
 
 const findCustomer = (c: Ctx, q: Params): Customer | undefined => c.s.customers.find((x) => x.id === normCust(str(q, 'customerId')));
 
-/** Customer for a change command: must be one of the credential owner's customers, unless the credential covers all of Client Data. */
+/** Customer for a change command: a Personal Banker's credential only reaches that banker's own customers. */
 function ownCustomer(c: Ctx, q: Params): Customer | string {
   const x = findCustomer(c, q);
   if (!x) return 'No such customer.';
@@ -485,8 +487,8 @@ function ownCustomer(c: Ctx, q: Params): Customer | string {
   return x;
 }
 
-/** Like Client Requests: bankers see their own customers (by credential owner); a whole-system Client Data credential sees all. */
-const seesAllCustomers = (c: Ctx): boolean => c.cred.system === 'CLIENT_DATA' && c.cred.module === null;
+/** Like Client Requests: Personal Bankers see their own customers (by credential owner); every other role sees all. */
+const seesAllCustomers = (c: Ctx): boolean => !ownCustomersOnly(c);
 
 const accountText = (x: Customer, a: string): string => `${a}${accountVerified(x, a) ? '' : ' (unverified)'}`;
 
@@ -525,8 +527,9 @@ function makePrimary(c: Ctx, x: Customer, account: string): AccountChange {
 }
 
 H['CLIENT_DATA.CUSTOMER_RECORDS.VIEW_CUSTOMERS'] = (c, q) => {
-  const all = str(q, 'show') === 'ALL';
-  if (all && !seesAllCustomers(c)) return bad('Viewing all customers needs a credential for all of Client Data.');
+  // Staff without customers of their own (anyone but a Personal Banker) always see everyone.
+  const all = str(q, 'show') === 'ALL' || (seesAllCustomers(c) && c.owner.role !== 'PERSONAL_BANKER');
+  if (all && !seesAllCustomers(c)) return bad('Personal Bankers can only view their own customers.');
   const rows = c.s.customers.filter((x) => all || x.bankerId === c.owner.id);
   const title = all ? 'Customer Records (all customers)' : `Customer Records: customers of ${c.owner.name}`;
   return good(`${title}: ${rows.length}.`, rows.length ? rows.flatMap((x) => customerLines(c, x)) : ['Nothing here.']);
@@ -925,7 +928,6 @@ function plantUser(s: GameState, name: string, role: RoleId, ip: string): Player
     bankAccount: '',
     heldCredentialIds: [],
     knownSystems: ['SECURITY', 'CLIENT_DATA', 'TRANSACTIONS'],
-    packets: [],
     activity: [],
     messages: [],
     failStreak: 0,

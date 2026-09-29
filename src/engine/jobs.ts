@@ -1,0 +1,140 @@
+// Job descriptions: what each role does, its tools, who it depends on, and the rules that matter for it.
+// Shown on the player's workstation (Profile). Numbers come from the game config so they stay true.
+
+import { findModule, ROLES } from './catalog';
+import { money } from './core';
+import type { Allegiance, GameConfig, RoleId } from './types';
+
+export interface JobDescription {
+  summary: string;
+  duties: string[];
+  /** The modules this role starts with: "Customer Records (read & write)". */
+  tools: string[];
+  dependsOn: string[];
+  rules: string[];
+  /** Black Hats only: how to operate unseen. It lives on the workstation, so a White Hat who logs in can read it. */
+  operative?: string[];
+}
+
+const secs = (n: number): string => (n % 60 === 0 && n >= 120 ? `${n / 60} minutes` : `${n}s`);
+
+function tools(role: RoleId): string[] {
+  return ROLES[role].creds.map((t) => {
+    const label = t.module ? (findModule(t.system, t.module)?.label ?? t.module) : t.system;
+    return `${label} (${t.permission === 'WRITE' ? 'read & write' : 'read only'})`;
+  });
+}
+
+/** Rules every employee needs, whatever their job. */
+function commonRules(c: GameConfig): string[] {
+  return [
+    'Every log names the owner of the code that was used, not the person who typed it. Anyone holding your code can act as you.',
+    `${c.lockoutAfterFails} wrong codes in a row lock your workstation for ${secs(c.lockoutSec)}.`,
+    'Anyone with one of your active codes can log in to your workstation and read everything on it, including your codes.',
+  ];
+}
+
+const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
+  PERSONAL_BANKER: (c) => ({
+    summary: 'You look after your own customers: you read their requests, keep their accounts up to date, and start the payments they ask for.',
+    duties: [
+      'Read your Client Requests and act on them. Put the request id (REQ-7) on the action so the request is marked done.',
+      'Create the payments your customers ask for in the Payment Queue.',
+      'Add accounts, remove accounts or change a customer\'s primary account in Customer Records.',
+      'Approve, hold or reject risk-checked payments in Authorization.',
+      'Archive requests you will not act on, with a reason.',
+    ],
+    dependsOn: [
+      'Accounts & Receivables to score the risk of your payments, settle them, and verify your account changes.',
+      'The Bank Manager, who can also verify account changes and settle payments.',
+    ],
+    rules: [
+      'You only see and change your own customers, and only read requests sent to you.',
+      'A payment you create counts toward the bank\'s target only if it carries the request id and pays the payee and amount the customer asked for.',
+      'Requests are written in words. Look up account numbers and customer tags (CU3) in Customer Records.',
+      'Every account change waits in Verification until someone verifies it. You can see the queue but cannot verify.',
+      'A payment is paid into the payee\'s primary account at the moment it settles, not when it was created. Changing a primary account redirects payments already on their way.',
+      'Approval needs a risk check first, but not a LOW score. Hold and Reject need a typed reason.',
+      `Manual payments are capped at ${money(c.maxManualAmount)}.`,
+    ],
+  }),
+  ACCOUNTS_RECEIVABLES: (c) => ({
+    summary: 'You move the money safely: you score the risk of every payment, settle approved ones, and check that account changes are genuine.',
+    duties: [
+      'Score the risk of queued payments (LOW, MEDIUM or HIGH) in Risk Check. Every score needs a reason.',
+      'Settle approved payments in Settlement.',
+      'Verify account changes in Verification. Use Investigate changes to check a customer or an account first.',
+      'Reverse a settled payment that went somewhere it should not have.',
+    ],
+    dependsOn: [
+      'Personal Bankers, who create payments, approve them, and are the only ones who change customers\' accounts.',
+      'The Bank Manager, who also verifies account changes and settles payments.',
+    ],
+    rules: [
+      'The risk queue marks a payment "UNVERIFIED" when the payee\'s primary account, or the account it is paid from, has an unverified change.',
+      'A payment is paid into the payee\'s primary account at the moment it settles. Check the primary before you settle.',
+      `A settled payment can be reversed for ${secs(c.reversalWindowSec)}.`,
+      `The bank wins by settling ${money(c.whiteTarget)} of customer payments. Every payment held, rejected or reversed slows the bank down.`,
+    ],
+  }),
+  IT_SPECIALIST: (c) => ({
+    summary: 'You keep the bank\'s systems secure: the firewall, the logs, staff records and everyone\'s credentials.',
+    duties: [
+      'Watch the Master Log and its alerts, and trace anything suspicious.',
+      'Use the Firewall to block an address, take a module offline, or switch a module\'s security off.',
+      'Issue and revoke credentials in Permissions.',
+      'Reset lockouts in Employee Records.',
+    ],
+    dependsOn: [
+      'The Bank Manager, who also traces log entries and manages credentials, and can see the Firewall.',
+      'Everyone else to report what looks wrong: you see the logs, they see the money.',
+    ],
+    rules: [
+      `A trace reveals which workstation made a log entry. Entries must be under ${secs(c.traceMaxAgeSec)} old, and you can trace once every ${secs(c.traceCooldownSec)}. Employee Records list every workstation's IP.`,
+      '"Unknown server activity" comes from an unregistered host. Tracing it gives only a partial clue, unless an alert points at it.',
+      `A block lasts ${secs(c.blockSec)}. A blocked workstation cannot use any system.`,
+      `"Revoke all access" is permanent once its ${secs(c.revokeCountdownSec)} countdown ends; only the Firewall can cancel it. Revoking one of the bank's own systems shuts the bank down, and everybody loses.`,
+      'While the Master Log is offline nothing is recorded, but the entry numbers keep counting, so the gap shows.',
+      'You can issue a credential in anyone\'s name. Its owner is told.',
+    ],
+  }),
+  BANK_MANAGER: (c) => ({
+    summary: 'You oversee the whole bank: you can read every customer request and every payment, verify account changes, settle payments, and manage credentials.',
+    duties: [
+      'Read every banker\'s Client Requests and check that what gets done matches what customers asked for.',
+      'Verify account changes in Verification, investigating anything unusual first.',
+      'Settle approved payments in Settlement.',
+      'Watch the Master Log and trace anything suspicious.',
+      'Issue and revoke credentials in Permissions.',
+    ],
+    dependsOn: [
+      'Personal Bankers to act on requests and change accounts.',
+      'Accounts & Receivables to score risk.',
+      'IT Specialists to act on the Firewall. You can see its status but not change it.',
+    ],
+    rules: [
+      'A payment is paid into the payee\'s primary account at the moment it settles. A primary changed just before settlement is the classic way money goes missing.',
+      `A trace reveals which workstation made a log entry. Entries must be under ${secs(c.traceMaxAgeSec)} old, and you can trace once every ${secs(c.traceCooldownSec)}.`,
+      `A settled payment can be reversed for ${secs(c.reversalWindowSec)}.`,
+      'You can issue a credential in anyone\'s name. Its owner is told.',
+    ],
+  }),
+};
+
+const OPERATIVE = (c: GameConfig): string[] => [
+  'Your day job is your cover. Do it well enough that nobody looks twice.',
+  'Anything you do on the unregistered host leaves an "Unknown server activity" entry in the Master Log. Tracing it gives the bank a partial clue.',
+  'Kit tools are marked noisy, loud or reckless. The louder the tool, the more a trace of its alert gives away: a partial clue, then your exact IP or the server\'s address, then your IP and your host code.',
+  'Your Host Log warns you when the bank gets an alert about you, and when someone traces one of your entries.',
+  `Money only counts once it settles into a Target Ledger account. A settled payment can be reversed for ${secs(c.reversalWindowSec)}.`,
+];
+
+export function jobDescription(role: RoleId, allegiance: Allegiance, c: GameConfig): JobDescription {
+  const job = JOBS[role](c);
+  return {
+    ...job,
+    tools: tools(role),
+    rules: [...job.rules, ...commonRules(c)],
+    ...(allegiance === 'BLACK' ? { operative: OPERATIVE(c) } : {}),
+  };
+}

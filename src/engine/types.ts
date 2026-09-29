@@ -5,12 +5,7 @@ export type Allegiance = 'WHITE' | 'BLACK';
 export type Winner = Allegiance;
 export type SystemId = 'SECURITY' | 'CLIENT_DATA' | 'TRANSACTIONS' | 'BLACKHAT_DB';
 export type Permission = 'READ' | 'WRITE';
-export type RoleId =
-  | 'IT_SPECIALIST'
-  | 'PERSONAL_BANKER'
-  | 'ACCOUNTS_RECEIVABLES'
-  | 'SECURITY_ANALYST'
-  | 'SYSTEMS_ADMIN';
+export type RoleId = 'PERSONAL_BANKER' | 'ACCOUNTS_RECEIVABLES' | 'IT_SPECIALIST' | 'BANK_MANAGER';
 export type TxStatus =
   | 'QUEUED'
   | 'RISK_CHECKED'
@@ -23,11 +18,18 @@ export type RiskResult = 'LOW' | 'MEDIUM' | 'HIGH';
 
 export interface GameConfig {
   durationSec: number; // game length
-  whiteTarget: number; // NPC money that must be settled for a White Hat win
-  blackTarget: number; // stolen money for a Black Hat win
+  // Scaling with the table (see scaledConfig in setup.ts). The four derived values below are computed
+  // from these at game creation unless the game's config sets them explicitly.
+  whiteTargetPerPlayer: number; // bank target per player
+  blackTargetPerHacker: number; // Black Hat target per Black Hat
+  volumePerPlayer: number; // legitimate payment volume offered over the game (automatic + requested), per player
+  requestEverySecPerBanker: number; // each Personal Banker gets a client request about this often
+  customersPerBanker: number;
+  whiteTarget: number; // derived: legitimate money that must be settled for a White Hat win
+  blackTarget: number; // derived: stolen money for a Black Hat win
   timeoutWinner: Winner; // who wins if the clock runs out
-  blackHatCount: number | null; // null = ~30% of players
-  npcIntervalSec: number; // one NPC payment every N seconds
+  blackHatCount: number | null; // null = hackerCount(n): floor(n / 3)
+  npcIntervalSec: number; // derived: one automatic payment every N seconds
   npcMinAmount: number;
   npcMaxAmount: number;
   maxManualAmount: number; // largest payment a player can create by hand
@@ -41,7 +43,7 @@ export interface GameConfig {
   clockStart: number; // seconds after midnight shown as the in-game start time
   autoProcess: boolean; // DEBUG: a bot settles NPC payments that pass the risk check
   autoProcessDelaySec: number;
-  requestIntervalSec: number; // one client request every N seconds
+  requestIntervalSec: number; // derived: one client request (bank-wide) every N seconds
   requestChangeShare: number; // share of requests that ask for an account change instead of a payment (0..1)
   blockSec: number; // how long a Firewall block lasts
   revokeCountdownSec: number; // how long anyone has to cancel a "revoke all access"
@@ -254,12 +256,6 @@ export interface ActivityEntry {
   text: string;
 }
 
-export interface InfoPacket {
-  id: string;
-  system: SystemId;
-  text: string;
-}
-
 export interface Player {
   id: PlayerId;
   name: string;
@@ -271,7 +267,6 @@ export interface Player {
   bankAccount: string;
   heldCredentialIds: string[]; // credentials this player knows the code of
   knownSystems: SystemId[];
-  packets: InfoPacket[];
   activity: ActivityEntry[]; // personal activity log (ground truth for this player)
   messages: Message[];
   failStreak: number;
@@ -313,9 +308,10 @@ export interface GameState {
   transactions: Transaction[];
   targets: TargetAccount[];
   blacknet: BlacknetMessage[];
-  totals: { processedNpc: number; stolen: number };
+  /** processed: legitimate money settled (automatic payments, plus manual ones that fulfil a payment request). */
+  totals: { processed: number; stolen: number };
   hiddenHost: string;
-  counters: { log: number; alert: number; cred: number; tx: number; msg: number; packet: number; req: number; change: number; revoke: number; host: number; player: number; crack: number };
+  counters: { log: number; alert: number; cred: number; tx: number; msg: number; req: number; change: number; revoke: number; host: number; player: number; crack: number };
 }
 
 // ---- Actions -------------------------------------------------------------

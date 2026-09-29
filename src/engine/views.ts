@@ -4,7 +4,11 @@ import { ROLES, SYSTEMS } from './catalog';
 import type { SystemDef } from './catalog';
 import { fmtClock, gameTime, nameOf } from './core';
 import { credScopeText } from './handlers';
-import type { Allegiance, GameState, InfoPacket, Player, PlayerId, RoleId, SystemId, Winner } from './types';
+import { jobDescription } from './jobs';
+import { dayPhaseAt } from './pacing';
+import type { Pace } from './pacing';
+import type { JobDescription } from './jobs';
+import type { Allegiance, GameState, Player, PlayerId, RoleId, SystemId, Winner } from './types';
 
 /** Everything on one workstation: the owner's own screen, or someone else's once logged in to it. */
 export interface WorkstationView {
@@ -18,7 +22,7 @@ export interface WorkstationView {
   ip: string;
   bankAccount: string;
   lockedForSec: number;
-  packets: InfoPacket[];
+  job: JobDescription;
   knownSystems: SystemId[];
   credentials: {
     id: string;
@@ -40,11 +44,14 @@ export interface PlayerView {
   gameId: string;
   clock: string;
   t: number;
+  /** Time of day ("Lunch Rush") and how busy it is: the rate new work arrives at (see pacing.ts). */
+  dayPhase: string;
+  pace: Pace;
   durationSec: number;
   status: 'RUNNING' | 'ENDED';
   winner: Winner | null;
   endReason: string | null;
-  processedNpc: number;
+  processed: number; // legitimate money settled toward the bank target
   whiteTarget: number;
   me: WorkstationView;
   /** Other workstations this player is logged in to (only while the credential used is still active). */
@@ -69,7 +76,7 @@ function workstationView(s: GameState, p: Player): WorkstationView {
     ip: p.ip,
     bankAccount: p.bankAccount,
     lockedForSec: Math.max(0, Math.ceil(p.lockedUntil - t)),
-    packets: p.packets,
+    job: jobDescription(p.role, p.allegiance, s.config),
     knownSystems: p.knownSystems,
     credentials: p.heldCredentialIds.map((id) => {
       const cr = s.credentials[id];
@@ -107,12 +114,14 @@ export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
   return {
     gameId: s.id,
     clock: fmtClock(s.config, t),
+    dayPhase: dayPhaseAt(s.config.durationSec, t).label,
+    pace: dayPhaseAt(s.config.durationSec, t).pace,
     t,
     durationSec: s.config.durationSec,
     status: s.status,
     winner: s.winner,
     endReason: s.endReason,
-    processedNpc: s.totals.processedNpc,
+    processed: s.totals.processed,
     whiteTarget: s.config.whiteTarget,
     me: workstationView(s, p),
     remote,

@@ -5,5 +5,8 @@ export { createGame, grantMasterAccess } from './setup';
 export type { NewGameOptions } from './setup';
 export { getPlayerView } from './views';
 export type { PlayerView, WorkstationView } from './views';
+export type { JobDescription } from './jobs';
+export { DAY_PHASES, dayPhaseAt, nextArrival, paceMultiplier } from './pacing';
+export type { DayPhase, Pace } from './pacing';
 export { accountVerified, fmtClock, gameTime, money } from './core';
 export { CHANNELS } from './bank';

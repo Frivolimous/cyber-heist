@@ -14,16 +14,21 @@ import {
   getPlayerView,
   grantMasterAccess,
   HOST_KITS,
+  MAX_PLAYERS,
+  MIN_PLAYERS,
   money,
   ROLE_ORDER,
   ROLES,
   SYSTEMS,
 } from '../engine';
-import type { Action, GameState, PlayerId, PlayerView, SystemId, WorkstationView } from '../engine';
+import type { Action, GameState, Pace, PlayerId, PlayerView, SystemId, WorkstationView } from '../engine';
 
-const NAMES = ['Jeremy', 'Sarah', 'Mike', 'David', 'Lisa', 'Anna', 'Omar', 'Priya', 'Chen', 'Rosa'];
-const ROSTER = NAMES.map((name, i) => ({ id: `p${i}`, name }));
-const MASTER_SEAT = ROSTER[0].id; // this seat gets whole-system credentials for every system
+const NAMES = ['Jeremy', 'Sarah', 'Mike', 'David', 'Lisa', 'Anna', 'Omar', 'Priya', 'Chen', 'Rosa', 'Tariq', 'Mei', 'Hugo', 'Zara', 'Ivan', 'Nina', 'Kofi', 'Elena', 'Raj', 'Sofia'];
+/** Sandbox seats p0..p(n-1); past the name list, seats are numbered. */
+const rosterOf = (n: number): { id: string; name: string }[] =>
+  Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: NAMES[i] ?? `Player ${i + 1}` }));
+let playerCount = 10;
+const MASTER_SEAT = 'p0'; // this seat gets whole-system credentials for every system
 const TICK_MS = 250;
 const TASKBAR_H = 44;
 const TERMINAL_LINES = 100;
@@ -113,10 +118,11 @@ const icon = (id: SystemId, size = 48): string =>
 function newGame(seed: number): void {
   const autoProcess = game ? game.config.autoProcess : true;
   vNow = Date.now();
-  game = createGame({ seed, players: ROSTER, now: vNow, config: { autoProcess } });
+  const roster = rosterOf(playerCount);
+  game = createGame({ seed, players: roster, now: vNow, config: { autoProcess } });
   grantMasterAccess(game, MASTER_SEAT);
   desks = {};
-  for (const p of ROSTER) seenMessages[p.id] = 0;
+  for (const p of roster) seenMessages[p.id] = 0;
   if (!game.players[selected]) selected = MASTER_SEAT;
   tab = 'profile';
   renderAll();
@@ -135,6 +141,7 @@ function renderDev(): void {
     <span class="grp">${btn('speed:0', 'Pause', speed === 0)}${btn('speed:1', '1x', speed === 1)}${btn('speed:5', '5x', speed === 5)}${btn('speed:20', '20x', speed === 20)}<button data-act="skip:30">+30s</button></span>
     <label><input type="checkbox" data-f="auto" ${game.config.autoProcess ? 'checked' : ''}> auto-process routine payments</label>
     <label><input type="checkbox" data-f="god" ${god ? 'checked' : ''}> show allegiances</label>
+    <label>players <input type="number" data-f="count" min="${MIN_PLAYERS}" max="${MAX_PLAYERS}" value="${playerCount}" title="Applies on New game"></label>
     <label>seed <input type="number" data-f="seed" value="${game.seed >>> 0}"></label>
     <button data-act="newgame">New game</button>
     <button data-act="truth" class="${truthOpen ? 'on' : ''}">Ground truth</button>
@@ -171,7 +178,7 @@ function renderTruth(): void {
   const targets = s.targets.map((x) => `${x.account} ${x.status}`).join('   ');
   el.innerHTML = `
     <div class="truth-head"><b>Ground truth (spoilers)</b><button data-act="truth" aria-label="Close ground truth">Close</button></div>
-    <div class="totals"><span>settled: ${money(s.totals.processedNpc)}</span><span>stolen: ${money(s.totals.stolen)} / ${money(s.config.blackTarget)}</span><span>targets: ${esc(targets)}</span></div>
+    <div class="totals"><span>settled: ${money(s.totals.processed)}</span><span>stolen: ${money(s.totals.stolen)} / ${money(s.config.blackTarget)}</span><span>targets: ${esc(targets)}</span></div>
     <h4>People</h4><pre>${esc(people)}</pre>
     <h4>Player activity: what the log says vs who did it</h4><pre>${esc(logs || 'No player activity yet.')}</pre>
     <h4>Payments</h4><pre>${esc(txs)}</pre>
@@ -190,18 +197,24 @@ function renderStatus(): void {
     <div class="who"><b>${esc(v.me.name)}</b><span>${esc(v.me.roleLabel)}</span>
       <span class="chip ${v.me.allegiance}">${v.me.allegiance === 'BLACK' ? 'Black Hat' : 'White Hat'}</span>
       <span id="lock" class="chip lock" hidden></span></div>
-    <div class="clock"><b id="clk"></b><small id="left"></small></div>
+    <div class="clock"><span id="phase" class="phase"></span><span id="pace" class="pace"></span><b id="left"></b></div>
     <div class="throughput"><div class="bar"><i id="bar"></i></div><span id="thr"></span></div>
     ${banner}`;
   updateClock();
 }
 
+const PACE_TEXT: Record<Pace, string> = { SLOW: 'Slow', MEDIUM: 'Medium', BUSY: 'Busy', CLOSED: 'Closed' };
+
 function updateClock(): void {
   const v = view();
-  $('clk').textContent = v.clock;
-  $('left').textContent = `${mmss(v.durationSec - v.t)} left`;
-  $('bar').style.width = `${Math.min(100, (v.processedNpc / v.whiteTarget) * 100)}%`;
-  $('thr').textContent = `${money(v.processedNpc)} of ${money(v.whiteTarget)} legitimate payments settled`;
+  // Time of day, how busy it is, and the countdown.
+  $('phase').textContent = v.dayPhase;
+  const pace = $('pace');
+  pace.textContent = PACE_TEXT[v.pace];
+  pace.className = `pace ${v.pace}`;
+  $('left').textContent = mmss(v.durationSec - v.t);
+  $('bar').style.width = `${Math.min(100, (v.processed / v.whiteTarget) * 100)}%`;
+  $('thr').textContent = `${money(v.processed)} of ${money(v.whiteTarget)} legitimate payments settled`;
   const lock = $('lock');
   lock.hidden = v.me.lockedForSec <= 0;
   lock.textContent = `Workstation locked ${v.me.lockedForSec}s`;
@@ -1118,13 +1131,18 @@ function workstationHtml(w: Win, ws: WorkstationView, current: Tab, remote: bool
 
   let body = '';
   if (current === 'profile') {
-    const sysLabel = (id: string): string => SYSTEMS.find((s) => s.id === id)?.label ?? id;
+    const job = ws.job;
+    const list = (items: string[]): string => `<ul class="job-list">${items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
     body = `
       <dl class="kv"><dt>Name</dt><dd>${esc(ws.name)}</dd><dt>Role</dt><dd>${esc(ws.roleLabel)}</dd><dt>IP</dt><dd>${esc(ws.ip)}</dd><dt>Account</dt><dd>${esc(ws.bankAccount)}</dd></dl>
       <h4>${their} objective</h4><div class="note">${esc(ws.objective)}</div>
       <p class="hint">${esc(ws.motivation)}</p>
-      <h4>Private information</h4>
-      ${ws.packets.map((p) => `<div class="packet"><small>${esc(p.system === 'BLACKHAT_DB' ? 'Network rumours' : sysLabel(p.system))}</small>${esc(p.text)}</div>`).join('')}`;
+      <h4>Job: ${esc(ws.roleLabel)}</h4><p class="job-summary">${esc(job.summary)}</p>
+      <h4>What you do</h4>${list(job.duties)}
+      <h4>Your tools</h4>${list(job.tools)}
+      <h4>Who you depend on</h4>${list(job.dependsOn)}
+      <h4>Rules to know</h4>${list(job.rules)}
+      ${job.operative ? `<div class="job-secret"><h4>Operative handbook</h4>${list(job.operative)}</div>` : ''}`;
   } else if (current === 'codes') {
     body = `
       <p class="hint">Logs name the credential owner, not the person who typed the code.</p>
@@ -1270,6 +1288,8 @@ app.addEventListener('click', (e) => {
       refresh();
       break;
     case 'newgame': {
+      const count = Math.floor(Number((app.querySelector('[data-f="count"]') as HTMLInputElement | null)?.value));
+      playerCount = Number.isFinite(count) ? clamp(count, MIN_PLAYERS, MAX_PLAYERS) : playerCount;
       const raw = (app.querySelector('[data-f="seed"]') as HTMLInputElement | null)?.value;
       const n = Number(raw);
       newGame(Number.isFinite(n) && raw !== '' ? n : Math.floor(Math.random() * 1e9));

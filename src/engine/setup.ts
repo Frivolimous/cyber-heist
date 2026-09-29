@@ -1,12 +1,12 @@
-// Builds a fresh game: roles, allegiances, credentials, bank data and private info packets.
+// Builds a fresh game: roles, allegiances, credentials and bank data.
 
-import { DEFAULT_CONFIG, ENCRYPTION_ENABLED, HIDDEN_HOST, HOST_KITS, HOST_SHARED_MODULES, ROLES, ROLE_ORDER, SYSTEMS } from './catalog';
-import { addLog, keyOf, money, nextId } from './core';
+import { DEFAULT_CONFIG, hackerCount, HIDDEN_HOST, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, ROLES, ROLE_ORDER, SYSTEMS } from './catalog';
+import { addLog, keyOf, money } from './core';
 import { createCredential } from './credentials';
 import { spawnNpc } from './bank';
 import { assignBankers, spawnRequest } from './requests';
 import { pick, rand, randInt, shuffle } from './rng';
-import type { GameConfig, GameState, InfoPacket, Player, SystemId } from './types';
+import type { GameConfig, GameState, Player, RoleId } from './types';
 
 export interface NewGameOptions {
   id?: string;
@@ -16,8 +16,11 @@ export interface NewGameOptions {
   config?: Partial<GameConfig>;
 }
 
-/** Everyone the bank deals with, companies and people alike: all customers (CU1..CU14). */
-const CUSTOMER_NAMES = [
+/**
+ * Everyone the bank might deal with, companies and people alike. Each game picks customersPerBanker per
+ * Personal Banker at random from this pool (42 names = 3 per banker at the 30-player cap of 14 bankers).
+ */
+export const CUSTOMER_NAMES = [
   'Alder & Finch LLC',
   'Marisol Ortega',
   'Tanaka Holdings',
@@ -32,7 +35,59 @@ const CUSTOMER_NAMES = [
   'Cobalt Payroll',
   'Ivy Lane Property',
   'Sable Medical Supply',
+  'Okafor Engineering',
+  'Delphine Arceneaux',
+  'Greywell Pharmacy',
+  'Bastion Security Ltd',
+  'Tomasz Wieczorek',
+  'Harbor & Pine Realty',
+  'Luminary Film Co',
+  'Priyanka Raghavan',
+  'Copperleaf Farms',
+  'Westgate Auto Group',
+  'Juniper Veterinary',
+  'Elias Brandt',
+  'Quarry Stone Supply',
+  'Silverline Couriers',
+  'Aurora Daycare Centers',
+  'Mateo Figueroa',
+  'Keystone Plumbing',
+  'Oakhurst Vineyards',
+  'Fenwick Law Partners',
+  'Yuki Hashimoto',
+  'Riverbend Hospital Trust',
+  'Blue Heron Bakery',
+  'Stratton Aerospace',
+  'Amara Nwosu',
+  'Lakeside Storage Co',
+  'Vantage Print Works',
+  'Corinne Dubois',
+  'Summit Outdoor Gear',
 ];
+
+/**
+ * The values that scale with the table, from the per-player settings in `base`:
+ * - targets: whiteTargetPerPlayer x players, blackTargetPerHacker x Black Hats;
+ * - client requests: each Personal Banker gets one about every requestEverySecPerBanker seconds;
+ * - automatic payments fill the rest, so that automatic payments plus requested payments add up to about
+ *   volumePerPlayer x players over the game. Manual payments count toward the target only when they fulfil
+ *   a payment request (see bank.ts), so the requested share is money the team has to earn by acting on requests.
+ */
+export function scaledConfig(base: GameConfig, n: number, hackers: number): Pick<GameConfig, 'whiteTarget' | 'blackTarget' | 'npcIntervalSec' | 'requestIntervalSec'> {
+  const bankers = roleCounts(n).PERSONAL_BANKER;
+  const requestIntervalSec = base.requestEverySecPerBanker / bankers;
+  const requests = base.durationSec / requestIntervalSec;
+  const avgRequested = (base.npcMinAmount + base.maxManualAmount) / 2; // request amounts are uniform in this range
+  const requestedVolume = requests * (1 - base.requestChangeShare) * avgRequested;
+  const avgNpc = (base.npcMinAmount + base.npcMaxAmount) / 2;
+  const npcVolume = Math.max(base.volumePerPlayer * n - requestedVolume, avgNpc); // at least one payment's worth
+  return {
+    whiteTarget: base.whiteTargetPerPlayer * n,
+    blackTarget: base.blackTargetPerHacker * hackers,
+    npcIntervalSec: base.durationSec / (npcVolume / avgNpc),
+    requestIntervalSec,
+  };
+}
 const WHITE_MOTIVATIONS = [
   'You flagged a near-miss last quarter and nobody listened. This time you want to be right.',
   'Your bonus depends on uptime, and you have a mortgage.',
@@ -47,7 +102,13 @@ const BLACK_MOTIVATIONS = [
 ];
 
 export function createGame(o: NewGameOptions): GameState {
-  const config: GameConfig = { ...DEFAULT_CONFIG, ...o.config };
+  const n = o.players.length;
+  if (n < MIN_PLAYERS) throw new Error(`Cyber-Heist needs at least ${MIN_PLAYERS} players (got ${n}).`);
+  if (n > MAX_PLAYERS) throw new Error(`Cyber-Heist allows at most ${MAX_PLAYERS} players (got ${n}).`);
+  // Scaled values are derived from the per-player settings; anything the caller sets explicitly wins.
+  const base: GameConfig = { ...DEFAULT_CONFIG, ...o.config };
+  const blackCount = Math.min(n - 1, Math.max(1, base.blackHatCount ?? hackerCount(n)));
+  const config: GameConfig = { ...base, ...scaledConfig(base, n, blackCount), ...o.config };
   const s: GameState = {
     id: o.id ?? `game-${o.seed}`,
     seed: o.seed,
@@ -77,14 +138,13 @@ export function createGame(o: NewGameOptions): GameState {
     transactions: [],
     targets: [],
     blacknet: [],
-    totals: { processedNpc: 0, stolen: 0 },
+    totals: { processed: 0, stolen: 0 },
     hiddenHost: HIDDEN_HOST,
-    counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, packet: 0, req: 0, change: 0, revoke: 0, host: 0, player: 0, crack: 0 },
+    counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, req: 0, change: 0, revoke: 0, host: 0, player: 0, crack: 0 },
   };
 
   for (const sys of SYSTEMS) for (const m of sys.modules) s.modules[keyOf(sys.id, m.id)] = { status: 'ONLINE', open: false, encryption: [] };
 
-  const n = o.players.length;
   const usedAccounts = new Set<string>();
   const newAccount = (): string => {
     for (;;) {
@@ -96,18 +156,20 @@ export function createGame(o: NewGameOptions): GameState {
     }
   };
 
-  // Roles: round-robin over a shuffled order so roles overlap evenly.
-  const roleOrder = shuffle(s, s.playerOrder);
-  const roleOf = new Map<string, (typeof ROLE_ORDER)[number]>();
-  roleOrder.forEach((id, i) => roleOf.set(id, ROLE_ORDER[i % ROLE_ORDER.length]));
+  // Roles: the counts come from the player count (roleCounts), dealt over a shuffled seat order.
+  const counts = roleCounts(n);
+  const roleSeats = ROLE_ORDER.flatMap((role) => Array.from({ length: counts[role] }, () => role));
+  const roleOf = new Map<string, RoleId>();
+  shuffle(s, s.playerOrder).forEach((id, i) => roleOf.set(id, roleSeats[i]));
 
-  // Allegiances.
-  const blackCount = Math.min(n - 1, Math.max(1, config.blackHatCount ?? Math.round(n * 0.3)));
+  // Allegiances: hackerCount(n) Black Hats, unless the config fixes the number (blackCount, above).
   const blackIds = new Set(shuffle(s, s.playerOrder).slice(0, blackCount));
 
   // Bank data.
+  // customersPerBanker per Personal Banker, drawn at random from the name pool (CU1, CU2, ... in draw order).
   // Each customer starts with 1-3 accounts; the first is primary.
-  s.customers = CUSTOMER_NAMES.map((name, i) => {
+  const customerCount = Math.min(CUSTOMER_NAMES.length, counts.PERSONAL_BANKER * config.customersPerBanker);
+  s.customers = shuffle(s, CUSTOMER_NAMES).slice(0, customerCount).map((name, i) => {
     const accounts = Array.from({ length: randInt(s, 1, 3) }, () => newAccount());
     return { id: `CU${i + 1}`, name, bankerId: null, accounts, primary: accounts[0], originalPrimary: accounts[0], lastModifiedAt: null, history: [] };
   });
@@ -129,7 +191,6 @@ export function createGame(o: NewGameOptions): GameState {
       bankAccount: newAccount(),
       heldCredentialIds: [],
       knownSystems: ['SECURITY', 'CLIENT_DATA', 'TRANSACTIONS'],
-      packets: [],
       activity: [],
       messages: [],
       failStreak: 0,
@@ -163,7 +224,6 @@ export function createGame(o: NewGameOptions): GameState {
   dealKits(s);
 
   assignBankers(s);
-  dealPackets(s);
 
   addLog(s, { actor: 'SYSTEM', kind: 'BOOT', message: 'Bank network online. Shift started.', sourceIp: null, actualPlayerId: null });
   for (let i = 0; i < 3; i++) spawnNpc(s);
@@ -182,8 +242,9 @@ export function grantMasterAccess(s: GameState, playerId: string): void {
 }
 
 /**
- * Deals the hidden host's tool kits: every operative gets one, then each kit left over has an even chance
- * of going to a random operative as a second. With more kits than operatives, some go unused.
+ * Deals the hidden host's tool kits: every operative gets one. With more kits than operatives, each kit
+ * left over has an even chance of going to a random operative as a second, so some go unused. With more
+ * operatives than kits (15+ players), the shuffled kits repeat so nobody goes without.
  */
 function dealKits(s: GameState): void {
   const blacks = s.playerOrder.filter((id) => s.players[id].allegiance === 'BLACK');
@@ -193,63 +254,6 @@ function dealKits(s: GameState): void {
     const cred = createCredential(s, { owner, system: 'BLACKHAT_DB', module, permission: 'WRITE', issuedBy: null });
     s.players[owner].heldCredentialIds.push(cred.id);
   };
-  kits.slice(0, blacks.length).forEach((kit, i) => give(blacks[i % blacks.length], kit));
+  blacks.forEach((owner, i) => give(owner, kits[i % kits.length]));
   for (const kit of kits.slice(blacks.length)) if (rand(s) < 0.5) give(pick(s, blacks), kit);
-}
-
-function dealPackets(s: GameState): void {
-  const c = s.config;
-  const blacks = s.playerOrder.map((id) => s.players[id]).filter((p) => p.allegiance === 'BLACK');
-  const custs = shuffle(s, s.customers);
-  const mules = s.targets.map((t) => t.account);
-  const dbCred = Object.values(s.credentials).find((cr) => cr.system === 'BLACKHAT_DB' && cr.module === 'BLACKNET' && cr.owner === blacks[0].id);
-  const code = dbCred?.code ?? '0000';
-  const spy = blacks.length ? pick(s, blacks) : null;
-
-  const pools: Record<SystemId, string[]> = {
-    SECURITY: [
-      `A firewall route table lists an unregistered host at ${s.hiddenHost}. Nobody on staff owns it.`,
-      `Traffic keeps reaching ${s.hiddenHost}, a host that Employee Records cannot explain.`,
-      `Traces only work on log entries younger than ${c.traceMaxAgeSec}s, and each trace has a ${c.traceCooldownSec}s cooldown.`,
-      `${c.lockoutAfterFails} failed attempts in a row lock a workstation for ${c.lockoutSec}s.`,
-      ...(ENCRYPTION_ENABLED ? ['Bypassing encryption in the Firewall raises an alert in the Master Log.'] : []),
-      'The Master Log stops recording while it is offline. Log ids keep counting, so gaps show.',
-      'Employee Records list the registered workstation IP of every employee.',
-      'IT Specialists can issue credentials in anyone\'s name. New credentials show up in the Permissions module.',
-    ],
-    CLIENT_DATA: [
-      `${custs[0].id} (${custs[0].name}) opened with primary account ${custs[0].originalPrimary}.`,
-      `${custs[1].id} (${custs[1].name}) opened with primary account ${custs[1].originalPrimary}.`,
-      'Every account change (added, removed, or a new primary) waits in the Verification queue until someone verifies it.',
-      'Client Requests can only be read by the customer\'s personal banker, or with a credential for all of Client Data.',
-      'Investigate Changes lists every account change together with the credential owner behind it.',
-      'By default only Personal Bankers can change customers\' accounts and verify them.',
-    ],
-    TRANSACTIONS: [
-      `Account ${mules[0]} is not registered to any customer or employee.`,
-      `Account ${mules[1]} is not registered to any customer or employee.`,
-      'A payment is paid into whichever account is the beneficiary\'s primary at the moment it settles, not when it was queued.',
-      'Risk is scored by hand. Approvers see the score, the reason and whose credential gave it.',
-      `A settled payment can be reversed for ${c.reversalWindowSec}s.`,
-      'Approval needs a completed risk check first.',
-    ],
-    BLACKHAT_DB: [
-      `An operative's access code for the unregistered host has digit 1 = ${code[0]}.`,
-      `An operative's access code for the unregistered host has digit 2 = ${code[1]}.`,
-      `An operative's access code for the unregistered host has digit 3 = ${code[2]}.`,
-      `An operative's access code for the unregistered host has digit 4 = ${code[3]}.`,
-      `There are ${blacks.length} operatives on the staff.`,
-      spy ? `One operative's workstation IP is ${spy.ip}.` : 'The unregistered host has never been accessed.',
-      'Operatives coordinate on a message board and post under aliases.',
-    ],
-  };
-
-  for (const system of Object.keys(pools) as SystemId[]) {
-    const pool = pools[system];
-    const dealt = shuffle(s, s.playerOrder.map((_, i) => pool[i % pool.length]));
-    s.playerOrder.forEach((pid, i) => {
-      const packet: InfoPacket = { id: nextId(s, 'packet', 'P'), system, text: dealt[i] };
-      s.players[pid].packets.push(packet);
-    });
-  }
 }

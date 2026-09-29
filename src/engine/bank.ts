@@ -32,6 +32,17 @@ export function computeRisk(s: GameState, tx: Transaction): { result: RiskResult
   return { result, flags };
 }
 
+/**
+ * Does this payment count toward the bank's target? Automatic payments always do. A manual payment counts
+ * only when it fulfils a customer's payment request: linked to it, to the payee and for the amount asked.
+ * (Otherwise players could invent payments to hit the target.) A request can be linked only once.
+ */
+export function countsForBank(s: GameState, tx: Transaction): boolean {
+  if (tx.origin === 'NPC') return true;
+  const req = tx.requestId ? s.requests.find((r) => r.id === tx.requestId) : undefined;
+  return !!req && req.kind === 'PAYMENT' && req.payeeId === tx.beneficiaryId && req.amount === tx.amount;
+}
+
 /** Pays the transaction into whatever account is the beneficiary's primary RIGHT NOW. */
 export function settleTransaction(s: GameState, tx: Transaction, who: TxActor): { account: string; fraud: boolean } {
   const account = s.customers.find((c) => c.id === tx.beneficiaryId)!.primary;
@@ -44,13 +55,13 @@ export function settleTransaction(s: GameState, tx: Transaction, who: TxActor): 
   tx.fraud = fraud;
   recordTx(s, tx, 'SETTLED', who, `${money(tx.amount)} from ${from} to ${account}`);
   if (fraud) s.totals.stolen += tx.amount;
-  else if (tx.origin === 'NPC') s.totals.processedNpc += tx.amount;
+  else if (countsForBank(s, tx)) s.totals.processed += tx.amount;
   return { account, fraud };
 }
 
 export function reverseTransaction(s: GameState, tx: Transaction, who: TxActor): void {
   if (tx.fraud) s.totals.stolen -= tx.amount;
-  else if (tx.origin === 'NPC') s.totals.processedNpc -= tx.amount;
+  else if (countsForBank(s, tx)) s.totals.processed -= tx.amount;
   tx.status = 'REVERSED';
   recordTx(s, tx, 'REVERSED', who, `${money(tx.amount)} returned from ${tx.settledTo} to ${tx.debitedFrom}`);
 }

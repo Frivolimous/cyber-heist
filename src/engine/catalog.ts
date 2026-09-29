@@ -149,7 +149,7 @@ export const SYSTEMS: SystemDef[] = [
         id: 'CUSTOMER_RECORDS',
         label: 'Customer Records',
         fns: [
-          fn('VIEW_CUSTOMERS', 'View customers', 'READ', 'Your customers, or all of them (needs a credential for all of Client Data): accounts, primary and banker.', [
+          fn('VIEW_CUSTOMERS', 'View customers', 'READ', 'Customers with their accounts, primary and banker. Personal Bankers see their own customers; everyone else sees all of them.', [
             { name: 'show', label: 'Show', kind: 'select', options: ['MINE', 'ALL'], optional: true },
           ]),
           fn('ADD_ACCOUNT', 'Add account', 'WRITE', 'Attach an account number to a customer, optionally as their primary.', [
@@ -314,7 +314,7 @@ export const SYSTEMS: SystemDef[] = [
             'Plant a fake employee in the bank\'s records. They show up in Employee Records and can be issued credentials from Permissions like any real employee.',
             [
               { name: 'name', label: 'Name', kind: 'text', placeholder: 'Dana Pruitt' },
-              { name: 'role', label: 'Role', kind: 'select', options: ['SECURITY_ANALYST', 'SYSTEMS_ADMIN', 'IT_SPECIALIST', 'PERSONAL_BANKER', 'ACCOUNTS_RECEIVABLES'] },
+              { name: 'role', label: 'Role', kind: 'select', options: ['PERSONAL_BANKER', 'ACCOUNTS_RECEIVABLES', 'IT_SPECIALIST', 'BANK_MANAGER'] },
               { name: 'ip', label: 'IP address', kind: 'text', placeholder: '10.1.0.30' },
             ],
           ),
@@ -408,24 +408,34 @@ export interface RoleDef {
 
 const c = (system: SystemId, module: string | null, permission: Permission): CredTemplate => ({ system, module, permission });
 
-// Overlapping on purpose: every critical step of the payment pipeline is reachable by 2-3 roles.
+// Separation of duties: Personal Bankers change accounts and start payments; Accounts & Receivables (and the
+// Bank Manager) verify those changes, score risk and settle. IT runs security; the Bank Manager oversees.
+// Personal Bankers are scoped to their own customers; every other role reads all of them (see handlers).
 export const ROLES: Record<RoleId, RoleDef> = {
-  SECURITY_ANALYST: {
-    id: 'SECURITY_ANALYST',
-    label: 'Security Analyst',
+  PERSONAL_BANKER: {
+    id: 'PERSONAL_BANKER',
+    label: 'Personal Banker',
     creds: [
-      c('SECURITY', 'MASTER_LOG', 'WRITE'), // tracing is part of the Master Log
-      c('SECURITY', 'EMPLOYEE_RECORDS', 'WRITE'),
-      c('TRANSACTIONS', 'RISK_CHECK', 'WRITE'),
+      c('SECURITY', 'EMPLOYEE_RECORDS', 'READ'),
+      c('CLIENT_DATA', 'CUSTOMER_RECORDS', 'WRITE'),
+      c('CLIENT_DATA', 'CLIENT_REQUESTS', 'WRITE'),
+      c('CLIENT_DATA', 'VERIFICATION', 'READ'),
+      c('TRANSACTIONS', 'PAYMENT_QUEUE', 'WRITE'),
+      c('TRANSACTIONS', 'RISK_CHECK', 'READ'),
+      c('TRANSACTIONS', 'AUTHORIZATION', 'WRITE'),
+      c('TRANSACTIONS', 'SETTLEMENT', 'READ'),
     ],
   },
-  SYSTEMS_ADMIN: {
-    id: 'SYSTEMS_ADMIN',
-    label: 'Systems Administrator',
+  ACCOUNTS_RECEIVABLES: {
+    id: 'ACCOUNTS_RECEIVABLES',
+    label: 'Accounts & Receivables',
     creds: [
-      c('SECURITY', 'FIREWALL', 'WRITE'),
-      c('SECURITY', 'MASTER_LOG', 'READ'),
+      c('SECURITY', 'EMPLOYEE_RECORDS', 'READ'),
+      c('CLIENT_DATA', 'CUSTOMER_RECORDS', 'READ'),
+      c('CLIENT_DATA', 'VERIFICATION', 'WRITE'),
       c('TRANSACTIONS', 'PAYMENT_QUEUE', 'READ'),
+      c('TRANSACTIONS', 'RISK_CHECK', 'WRITE'),
+      c('TRANSACTIONS', 'AUTHORIZATION', 'READ'),
       c('TRANSACTIONS', 'SETTLEMENT', 'WRITE'),
     ],
   },
@@ -433,51 +443,67 @@ export const ROLES: Record<RoleId, RoleDef> = {
     id: 'IT_SPECIALIST',
     label: 'IT Specialist',
     creds: [
-      c('SECURITY', 'PERMISSIONS', 'WRITE'),
+      c('SECURITY', 'FIREWALL', 'WRITE'),
+      c('SECURITY', 'MASTER_LOG', 'WRITE'), // tracing is part of the Master Log
       c('SECURITY', 'EMPLOYEE_RECORDS', 'WRITE'),
-      c('CLIENT_DATA', null, 'READ'), // whole-system view for now (all customers, requests, verification); permissions to be reviewed
+      c('SECURITY', 'PERMISSIONS', 'WRITE'),
+      c('CLIENT_DATA', 'CUSTOMER_RECORDS', 'READ'),
       c('TRANSACTIONS', 'PAYMENT_QUEUE', 'READ'),
-      c('TRANSACTIONS', 'RISK_CHECK', 'WRITE'),
     ],
   },
-  PERSONAL_BANKER: {
-    id: 'PERSONAL_BANKER',
-    label: 'Personal Banker',
+  BANK_MANAGER: {
+    id: 'BANK_MANAGER',
+    label: 'Bank Manager',
     creds: [
-      c('CLIENT_DATA', 'CUSTOMER_RECORDS', 'WRITE'),
-      c('CLIENT_DATA', 'CLIENT_REQUESTS', 'WRITE'),
+      c('SECURITY', 'FIREWALL', 'READ'),
+      c('SECURITY', 'MASTER_LOG', 'WRITE'),
+      c('SECURITY', 'EMPLOYEE_RECORDS', 'READ'),
+      c('SECURITY', 'PERMISSIONS', 'WRITE'),
+      c('CLIENT_DATA', 'CUSTOMER_RECORDS', 'READ'),
+      c('CLIENT_DATA', 'CLIENT_REQUESTS', 'READ'), // reads every banker's requests (see handlers)
       c('CLIENT_DATA', 'VERIFICATION', 'WRITE'),
       c('TRANSACTIONS', 'PAYMENT_QUEUE', 'READ'),
-      c('TRANSACTIONS', 'AUTHORIZATION', 'WRITE'),
-    ],
-  },
-  ACCOUNTS_RECEIVABLES: {
-    id: 'ACCOUNTS_RECEIVABLES',
-    label: 'Accounts & Receivables',
-    creds: [
-      c('TRANSACTIONS', 'PAYMENT_QUEUE', 'WRITE'),
-      c('TRANSACTIONS', 'RISK_CHECK', 'WRITE'),
-      c('TRANSACTIONS', 'AUTHORIZATION', 'WRITE'),
+      c('TRANSACTIONS', 'RISK_CHECK', 'READ'),
+      c('TRANSACTIONS', 'AUTHORIZATION', 'READ'),
       c('TRANSACTIONS', 'SETTLEMENT', 'WRITE'),
     ],
   },
 };
 
-export const ROLE_ORDER: RoleId[] = [
-  'SECURITY_ANALYST',
-  'SYSTEMS_ADMIN',
-  'IT_SPECIALIST',
-  'PERSONAL_BANKER',
-  'ACCOUNTS_RECEIVABLES',
-];
+/** Display order for roles (sandbox lists, planted-user role picker). */
+export const ROLE_ORDER: RoleId[] = ['PERSONAL_BANKER', 'ACCOUNTS_RECEIVABLES', 'IT_SPECIALIST', 'BANK_MANAGER'];
+
+/** The smallest game the role formulas support. */
+export const MIN_PLAYERS = 6;
+/** A hard cap for now, so nothing has to scale past it yet (may be raised or lowered later). */
+export const MAX_PLAYERS = 30;
+
+/**
+ * How many of each role a game of `n` players gets. Always exactly one Bank Manager; IT and Personal
+ * Bankers grow with the table; Accounts & Receivables take the rest.
+ */
+export function roleCounts(n: number): Record<RoleId, number> {
+  const it = 1 + Math.floor((n - 2) / 6);
+  const pb = 2 + Math.ceil((n - 6) / 2);
+  return { BANK_MANAGER: 1, IT_SPECIALIST: it, PERSONAL_BANKER: pb, ACCOUNTS_RECEIVABLES: n - 1 - it - pb };
+}
+
+/** How many Black Hats a game of `n` players gets (unless the config fixes it). */
+export const hackerCount = (n: number): number => Math.floor(n / 3);
 
 export const DEFAULT_CONFIG: GameConfig = {
-  durationSec: 40 * 60,
+  durationSec: 20 * 60,
+  whiteTargetPerPlayer: 20_000_000,
+  blackTargetPerHacker: 1_000_000,
+  volumePerPlayer: 25_000_000, // 1.25x the target: room for held, rejected and missed payments
+  requestEverySecPerBanker: 120,
+  customersPerBanker: 3,
+  // Derived at game creation (scaledConfig); these are the 10-player values, for reference only.
   whiteTarget: 200_000_000,
   blackTarget: 3_000_000,
   timeoutWinner: 'BLACK',
   blackHatCount: null,
-  npcIntervalSec: 20,
+  npcIntervalSec: 16,
   npcMinAmount: 500_000,
   npcMaxAmount: 4_000_000,
   maxManualAmount: 5_000_000,
@@ -491,7 +517,7 @@ export const DEFAULT_CONFIG: GameConfig = {
   clockStart: 8 * 3600 + 30 * 60,
   autoProcess: false,
   autoProcessDelaySec: 15,
-  requestIntervalSec: 45,
+  requestIntervalSec: 30, // derived
   requestChangeShare: 0.3,
   blockSec: 60,
   revokeCountdownSec: 30,

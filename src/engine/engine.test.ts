@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { accountVerified, applyAction, CHANNELS, createGame, ENCRYPTION_ENABLED, getPlayerView, grantMasterAccess, HOST_KITS, HOST_SHARED_MODULES, SYSTEMS, tick } from './index';
+import { accountVerified, applyAction, CHANNELS, createGame, DAY_PHASES, dayPhaseAt, nextArrival, paceMultiplier, ENCRYPTION_ENABLED, getPlayerView, grantMasterAccess, hackerCount, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, SYSTEMS, tick } from './index';
 import type { Action, ActionResult, GameConfig, GameState, Player, RoleId, SystemId } from './index';
 
 const NAMES = ['Jeremy', 'Sarah', 'Mike', 'David', 'Lisa', 'Anna', 'Omar', 'Priya', 'Chen', 'Rosa'];
@@ -54,21 +54,140 @@ class Sim {
   }
 }
 
-test('setup deals roles, allegiances, unique codes and one packet per system', () => {
+test('setup deals roles, allegiances, unique codes and a job description for everyone', () => {
   const { s } = new Sim();
   const ps = Object.values(s.players);
   assert.equal(ps.filter((p) => p.allegiance === 'BLACK').length, 3);
-  for (const role of ['IT_SPECIALIST', 'PERSONAL_BANKER', 'ACCOUNTS_RECEIVABLES', 'SECURITY_ANALYST', 'SYSTEMS_ADMIN']) {
-    assert.equal(ps.filter((p) => p.role === role).length, 2, role);
-  }
+  // 10 players: 1 Bank Manager, 2 IT, 4 Personal Bankers, 3 Accounts & Receivables.
+  const counts: Record<RoleId, number> = { BANK_MANAGER: 1, IT_SPECIALIST: 2, PERSONAL_BANKER: 4, ACCOUNTS_RECEIVABLES: 3 };
+  for (const [role, n] of Object.entries(counts)) assert.equal(ps.filter((p) => p.role === role).length, n, role);
   const codes = Object.values(s.credentials).map((c) => c.code);
   assert.equal(new Set(codes).size, codes.length);
   for (const p of ps) {
-    assert.deepEqual(p.packets.map((x) => x.system).sort(), ['BLACKHAT_DB', 'CLIENT_DATA', 'SECURITY', 'TRANSACTIONS']);
+    const job = getPlayerView(s, p.id).me.job;
+    assert.ok(job.summary && job.duties.length && job.tools.length && job.rules.length, p.role);
+    assert.equal(!!job.operative, p.allegiance === 'BLACK', 'only operatives get the handbook');
     assert.equal(p.knownSystems.includes('BLACKHAT_DB'), p.allegiance === 'BLACK');
     const hasDb = Object.values(s.credentials).some((c) => c.owner === p.id && c.system === 'BLACKHAT_DB');
     assert.equal(hasDb, p.allegiance === 'BLACK');
   }
+});
+
+test('any table of 6 to 30: roles and hackers follow the formulas, and every operative gets a kit', () => {
+  const table = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `P${i}` }));
+  assert.throws(() => createGame({ seed: 1, players: table(MIN_PLAYERS - 1), now: T0 }), /at least 6 players/);
+  assert.throws(() => createGame({ seed: 1, players: table(MAX_PLAYERS + 1), now: T0 }), /at most 30 players/);
+  // Spot checks against the formulas, as [n, Bank Manager, IT, Personal Banker, A&R, hackers].
+  const expected = [
+    [6, 1, 1, 2, 2, 2],
+    [7, 1, 1, 3, 2, 2],
+    [8, 1, 2, 3, 2, 2],
+    [10, 1, 2, 4, 3, 3],
+    [14, 1, 3, 6, 4, 4],
+    [20, 1, 4, 9, 6, 6],
+  ];
+  for (const [n, bm, it, pb, ar, hackers] of expected) {
+    assert.deepEqual(roleCounts(n), { BANK_MANAGER: bm, IT_SPECIALIST: it, PERSONAL_BANKER: pb, ACCOUNTS_RECEIVABLES: ar }, `n=${n}`);
+    assert.equal(hackerCount(n), hackers, `n=${n}`);
+  }
+  for (let n = MIN_PLAYERS; n <= MAX_PLAYERS; n++) {
+    const s = createGame({ seed: n, players: table(n), now: T0 });
+    const ps = Object.values(s.players);
+    const want = roleCounts(n);
+    for (const role of Object.keys(want) as RoleId[]) assert.equal(ps.filter((p) => p.role === role).length, want[role], `n=${n} ${role}`);
+    assert.ok(Object.values(want).every((k) => k >= 1), `n=${n}: every role is present`);
+    const blacks = ps.filter((p) => p.allegiance === 'BLACK');
+    assert.equal(blacks.length, hackerCount(n), `n=${n} hackers`);
+    for (const b of blacks) {
+      const kits = Object.values(s.credentials).filter((c) => c.owner === b.id && HOST_KITS.includes(c.module ?? ''));
+      assert.ok(kits.length >= 1, `n=${n}: ${b.name} has a kit`);
+    }
+  }
+});
+
+test('the economy scales with the table: targets, customers, requests and automatic traffic', () => {
+  const table = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `P${i}` }));
+  for (const n of [MIN_PLAYERS, 10, 20, MAX_PLAYERS]) {
+    const s = createGame({ seed: n, players: table(n), now: T0 });
+    const c = s.config;
+    const bankers = roleCounts(n).PERSONAL_BANKER;
+    assert.equal(c.durationSec, 20 * 60);
+    assert.equal(c.whiteTarget, 20_000_000 * n, `n=${n} bank target`);
+    assert.equal(c.blackTarget, 1_000_000 * hackerCount(n), `n=${n} hacker target`);
+    assert.equal(s.customers.length, 3 * bankers, `n=${n} customers`);
+    assert.ok(new Set(s.customers.map((x) => x.name)).size === s.customers.length, 'no duplicate customers');
+    // Each banker gets a request about every 2 minutes.
+    assert.ok(Math.abs((c.requestIntervalSec * bankers) - 120) < 1e-9, `n=${n} request rate`);
+    // Expected offered volume (automatic + requested payments) is about $25m per player.
+    const requested = (c.durationSec / c.requestIntervalSec) * (1 - c.requestChangeShare) * ((c.npcMinAmount + c.maxManualAmount) / 2);
+    const automatic = (c.durationSec / c.npcIntervalSec) * ((c.npcMinAmount + c.npcMaxAmount) / 2);
+    assert.ok(Math.abs(requested + automatic - 25_000_000 * n) < 1, `n=${n} volume ${requested + automatic}`);
+  }
+  // Customers are drawn at random: different seeds, different line-ups.
+  const names = (seed: number) => createGame({ seed, players: table(10), now: T0 }).customers.map((x) => x.name).join();
+  assert.notEqual(names(1), names(2));
+  // Explicit config still wins over the scaled defaults.
+  assert.equal(createGame({ seed: 1, players: table(10), now: T0, config: { whiteTarget: 5 } }).config.whiteTarget, 5);
+});
+
+test('manual payments count toward the bank target only when they fulfil a payment request', () => {
+  const sim = new Sim({ requestChangeShare: 0 });
+  grantMasterAccess(sim.s, 'p0');
+  const code = sim.code('p0', 'TRANSACTIONS', null);
+  const go = (module: string, fn: string, params: Record<string, string>) => sim.run('p0', code, 'TRANSACTIONS', module, fn, params);
+  const pay = (params: Record<string, string>): number => {
+    const before = sim.s.totals.processed;
+    assert.ok(go('PAYMENT_QUEUE', 'CREATE_TRANSACTION', params).ok);
+    const id = sim.s.transactions.at(-1)!.id;
+    go('RISK_CHECK', 'RUN_RISK_CHECK', { txId: id });
+    go('AUTHORIZATION', 'APPROVE', { txId: id });
+    assert.ok(go('SETTLEMENT', 'SETTLE', { txId: id }).ok);
+    return sim.s.totals.processed - before;
+  };
+  sim.at(1);
+  const [r1, r2] = sim.s.requests.filter((r) => r.kind === 'PAYMENT');
+  const from = (r: typeof r1) => r.originAccount!;
+  // Made up, no request: does not count.
+  assert.equal(pay({ originAccount: from(r1), beneficiaryId: r1.payeeId!, amount: '1000000' }), 0);
+  // Linked, but not what was asked (wrong amount): does not count.
+  assert.equal(pay({ originAccount: from(r1), beneficiaryId: r1.payeeId!, amount: String(r1.amount! + 1000), requestId: r1.id }), 0);
+  // Linked and matching payee and amount: counts in full.
+  assert.equal(pay({ originAccount: from(r2), beneficiaryId: r2.payeeId!, amount: String(r2.amount), requestId: r2.id }), r2.amount);
+});
+
+test('time of day: phases follow time remaining, busy phases are faster, and nothing arrives after close', () => {
+  const D = 20 * 60;
+  const at = (minutesLeft: number) => dayPhaseAt(D, D - minutesLeft * 60);
+  assert.deepEqual([at(18), at(14), at(10), at(8), at(5), at(2), at(0.5)].map((p) => `${p.label}/${p.pace}`), [
+    'Morning/SLOW',
+    'Morning/MEDIUM',
+    'Lunch Rush/BUSY',
+    'Afternoon/SLOW',
+    'Afternoon/MEDIUM',
+    'End of Day/BUSY',
+    'Close of Business/CLOSED',
+  ]);
+  // Busy runs 4x as fast as slow, medium 2x; the game-wide average rate is unchanged.
+  const m = (label: string, pace: string) => paceMultiplier(DAY_PHASES.find((p) => p.label === label && p.pace === pace)!);
+  assert.ok(Math.abs(m('Lunch Rush', 'BUSY') / m('Morning', 'SLOW') - 4) < 1e-9);
+  const avg = DAY_PHASES.reduce((sum, p) => sum + paceMultiplier(p) * (p.to - p.from), 0);
+  assert.ok(Math.abs(avg - 1) < 1e-9);
+  // Over a whole day, arrivals every 10s on average still number about D / 10 (floor rounding aside).
+  let n = 0;
+  let last = 0;
+  for (let t = nextArrival(D, 0, 10); t < Infinity; t = nextArrival(D, t, 10)) {
+    n++;
+    last = t;
+  }
+  assert.ok(Math.abs(n - D / 10) <= 1, `arrivals ${n}`);
+  assert.ok(last <= D * 0.95, 'nothing arrives at close of business');
+  // In a live game, nothing new arrives in the last minute.
+  const sim = new Sim();
+  sim.at(D - 60);
+  const [tx, req] = [sim.s.transactions.length, sim.s.requests.length];
+  sim.at(D - 1);
+  assert.deepEqual([sim.s.transactions.length, sim.s.requests.length], [tx, req]);
+  assert.equal(getPlayerView(sim.s, 'p0').dayPhase, 'Close of Business');
 });
 
 test('same seed gives the same game; different seed does not', () => {
@@ -81,7 +200,8 @@ test('same seed gives the same game; different seed does not', () => {
 
 test('logs name the credential owner, not the person at the keyboard; TRACE reveals the origin', () => {
   const sim = new Sim();
-  const [owner, analyst2] = sim.byRole('SECURITY_ANALYST');
+  const [owner] = sim.byRole('BANK_MANAGER');
+  const [analyst2] = sim.byRole('IT_SPECIALIST');
   const [thief] = sim.byRole('PERSONAL_BANKER');
   const ownerCode = sim.code(owner.id, 'SECURITY', 'MASTER_LOG');
 
@@ -136,7 +256,7 @@ test('a valid credential without the right scope is denied and attributed to its
 
 test('encryption is disabled: the Firewall offers no encryption functions', () => {
   const sim = new Sim();
-  const [admin] = sim.byRole('SYSTEMS_ADMIN');
+  const [admin] = sim.byRole('IT_SPECIALIST');
   sim.at(10);
   const r = sim.run(admin.id, sim.code(admin.id, 'SECURITY', 'FIREWALL'), 'SECURITY', 'FIREWALL', 'ADD_ENCRYPTION', { target: 'SECURITY.MASTER_LOG', code: '7777' });
   assert.equal(r.ok, false);
@@ -144,8 +264,8 @@ test('encryption is disabled: the Firewall offers no encryption functions', () =
 
 test('encryption locks a module until every layer code is supplied; bypass strips it and alerts', { skip: !ENCRYPTION_ENABLED && 'encryption disabled' }, () => {
   const sim = new Sim();
-  const [admin] = sim.byRole('SYSTEMS_ADMIN');
-  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const [admin] = sim.byRole('IT_SPECIALIST');
+  const [analyst] = sim.byRole('BANK_MANAGER');
   const fw = sim.code(admin.id, 'SECURITY', 'FIREWALL');
   const log = sim.code(analyst.id, 'SECURITY', 'MASTER_LOG');
   sim.at(10);
@@ -174,7 +294,7 @@ test('encryption locks a module until every layer code is supplied; bypass strip
 
 test('taking the Master Log offline leaves a gap in the log ids', () => {
   const sim = new Sim();
-  const [admin] = sim.byRole('SYSTEMS_ADMIN');
+  const [admin] = sim.byRole('IT_SPECIALIST');
   const [pb] = sim.byRole('PERSONAL_BANKER');
   const fw = sim.code(admin.id, 'SECURITY', 'FIREWALL');
   sim.at(5);
@@ -193,7 +313,6 @@ test('fraud pipeline: making a mule account the payee\'s primary diverts a payme
   const sim = new Sim({ npcMinAmount: 2_000_000, npcMaxAmount: 2_000_000 });
   const pb = sim.bankerOf(sim.s.transactions[0].beneficiaryId); // only a customer's own banker may change their accounts
   const [ar] = sim.byRole('ACCOUNTS_RECEIVABLES');
-  const [admin] = sim.byRole('SYSTEMS_ADMIN');
   const tx = sim.s.transactions[0];
   const payee = sim.s.customers.find((c) => c.id === tx.beneficiaryId)!;
   const originalPrimary = payee.primary;
@@ -204,7 +323,8 @@ test('fraud pipeline: making a mule account the payee\'s primary diverts a payme
   sim.at(30);
   assert.ok(sim.run(ar.id, arCode('RISK_CHECK'), 'TRANSACTIONS', 'RISK_CHECK', 'RUN_RISK_CHECK', { txId: tx.id }).ok);
   assert.equal(sim.s.transactions[0].riskResult, 'LOW');
-  assert.ok(sim.run(ar.id, arCode('AUTHORIZATION'), 'TRANSACTIONS', 'AUTHORIZATION', 'APPROVE', { txId: tx.id }).ok);
+  const approve = (id: string) => sim.run(pb.id, sim.code(pb.id, 'TRANSACTIONS', 'AUTHORIZATION'), 'TRANSACTIONS', 'AUTHORIZATION', 'APPROVE', { txId: id });
+  assert.ok(approve(tx.id).ok);
 
   // Diverted AFTER approval: settlement still pays whatever the payee's primary account is now.
   sim.at(40);
@@ -218,22 +338,22 @@ test('fraud pipeline: making a mule account the payee\'s primary diverts a payme
   assert.ok(st.ok, st.message);
   assert.ok(st.message.includes(mule));
   assert.equal(sim.s.totals.stolen, 2_000_000);
-  assert.equal(sim.s.totals.processedNpc, 0);
+  assert.equal(sim.s.totals.processed, 0);
   assert.equal(sim.s.status, 'RUNNING');
 
   // Reverse inside the window.
   sim.at(100);
-  const rev = sim.run(admin.id, sim.code(admin.id, 'TRANSACTIONS', 'SETTLEMENT'), 'TRANSACTIONS', 'SETTLEMENT', 'REVERSE', { txId: tx.id });
+  const rev = sim.run(ar.id, arCode('SETTLEMENT'), 'TRANSACTIONS', 'SETTLEMENT', 'REVERSE', { txId: tx.id });
   assert.ok(rev.ok, rev.message);
   assert.equal(sim.s.totals.stolen, 0);
 
   // A reversed payment cannot be reversed again; and the window closes.
   const tx2 = sim.s.transactions[1];
   sim.run(ar.id, arCode('RISK_CHECK'), 'TRANSACTIONS', 'RISK_CHECK', 'RUN_RISK_CHECK', { txId: tx2.id });
-  sim.run(ar.id, arCode('AUTHORIZATION'), 'TRANSACTIONS', 'AUTHORIZATION', 'APPROVE', { txId: tx2.id });
+  approve(tx2.id);
   sim.run(ar.id, arCode('SETTLEMENT'), 'TRANSACTIONS', 'SETTLEMENT', 'SETTLE', { txId: tx2.id });
   sim.at(100 + sim.s.config.reversalWindowSec + 5);
-  const late = sim.run(admin.id, sim.code(admin.id, 'TRANSACTIONS', 'SETTLEMENT'), 'TRANSACTIONS', 'SETTLEMENT', 'REVERSE', { txId: tx2.id });
+  const late = sim.run(ar.id, arCode('SETTLEMENT'), 'TRANSACTIONS', 'SETTLEMENT', 'REVERSE', { txId: tx2.id });
   assert.equal(late.ok, false);
   assert.match(late.message, /window/);
 });
@@ -249,7 +369,7 @@ test('the hidden system assessment flags recent primary changes; verifying clear
   assert.ok(add.ok, add.message);
   sim.run(ar.id, sim.code(ar.id, 'TRANSACTIONS', 'RISK_CHECK'), 'TRANSACTIONS', 'RISK_CHECK', 'RUN_RISK_CHECK', { txId: tx.id });
   assert.deepEqual(sim.s.transactions[0].riskFlags, ['UNVERIFIED_PRIMARY', 'RECENTLY_CHANGED_PRIMARY']);
-  for (const h of sim.s.customers.find((c) => c.id === payee)!.history) sim.run(pb.id, sim.code(pb.id, 'CLIENT_DATA', 'VERIFICATION'), 'CLIENT_DATA', 'VERIFICATION', 'VERIFY_CHANGE', { changeId: h.id });
+  for (const h of sim.s.customers.find((c) => c.id === payee)!.history) sim.run(ar.id, sim.code(ar.id, 'CLIENT_DATA', 'VERIFICATION'), 'CLIENT_DATA', 'VERIFICATION', 'VERIFY_CHANGE', { changeId: h.id });
   sim.run(ar.id, sim.code(ar.id, 'TRANSACTIONS', 'RISK_CHECK'), 'TRANSACTIONS', 'RISK_CHECK', 'RUN_RISK_CHECK', { txId: tx.id });
   assert.deepEqual(sim.s.transactions[0].riskFlags, ['RECENTLY_CHANGED_PRIMARY']);
   sim.at(20 + sim.s.config.recentModifySec + 1);
@@ -266,13 +386,14 @@ test('Black Hats win as soon as stolen money reaches the target', () => {
   sim.at(10);
   const add = sim.run(pb.id, sim.code(pb.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS'), 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: ben, account: mule, makePrimary: 'YES' });
   assert.ok(add.ok, add.message);
-  const q = sim.code(ar.id, 'TRANSACTIONS', 'PAYMENT_QUEUE');
+  const q = sim.code(pb.id, 'TRANSACTIONS', 'PAYMENT_QUEUE');
   const from = sim.s.customers.find((c) => c.id !== ben)!.primary;
-  const created = sim.run(ar.id, q, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'CREATE_TRANSACTION', { originAccount: from, beneficiaryId: ben, amount: '3000000' });
+  const created = sim.run(pb.id, q, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'CREATE_TRANSACTION', { originAccount: from, beneficiaryId: ben, amount: '3000000' });
   assert.ok(created.ok, created.message);
   const id = sim.s.transactions[sim.s.transactions.length - 1].id;
-  for (const [mod, fn] of [['RISK_CHECK', 'RUN_RISK_CHECK'], ['AUTHORIZATION', 'APPROVE'], ['SETTLEMENT', 'SETTLE']]) {
-    const r = sim.run(ar.id, sim.code(ar.id, 'TRANSACTIONS', mod), 'TRANSACTIONS', mod, fn, { txId: id });
+  // Risk and settlement are A&R's; approval is the banker's.
+  for (const [who, mod, fn] of [[ar, 'RISK_CHECK', 'RUN_RISK_CHECK'], [pb, 'AUTHORIZATION', 'APPROVE'], [ar, 'SETTLEMENT', 'SETTLE']] as const) {
+    const r = sim.run(who.id, sim.code(who.id, 'TRANSACTIONS', mod), 'TRANSACTIONS', mod, fn, { txId: id });
     assert.ok(r.ok, r.message);
   }
   assert.equal(sim.s.status, 'ENDED');
@@ -284,14 +405,19 @@ test('Black Hats win as soon as stolen money reaches the target', () => {
 test('NPC traffic arrives on a schedule and White Hats win once enough is settled', () => {
   const sim = new Sim({ npcMinAmount: 2_000_000, npcMaxAmount: 2_000_000 });
   assert.equal(sim.s.transactions.length, 3);
+  // Arrivals follow the time of day: count the scheduled ones due by t=60 (a slow morning).
+  const c = sim.s.config;
+  let due = 0;
+  for (let t = nextArrival(c.durationSec, 0, c.npcIntervalSec); t <= 60; t = nextArrival(c.durationSec, t, c.npcIntervalSec)) due++;
+  assert.ok(due >= 1);
   sim.at(60);
-  assert.equal(sim.s.transactions.length, 6);
+  assert.equal(sim.s.transactions.length, 3 + due);
 
   const win = new Sim({ npcMinAmount: 2_000_000, npcMaxAmount: 2_000_000, whiteTarget: 8_000_000, autoProcess: true });
   win.at(300);
   assert.equal(win.s.status, 'ENDED');
   assert.equal(win.s.winner, 'WHITE');
-  assert.ok(win.s.totals.processedNpc >= 8_000_000);
+  assert.ok(win.s.totals.processed >= 8_000_000);
 });
 
 test('when time runs out the configured side wins', () => {
@@ -306,7 +432,7 @@ test('when time runs out the configured side wins', () => {
 test('hidden host: guarded by credentials, discoverable through alerts, reachable once you know the address', () => {
   const sim = new Sim();
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
-  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const [analyst] = sim.byRole('BANK_MANAGER');
   const [it] = sim.byRole('IT_SPECIALIST');
   const white = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE' && p.id !== analyst.id && p.id !== it.id)!;
   const dbCode = sim.code(black.id, 'BLACKHAT_DB', 'BLACKNET');
@@ -354,7 +480,7 @@ test('hidden host: guarded by credentials, discoverable through alerts, reachabl
 
 test('sharing a credential is private; revoking one is visible and blocks its use', () => {
   const sim = new Sim();
-  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const [analyst] = sim.byRole('BANK_MANAGER');
   const [pb] = sim.byRole('PERSONAL_BANKER');
   const [it] = sim.byRole('IT_SPECIALIST');
   const cred = Object.values(sim.s.credentials).find((c) => c.owner === analyst.id && c.module === 'MASTER_LOG')!;
@@ -499,22 +625,25 @@ test('manual payments come from a typed customer account, and the queue shows bo
 
 test('payment history records every step with the credential owner and the real actor', () => {
   const sim = new Sim();
-  const [owner] = sim.byRole('ACCOUNTS_RECEIVABLES');
-  const [intruder] = sim.byRole('SECURITY_ANALYST');
-  const code = (m: string) => sim.code(owner.id, 'TRANSACTIONS', m);
+  const [ar] = sim.byRole('ACCOUNTS_RECEIVABLES');
+  const [pb] = sim.byRole('PERSONAL_BANKER');
+  const [intruder] = sim.byRole('BANK_MANAGER');
+  // Each stage's code belongs to the role that works it: approvals are the banker's, the rest A&R's.
+  const ownerOf = (m: string): Player => (m === 'AUTHORIZATION' ? pb : ar);
   sim.at(1);
-  // The intruder works the whole pipeline with the owner's codes.
-  for (const [m, fn] of [['RISK_CHECK', 'RUN_RISK_CHECK'], ['AUTHORIZATION', 'HOLD'], ['AUTHORIZATION', 'APPROVE'], ['SETTLEMENT', 'SETTLE'], ['SETTLEMENT', 'REVERSE']]) {
-    const r = sim.run(intruder.id, code(m), 'TRANSACTIONS', m, fn, { txId: '1' });
+  // The intruder works the whole pipeline with other people's codes.
+  const steps = [['RISK_CHECK', 'RUN_RISK_CHECK'], ['AUTHORIZATION', 'HOLD'], ['AUTHORIZATION', 'APPROVE'], ['SETTLEMENT', 'SETTLE'], ['SETTLEMENT', 'REVERSE']];
+  for (const [m, fn] of steps) {
+    const r = sim.run(intruder.id, sim.code(ownerOf(m).id, 'TRANSACTIONS', m), 'TRANSACTIONS', m, fn, { txId: '1' });
     assert.ok(r.ok, `${fn}: ${r.message}`);
   }
   const tx = sim.s.transactions[0];
   assert.deepEqual(tx.history.map((e) => e.action), ['CREATED', 'RISK_CHECKED', 'HELD', 'APPROVED', 'SETTLED', 'REVERSED']);
   assert.equal(tx.history[0].by, 'SYSTEM');
-  for (const e of tx.history.slice(1)) {
-    assert.equal(e.by, owner.id, 'records name the credential owner');
+  tx.history.slice(1).forEach((e, i) => {
+    assert.equal(e.by, ownerOf(steps[i][0]).id, 'records name the credential owner');
     assert.equal(e.actualPlayerId, intruder.id, 'truth names who typed it');
-  }
+  });
   assert.equal(tx.debitedFrom, tx.originAccount);
   assert.match(tx.history[1].detail!, /^risk (LOW|MEDIUM|HIGH)/);
 });
@@ -529,8 +658,8 @@ test('the auto-processor signs its steps as SYSTEM', () => {
 
 test('stage rows: both accounts, who handled it (credential owner or channel), and never the risk flags', () => {
   const sim = new Sim();
-  const [owner] = sim.byRole('ACCOUNTS_RECEIVABLES');
-  const [intruder] = sim.byRole('SECURITY_ANALYST');
+  const owner = sim.byRole('PERSONAL_BANKER').find((p) => p.id !== 'p0')!; // bankers create payments
+  const intruder = sim.byRole('BANK_MANAGER').find((p) => p.id !== 'p0')!;
   grantMasterAccess(sim.s, 'p0');
   const master = sim.code('p0', 'TRANSACTIONS', null);
   sim.at(1);
@@ -593,7 +722,11 @@ test('client requests: bankers are assigned, requests arrive over time, and each
   const bankers = sim.byRole('PERSONAL_BANKER');
   assert.ok(sim.s.customers.every((c) => bankers.some((b) => b.id === c.bankerId)), 'every customer has a personal banker');
   assert.equal(sim.s.requests.length, 2, 'two requests waiting at the start');
-  sim.at(sim.s.config.requestIntervalSec * 3 + 1);
+  // Three more arrive on the (time-of-day) schedule.
+  const c = sim.s.config;
+  let third = 0;
+  for (let i = 0; i < 3; i++) third = nextArrival(c.durationSec, third, c.requestIntervalSec);
+  sim.at(third + 0.5);
   assert.equal(sim.s.requests.length, 5);
   for (const r of sim.s.requests) {
     const cust = sim.s.customers.find((c) => c.id === r.customerId)!;
@@ -609,6 +742,12 @@ test('client requests: bankers are assigned, requests arrive over time, and each
   assert.equal(inbox(a, aCode).length, mine);
   // Someone else typing a's code sees a's inbox, not their own.
   assert.equal(inbox(b, aCode).length, mine);
+  // The Bank Manager reads every banker's requests, read-only.
+  const [bm] = sim.byRole('BANK_MANAGER');
+  const bmCode = sim.code(bm.id, 'CLIENT_DATA', 'CLIENT_REQUESTS');
+  assert.equal(inbox(bm, bmCode).length, sim.s.requests.length);
+  const open = sim.s.requests.find((r) => r.status === 'OPEN')!;
+  assert.equal(sim.run(bm.id, bmCode, 'CLIENT_DATA', 'CLIENT_REQUESTS', 'ARCHIVE_REQUEST', { requestId: open.id, reason: 'x' }).message, 'Access denied.');
   // A whole-system Client Data credential sees everyone's.
   grantMasterAccess(sim.s, 'p0');
   assert.equal(inbox(sim.s.players.p0, sim.code('p0', 'CLIENT_DATA', null)).length, sim.s.requests.length);
@@ -683,21 +822,26 @@ test('Permissions lives in Security; every account change waits in the Verificat
   assert.equal(pending.length, 2);
   assert.ok(pending[0].startsWith('CH-1 ') && pending[0].includes('CU2') && pending[0].includes('added ACC-54321') && pending[0].endsWith('[UNVERIFIED]'), pending[0]);
   assert.ok(pending[1].includes('-> ACC-54321') && pending[1].includes(`by ${pb.name}`), pending[1]);
-  assert.match(sim.run(pb.id, ver, 'CLIENT_DATA', 'VERIFICATION', 'VERIFY_CHANGE', { changeId: 'CH-9' }).message, /No such change/);
-  sim.run(pb.id, ver, 'CLIENT_DATA', 'VERIFICATION', 'VERIFY_CHANGE', { changeId: '1' });
+  // Bankers can see the queue but not verify: that is Accounts & Receivables' (and the Bank Manager's) job.
+  assert.equal(sim.run(pb.id, ver, 'CLIENT_DATA', 'VERIFICATION', 'VERIFY_CHANGE', { changeId: 'CH-1' }).message, 'Access denied.');
+  const [ar] = sim.byRole('ACCOUNTS_RECEIVABLES');
+  const arVer = sim.code(ar.id, 'CLIENT_DATA', 'VERIFICATION');
+  assert.match(sim.run(ar.id, arVer, 'CLIENT_DATA', 'VERIFICATION', 'VERIFY_CHANGE', { changeId: 'CH-9' }).message, /No such change/);
+  sim.run(ar.id, arVer, 'CLIENT_DATA', 'VERIFICATION', 'VERIFY_CHANGE', { changeId: '1' });
   assert.equal(view('PENDING').length, 1);
-  sim.run(pb.id, ver, 'CLIENT_DATA', 'VERIFICATION', 'VERIFY_CHANGE', { changeId: 'CH-2' });
+  sim.run(ar.id, arVer, 'CLIENT_DATA', 'VERIFICATION', 'VERIFY_CHANGE', { changeId: 'CH-2' });
   assert.deepEqual(view('PENDING'), ['Nothing here.']);
-  assert.ok(view('ALL').every((l) => l.endsWith(`[VERIFIED by ${pb.name}]`)));
+  assert.ok(view('ALL').every((l) => l.endsWith(`[VERIFIED by ${ar.name}]`)));
 });
 
-test('customer accounts: 14 customers; add, set primary and remove, with their rules and history', () => {
+test('customer accounts: 3 per banker; add, set primary and remove, with their rules and history', () => {
   const sim = new Sim();
-  assert.equal(sim.s.customers.length, 14);
+  assert.equal(sim.s.customers.length, 3 * sim.byRole('PERSONAL_BANKER').length);
   for (const c of sim.s.customers) {
     assert.ok(c.accounts.length >= 1 && c.accounts.length <= 3 && c.accounts.includes(c.primary));
   }
-  const [pb, other] = sim.byRole('PERSONAL_BANKER');
+  const pb = sim.bankerOf('CU5'); // only a customer's own banker can change their accounts
+  const other = Object.values(sim.s.players).find((p) => p.id !== pb.id)!;
   const cr = sim.code(pb.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS');
   const run = (fn: string, params: Record<string, string>) => sim.run(other.id, cr, 'CLIENT_DATA', 'CUSTOMER_RECORDS', fn, params);
   const cu = () => sim.s.customers.find((c) => c.id === 'CU5')!;
@@ -743,7 +887,7 @@ test('customer accounts: 14 customers; add, set primary and remove, with their r
   assert.equal(sim.s.totals.stolen, 1_000_000, 'the floating account was a mule');
 });
 
-test('Customer Records shows only your own customers unless you hold all of Client Data', () => {
+test('Customer Records: bankers see only their own customers; every other role sees all of them', () => {
   const sim = new Sim();
   const [a, b] = sim.byRole('PERSONAL_BANKER');
   const code = sim.code(a.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS');
@@ -755,8 +899,13 @@ test('Customer Records shows only your own customers unless you hold all of Clie
   grantMasterAccess(sim.s, 'p0');
   const master = sim.code('p0', 'CLIENT_DATA', null);
   assert.equal(shown('p0', master).length, sim.s.customers.filter((c) => c.bankerId === 'p0').length, '"My customers" is still yours');
-  assert.equal(sim.run('p0', master, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS', { show: 'ALL' }).lines!.filter((l) => l.startsWith('CU')).length, 14);
-  assert.match(sim.run(a.id, code, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS', { show: 'ALL' }).message, /needs a credential for all of Client Data/);
+  assert.equal(sim.run('p0', master, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS', { show: 'ALL' }).lines!.filter((l) => l.startsWith('CU')).length, sim.s.customers.length);
+  assert.match(sim.run(a.id, code, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS', { show: 'ALL' }).message, /can only view their own customers/);
+  // Staff with no customers of their own read every customer.
+  for (const role of ['ACCOUNTS_RECEIVABLES', 'IT_SPECIALIST', 'BANK_MANAGER'] as const) {
+    const [p] = sim.byRole(role);
+    assert.equal(shown(p.id, sim.code(p.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS')).length, sim.s.customers.length, role);
+  }
 });
 
 test('the risk queue flags unverified payee primaries and unverified originator accounts', () => {
@@ -802,15 +951,15 @@ test('bankers can only change their own customers\' accounts; a whole-system Cli
 
   // IT sees every customer, but read-only.
   const [it] = sim.byRole('IT_SPECIALIST');
-  const itCode = sim.code(it.id, 'CLIENT_DATA', null);
-  const view = sim.run(it.id, itCode, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS', { show: 'ALL' });
-  assert.equal(view.lines!.filter((l) => l.startsWith('CU')).length, 14);
+  const itCode = sim.code(it.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS');
+  const view = sim.run(it.id, itCode, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS');
+  assert.equal(view.lines!.filter((l) => l.startsWith('CU')).length, sim.s.customers.length);
   assert.equal(sim.run(it.id, itCode, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: 'CU1', account: '34343' }).message, 'Access denied.');
 });
 
 test('Firewall shows every module and its status; the registry lists active credentials unless asked for all', () => {
   const sim = new Sim();
-  const [admin] = sim.byRole('SYSTEMS_ADMIN');
+  const [admin] = sim.byRole('IT_SPECIALIST');
   const fw = sim.code(admin.id, 'SECURITY', 'FIREWALL');
   const status = () => sim.run(admin.id, fw, 'SECURITY', 'FIREWALL', 'VIEW_STATUS');
   sim.at(1);
@@ -832,7 +981,7 @@ test('Firewall shows every module and its status; the registry lists active cred
 
 test('live monitors: opening one is logged, its quiet refreshes are not', () => {
   const sim = new Sim();
-  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const [analyst] = sim.byRole('BANK_MANAGER');
   const code = sim.code(analyst.id, 'SECURITY', 'MASTER_LOG');
   const read = (quiet: boolean) => sim.do({ type: 'EXECUTE', playerId: analyst.id, code, system: 'SECURITY', module: 'MASTER_LOG', fn: 'VIEW_LOG', params: {}, quiet });
   sim.at(5);
@@ -851,7 +1000,7 @@ test('live monitors: opening one is logged, its quiet refreshes are not', () => 
 
 test('firewall: switching a module\'s security off lets anyone in without a code, logged as Anonymous', () => {
   const sim = new Sim();
-  const [admin] = sim.byRole('SYSTEMS_ADMIN');
+  const [admin] = sim.byRole('IT_SPECIALIST');
   const [pb] = sim.byRole('PERSONAL_BANKER');
   const fw = sim.code(admin.id, 'SECURITY', 'FIREWALL');
   const view = () => sim.run(pb.id, '', 'TRANSACTIONS', 'SETTLEMENT', 'VIEW_SETTLEMENT', {});
@@ -872,7 +1021,7 @@ test('firewall: switching a module\'s security off lets anyone in without a code
 
 test('firewall: blocking an address for a minute, and unblocking it early', () => {
   const sim = new Sim();
-  const [admin] = sim.byRole('SYSTEMS_ADMIN');
+  const [admin] = sim.byRole('IT_SPECIALIST');
   const [ar] = sim.byRole('ACCOUNTS_RECEIVABLES');
   const fw = sim.code(admin.id, 'SECURITY', 'FIREWALL');
   const fwRun = (fn: string, address: string) => sim.run(admin.id, fw, 'SECURITY', 'FIREWALL', fn, { address });
@@ -902,7 +1051,7 @@ test('firewall: blocking an address for a minute, and unblocking it early', () =
 
 test('revoking all access to a bank system shuts the bank down: everybody loses', () => {
   const sim = new Sim();
-  const [admin] = sim.byRole('SYSTEMS_ADMIN');
+  const [admin] = sim.byRole('IT_SPECIALIST');
   const fw = sim.code(admin.id, 'SECURITY', 'FIREWALL');
   sim.at(2);
   // The hidden host can be revoked without ending the game.
@@ -918,7 +1067,7 @@ test('revoking all access to a bank system shuts the bank down: everybody loses'
 
 test('firewall: "revoke all access" counts down, can be cancelled only from the Firewall, and is permanent once done', () => {
   const sim = new Sim();
-  const [admin] = sim.byRole('SYSTEMS_ADMIN');
+  const [admin] = sim.byRole('IT_SPECIALIST');
   const [ar] = sim.byRole('ACCOUNTS_RECEIVABLES');
   const [bystander] = sim.byRole('PERSONAL_BANKER');
   const fw = sim.code(admin.id, 'SECURITY', 'FIREWALL');
@@ -949,7 +1098,7 @@ test('firewall: "revoke all access" counts down, can be cancelled only from the 
 
 test('Employee Records show last activity, failed attempts, lockouts and blocks; alerts live in the Master Log', () => {
   const sim = new Sim();
-  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const [analyst] = sim.byRole('BANK_MANAGER');
   const [pb] = sim.byRole('PERSONAL_BANKER');
   const used = new Set(Object.values(sim.s.credentials).map((c) => c.code));
   const bad = ['0000', '1111', '2222', '3333'].filter((c) => !used.has(c));
@@ -985,7 +1134,7 @@ function clueIsTrue(sim: Sim, message: string, entry: { sourceIp: string | null;
 test('hidden host: failures are also "Unknown server activity", and traces give varied, always-true clues', () => {
   const sim = new Sim({ traceCooldownSec: 0 });
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
-  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const [analyst] = sim.byRole('BANK_MANAGER');
   const logCode = sim.code(analyst.id, 'SECURITY', 'MASTER_LOG');
   sim.at(5);
 
@@ -1033,7 +1182,7 @@ test('hidden host kits: every operative gets the shared modules and at least one
 test('Host Log: activity on the host by credential owner, and alerts when the bank traces it', () => {
   const sim = new Sim({ traceCooldownSec: 0 });
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
-  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const [analyst] = sim.byRole('BANK_MANAGER');
   const host = (module: string) => sim.code(black.id, 'BLACKHAT_DB', module);
   const hostLog = (show: string) => sim.run(black.id, host('HOST_LOG'), 'BLACKHAT_DB', 'HOST_LOG', 'VIEW_HOST_LOG', { show }).lines!;
   sim.at(3);
@@ -1054,7 +1203,7 @@ test('Infiltration / Reroute IP: activity follows the fake IP, exposure leaks th
   const sim = new Sim({ traceCooldownSec: 0 });
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
   const victim = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE')!;
-  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const [analyst] = sim.byRole('BANK_MANAGER');
   grantMasterAccess(sim.s, black.id);
   const hostCode = sim.code(black.id, 'BLACKHAT_DB', null);
   const secCode = sim.code(black.id, 'SECURITY', null);
@@ -1274,7 +1423,7 @@ test('Access / Lockout bomb: locks the target out with failed attempts pinned on
 test('Cleanup / Log wiper: hides a Master Log entry (id gap stays) but a Trace still reaches it', () => {
   const sim = new Sim({ traceCooldownSec: 0 });
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
-  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const [analyst] = sim.byRole('BANK_MANAGER');
   grantMasterAccess(sim.s, black.id);
   const host = sim.code(black.id, 'BLACKHAT_DB', null);
   const traceCode = sim.code(analyst.id, 'SECURITY', 'MASTER_LOG');
@@ -1333,7 +1482,7 @@ test('Infiltration / Reroute IP: the strongest reroute also hands over a working
   assert.ok(sim.run(black.id, sim.code(black.id, 'BLACKHAT_DB', null), 'BLACKHAT_DB', 'INFILTRATION', 'REROUTE_IP', { toIp: victim.ip, duration: '60' }).ok);
   const alert = sim.s.alerts.find((a) => a.kind === 'UNAUTHORIZED_ACTION')!;
   assert.ok(!/\d{4}/.test(alert.message), 'the alert itself gives nothing away');
-  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const [analyst] = sim.byRole('BANK_MANAGER');
   const trace = sim.run(analyst.id, sim.code(analyst.id, 'SECURITY', 'MASTER_LOG'), 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: alert.logId! });
   assert.ok(trace.message.includes(black.ip), trace.message);
   const code = trace.message.match(/Captured host access code: (\d{4})/)?.[1];
@@ -1343,7 +1492,7 @@ test('Infiltration / Reroute IP: the strongest reroute also hands over a working
 
 test('Employee Records: reset a lockout', () => {
   const sim = new Sim();
-  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const [analyst] = sim.byRole('IT_SPECIALIST'); // the only role with Employee Records write
   const [pb] = sim.byRole('PERSONAL_BANKER');
   const used = new Set(Object.values(sim.s.credentials).map((c) => c.code));
   const bad = ['0000', '1111', '2222', '3333'].filter((c) => !used.has(c));

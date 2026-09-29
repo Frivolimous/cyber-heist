@@ -24,6 +24,7 @@ import {
 } from './core';
 import { findCredentialByCode } from './credentials';
 import { advanceCracks, credScopeText, HANDLERS } from './handlers';
+import { nextArrival } from './pacing';
 import type { Ctx } from './handlers';
 import type {
   Action,
@@ -43,10 +44,11 @@ export function advanceState(s: GameState, now: number): void {
   const endT = s.config.durationSec;
   const targetT = Math.min(Math.max(0, (now - s.startedAt) / 1000), endT);
 
-  // Scheduled arrivals (NPC payments, client requests), handled in time order.
+  // Scheduled arrivals (NPC payments, client requests), handled in time order. Their rate follows the time
+  // of day (pacing.ts): slow mornings, a lunch rush, a busy end of day, nothing new at close of business.
   while (s.status === 'RUNNING') {
-    const nextNpc = s.lastNpcAt + s.config.npcIntervalSec;
-    const nextReq = s.lastRequestAt + s.config.requestIntervalSec;
+    const nextNpc = nextArrival(endT, s.lastNpcAt, s.config.npcIntervalSec);
+    const nextReq = nextArrival(endT, s.lastRequestAt, s.config.requestIntervalSec);
     const next = Math.min(nextNpc, nextReq);
     if (next > targetT) break;
     s.now = Math.max(s.now, s.startedAt + next * 1000);
@@ -87,7 +89,7 @@ export function checkWin(s: GameState): void {
     s.status = 'ENDED';
     s.winner = 'BLACK';
     s.endReason = 'The Black Hats diverted enough money.';
-  } else if (s.totals.processedNpc >= s.config.whiteTarget) {
+  } else if (s.totals.processed >= s.config.whiteTarget) {
     s.status = 'ENDED';
     s.winner = 'WHITE';
     s.endReason = 'The bank processed its quota of legitimate payments.';

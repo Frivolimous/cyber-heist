@@ -17,8 +17,8 @@ Move an item out of here when it ships.
 
 ## Security
 
-- **Server module** (a separate Security module, not part of the Firewall). Access: IT Specialist,
-  Security Analyst, Systems Administrator.
+- **Server module** (a separate Security module, not part of the Firewall). Access: IT Specialist
+  (write), Bank Manager (probably read, like the Firewall).
   - **Network reboot**: every bank system goes offline for about 30s, then comes back with defaults
     (all modules online, security on, temporary blocks cleared). Does not undo revocations or any data
     (accounts, credentials). Logged, with a short countdown that can be cancelled, like "revoke all
@@ -84,35 +84,28 @@ Agreed 2026-09-28. The Black Hat tool list itself is kept by the designer and no
 
 ## Roles and balance
 
-- **Roles and permissions review** (do this before writing job descriptions). Candidate new role:
-  **Bank Manager**, not designed yet. Temporary choices to revisit:
-  - IT Specialists hold a read-only credential for all of Client Data (so they can view every customer).
-  - Only Accounts & Receivables can create payments, so bankers need someone else to carry out
-    payment requests.
-  - Personal Bankers hold the heist-critical Customer Records write (scoped to their own customers).
-  - Anyone with Firewall write can start a "revoke all access" (the nuclear option); only the Systems
-    Administrator starts with it.
+- **Planted users and IPs.** Infiltration / Create user accepts an IP already used by a real
+  workstation; lookups by IP then pick one arbitrarily. Decide whether to reject used IPs or keep it as a
+  framing trick.
+- **Role balance to watch in playtests.** Roles were replaced 2026-09-29 (see RULES.md > Roles). Things
+  to check: only IT Specialists hold Firewall write, so only they can start "revoke all access"
+  (the nuclear option), and at 6-7 players there is just one; Personal Bankers now hold both Customer Records write and Payment Queue write,
+  so one banker can divert a customer and start payments to them (verification and risk sit with other
+  roles); Employee Records write (reset a lockout) is IT-only.
+- **Economy balance** (scaling shipped 2026-09-29, numbers are a first guess). Targets ($20M per player,
+  $1M per Black Hat), volume ($25M per player, automatic + requested) and request rate (one per banker
+  every 2 minutes) all scale with the table; see RULES.md > Win conditions. To check in playtests:
+  - automatic traffic alone is below the bank target at every size, so the bank must act on requests to
+    win: is the request workload right?
+  - the hacker target grows with Black Hats, but their chances per payment do not change;
+  - the 20-minute timer is new (was 40);
+  - time-of-day pacing (busy = 4x slow) is a first guess, and automatic payments follow it too; the
+    in-game clock (08:30 upward, used in logs) no longer shows in the header and does not match the
+    time-of-day names.
+  The 30-player cap keeps workstation IPs (10.1.0.11 upward) well inside one subnet; raising it past
+  ~244 would need a new IP scheme. Raising it past 30 also needs more than 42 customer names.
 - **Timer.** At the end of the clock the Black Hats win by default. With the nuclear option, a losing
   White Hat side may prefer to shut the bank down; check in playtests.
-
-## Under consideration
-
-- **Remove info packets** (the private facts dealt to each player at the start, shown in My workstation >
-  Profile). Not decided yet. Today they are the main source of:
-  - the hidden host's address (two Security facts give it in full) and the digits of one operative's
-    host code;
-  - two customers' original primary accounts and two mule (target) accounts;
-  - one operative's workstation IP and the number of operatives;
-  - rules hints (trace limits, lockouts, verification, risk scoring).
-
-  Without them, the address comes only from trace clues and players; host codes only from guessing,
-  sharing or a Black Hat's workstation. Some rules hints may need another home (e.g. a help page).
-- **Job descriptions** (proposed replacement for info packets; wait for the roles and permissions review): each role gets a job description in
-  My workstation (a "Job" tab): what you do, your tools (the modules you have access to), who you depend
-  on (e.g. bankers need Accounts & Receivables to create payments), and the rules that matter for your
-  job. Black Hats get a separate secret section (objective, hidden host address, how to act unseen); it
-  lives on their workstation, so a White Hat who logs in to it can find it. General rules ("logs name
-  the credential owner") could go in a short shared "How the bank works" section.
 
 ## Deferred (from the original design)
 
