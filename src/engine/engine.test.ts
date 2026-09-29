@@ -1712,7 +1712,7 @@ test('request deadlines: a scam request is never chased and expires without a co
   assert.ok(sim.s.players[manager.id].messages.length >= managerMail);
 });
 
-test('phishing: every banker gets 1-5 obvious scam messages, from made-up customers, that lapse quietly', () => {
+test('phishing: every banker gets 1-5 obvious scam messages, from made-up customers, that stay open until archived', () => {
   const sim = new Sim({ requestIntervalSec: 99999, npcIntervalSec: 99999 });
   const bankers = sim.byRole('PERSONAL_BANKER').map((p) => p.id);
   for (const id of bankers) {
@@ -1736,18 +1736,20 @@ test('phishing: every banker gets 1-5 obvious scam messages, from made-up custom
   const code = sim.code(p.bankerId!, 'CLIENT_DATA', 'CLIENT_REQUESTS');
   const view = sim.run(p.bankerId!, code, 'CLIENT_DATA', 'CLIENT_REQUESTS', 'VIEW_REQUESTS').lines!;
   assert.ok(view.some((l) => l.startsWith(p.id) && l.includes(`${p.sender} -> `)), view.join('\n'));
+  assert.ok(!view.find((l) => l.startsWith(p.id))!.includes('due in'), 'no deadline');
 
-  // Nobody chases it or complains; archived, it stays archived past the deadline.
+  // Nobody chases it or complains, and it never expires.
   assert.ok(sim.run(p.bankerId!, code, 'CLIENT_DATA', 'CLIENT_REQUESTS', 'ARCHIVE_REQUEST', { requestId: p.id, reason: 'obvious phishing' }).ok);
   const mail = Object.values(sim.s.players).reduce((n, x) => n + x.messages.length, 0);
   for (let t = sim.sec; t < sim.s.config.durationSec - 1; t += 10) sim.at(t);
   const now = sim.s.requests.find((r) => r.id === p.id)!;
   assert.equal(now.reminders.length, 0);
-  assert.equal(now.outcome, 'MISSED');
+  assert.equal(now.outcome, null);
   assert.equal(now.status, 'ARCHIVED');
   assert.equal(Object.values(sim.s.players).reduce((n, x) => n + x.messages.length, 0) >= mail, true);
   assert.equal(sim.s.requests.filter((r) => r.phish).length, total, 'all of them arrived');
-  assert.ok(sim.s.requests.filter((r) => r.phish && r.status === 'EXPIRED').length > 0, 'unarchived ones just expire');
+  const open = sim.s.requests.filter((r) => r.phish && r.id !== p.id);
+  assert.ok(open.length > 0 && open.every((r) => r.status === 'OPEN' && r.outcome === null), 'the rest are still open at close of business');
   assert.ok(sim.s.customers.every((c) => c.strikes === 0 || !sim.s.requests.some((r) => r.phish && r.customerId === c.id)));
 });
 
@@ -1843,4 +1845,57 @@ test('permissions: security write credentials are revoked after a cancellable co
   assert.equal(last().kind, 'SECURITY_FATAL');
   assert.ok(run(admin.id, 'CREATE_CREDENTIAL', { owner: banker.id, scope: 'SECURITY.*', permission: 'WRITE' }).ok);
   assert.equal(last().kind, 'SECURITY_FATAL');
+});
+
+test('notifications: a page bell needs write access, and pops up only other people\'s activity', () => {
+  const sim = new Sim();
+  const [it1, it2] = sim.byRole('IT_SPECIALIST');
+  const [ar] = sim.byRole('ACCOUNTS_RECEIVABLES');
+  const [banker] = sim.byRole('PERSONAL_BANKER');
+  const watch = (pid: string, system: SystemId, module: string, on = true) => sim.do({ type: 'SET_WATCH', playerId: pid, system, module, on });
+  const notes = (pid: string) => sim.s.players[pid].notifications.map((n) => n.text);
+  sim.at(2);
+
+  // Write access only: A&R cannot watch the Firewall; pages without a bell are refused.
+  assert.match(watch(ar.id, 'SECURITY', 'FIREWALL').message, /need write access/);
+  assert.match(watch(ar.id, 'CLIENT_DATA', 'CLIENT_REQUESTS').message, /need write access/);
+  assert.ok(watch(it1.id, 'SECURITY', 'FIREWALL').ok);
+  assert.ok(watch(it1.id, 'SECURITY', 'PERMISSIONS').ok);
+  assert.ok(watch(it1.id, 'SECURITY', 'MASTER_LOG').ok);
+  assert.ok(watch(ar.id, 'TRANSACTIONS', 'RISK_CHECK').ok);
+  assert.ok(watch(ar.id, 'TRANSACTIONS', 'SETTLEMENT').ok);
+  assert.ok(watch(banker.id, 'CLIENT_DATA', 'CLIENT_REQUESTS').ok);
+
+  // Someone else's Firewall activity notifies; your own does not.
+  const fw2 = sim.code(it2.id, 'SECURITY', 'FIREWALL');
+  assert.ok(sim.run(it2.id, fw2, 'SECURITY', 'FIREWALL', 'BLOCK_ADDRESS', { address: ar.ip }).ok);
+  assert.ok(notes(it1.id).includes(`${it2.name} blocked ${ar.ip} for ${sim.s.config.blockSec}s`));
+  assert.ok(notes(it1.id).some((n) => n.startsWith('Suspicious security activity')), 'the Master Log bell pops up the alert');
+  const before = notes(it1.id).length;
+  assert.ok(sim.run(it1.id, sim.code(it1.id, 'SECURITY', 'FIREWALL'), 'SECURITY', 'FIREWALL', 'UNBLOCK_ADDRESS', { address: ar.ip }).ok);
+  assert.equal(notes(it1.id).length, before, 'own activity is not notified');
+
+  // Using someone else's code counts as theirs: the owner of the code is notified of it.
+  assert.ok(sim.run(it1.id, sim.code(it2.id, 'SECURITY', 'PERMISSIONS'), 'SECURITY', 'PERMISSIONS', 'VIEW_PERMISSIONS', {}).ok);
+  assert.ok(notes(it1.id).some((n) => n.startsWith(`${it2.name} `)));
+
+  // Payments: new ones wait for a score; the banker's own requests and follow-ups arrive.
+  for (let t = 10; t <= 400; t += 10) sim.at(t);
+  assert.ok(notes(ar.id).some((n) => n.includes('waiting for a risk score')));
+  const mine = sim.s.requests.filter((r) => r.bankerId === banker.id).map((r) => r.id);
+  const reqNotes = notes(banker.id).filter((n) => n.startsWith('New request') || n.startsWith('Follow-up'));
+  assert.ok(reqNotes.length > 0);
+  assert.ok(reqNotes.every((n) => mine.some((id) => n.includes(`${id} `))), 'only their own customers');
+
+  // Losing write access silences the bell.
+  for (const cr of Object.values(sim.s.credentials)) if (cr.owner === ar.id && cr.module === 'RISK_CHECK') cr.status = 'REVOKED';
+  sim.s.players[ar.id].notifications = [];
+  const txBefore = sim.s.transactions.length;
+  for (let t = 410; t <= 600; t += 10) sim.at(t);
+  assert.ok(sim.s.transactions.length > txBefore, 'payments kept arriving');
+  assert.ok(!notes(ar.id).some((x) => x.includes('waiting for a risk score')));
+
+  // Switching it off.
+  assert.ok(watch(it1.id, 'SECURITY', 'FIREWALL', false).ok);
+  assert.ok(!sim.s.players[it1.id].watching.includes('SECURITY.FIREWALL'));
 });

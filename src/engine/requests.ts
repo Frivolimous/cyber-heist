@@ -3,6 +3,7 @@
 
 import { activeCustomers, affordableAmount, payingAccount, paymentFor, wealthWeight } from './bank';
 import { addLog, gameTime, money, nextId, unusedAccountNumber } from './core';
+import { notify } from './notify';
 import { pick, rand, randInt, weightedPick } from './rng';
 import type { ClientRequest, Customer, GameState, Player, RequestKind } from './types';
 
@@ -164,9 +165,17 @@ export function spawnRequest(s: GameState): ClientRequest | null {
     archiveReason: null,
   };
   s.requests.push(req);
-  addLog(s, { actor: 'SYSTEM', kind: 'CLIENT_REQUEST', message: `Client request ${req.id} received`, sourceIp: null, actualPlayerId: null });
+  requestReceived(s, req);
   return req;
 }
+
+/** Logs a new request and notifies its banker. Real, scam and phishing requests all arrive the same way. */
+export function requestReceived(s: GameState, req: ClientRequest): void {
+  addLog(s, { actor: 'SYSTEM', kind: 'CLIENT_REQUEST', message: `Client request ${req.id} received`, sourceIp: null, actualPlayerId: null });
+  notify(s, 'CLIENT_DATA', 'CLIENT_REQUESTS', `New request ${req.id} from ${requestSender(s, req)}`, { bankerId: req.bankerId });
+}
+
+const requestSender = (s: GameState, req: ClientRequest): string => req.sender ?? s.customers.find((x) => x.id === req.customerId)?.name ?? req.customerId;
 
 // ---- Deadlines, reminders and complaints ----------------------------------------------------------
 // Every request has a deadline. Halfway there, if what was asked has not happened, the customer chases it
@@ -286,10 +295,7 @@ export function advanceRequests(s: GameState): void {
   while (s.phishSchedule.length && s.phishSchedule[0].at <= t) spawnPhish(s, s.phishSchedule.shift()!.bankerId);
   for (const r of s.requests) {
     if (r.outcome !== null) continue;
-    if (r.phish) {
-      if (t >= r.dueAt) closeUnanswered(s, r); // nobody is behind it: it just lapses
-      continue;
-    }
+    if (r.phish) continue; // no deadline: it sits in the queue until someone archives it
     const c = s.customers.find((x) => x.id === r.customerId)!;
     if (t >= r.dueAt) expire(s, r, c);
     else if (t >= r.remindAt && !r.reminders.length && !r.scam && !c.suspended && !requestMet(s, r)) remind(s, r, c);
@@ -306,12 +312,13 @@ function remind(s: GameState, r: ClientRequest, c: Customer): void {
   }
   if (r.bankerId) customerMessage(s, c, s.players[r.bankerId], text);
   addLog(s, { actor: 'SYSTEM', kind: 'CLIENT_REMINDER', message: `Client follow-up received on ${r.id}`, sourceIp: null, actualPlayerId: null });
+  notify(s, 'CLIENT_DATA', 'CLIENT_REQUESTS', `Follow-up on ${r.id} from ${requestSender(s, r)}`, { bankerId: r.bankerId });
 }
 
 /** At the deadline: done if what was asked happened, otherwise expired, a strike, and a complaint (or a walkout). */
 /**
  * A request past its deadline with nothing done: it can no longer be acted on. An archived one stays archived
- * (for real, scam and phishing requests alike, so the status never gives away which were real); the rest expire.
+ * (for real and scam requests alike, so the status never gives away which were real); the rest expire.
  */
 function closeUnanswered(s: GameState, r: ClientRequest): void {
   r.outcome = 'MISSED';
@@ -346,7 +353,7 @@ function expire(s: GameState, r: ClientRequest, c: Customer): void {
 // ---- Phishing --------------------------------------------------------------------------------------
 // Obvious scam messages that land in the Client Requests like any other: a customer tag that does not exist,
 // a destination account that does not exist, and no account of their own to pay from. They are noise to
-// recognise and archive. Nobody chases them; at the deadline they simply lapse (no strike, no complaint).
+// recognise and archive. They have no deadline: nobody chases them, and they stay open until archived.
 
 type Bait = { banker: string; cu: string; acct: string; amt: string; fee: string };
 
@@ -414,5 +421,5 @@ function spawnPhish(s: GameState, bankerId: string): void {
     txId: null,
     archiveReason: null,
   });
-  addLog(s, { actor: 'SYSTEM', kind: 'CLIENT_REQUEST', message: `Client request ${s.requests.at(-1)!.id} received`, sourceIp: null, actualPlayerId: null });
+  requestReceived(s, s.requests.at(-1)!);
 }

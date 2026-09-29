@@ -24,6 +24,7 @@ import {
 } from './core';
 import { findCredentialByCode } from './credentials';
 import { advanceCracks, credScopeText, HANDLERS } from './handlers';
+import { canWriteModule, notify, WATCHABLE } from './notify';
 import { nextArrival } from './pacing';
 import type { Ctx } from './handlers';
 import type {
@@ -123,6 +124,9 @@ export function applyAction(state: GameState, action: Action, now: number): { st
     case 'ACCESS_WORKSTATION':
       result = accessWorkstation(s, p, action.targetId, action.code);
       break;
+    case 'SET_WATCH':
+      result = setWatch(s, p, action.system, action.module, action.on);
+      break;
     default:
       result = fail('Unknown action.');
   }
@@ -136,6 +140,7 @@ function registerFailure(s: GameState, p: Player): void {
   if (p.failStreak >= s.config.lockoutAfterFails) {
     p.failStreak = 0;
     p.lockedUntil = gameTime(s) + s.config.lockoutSec;
+    notify(s, 'SECURITY', 'EMPLOYEE_RECORDS', `${p.name}'s workstation (${p.ip}) is locked out for ${s.config.lockoutSec}s`, { owner: p.id });
   }
 }
 
@@ -231,6 +236,9 @@ function openCredential(s: GameState, a: ExecuteAction): Credential {
 const anonymous = (p: Player): Player => ({ ...p, id: ANONYMOUS, name: 'Anonymous' });
 
 /** Runs a function once access is settled (a real credential, or open access). */
+/** Pages whose bell notifies about every logged use (see notify.ts). */
+const ANY_ACTIVITY = ['SECURITY.FIREWALL', 'SECURITY.PERMISSIONS'];
+
 function run(
   s: GameState,
   p: Player,
@@ -297,6 +305,10 @@ function run(
   if (quiet && res.ok) return { ok: true, message: res.message, lines: res.lines };
   if (res.ok && def.permission === 'READ' && !p.monitoring.includes(monitorKey)) p.monitoring.push(monitorKey);
   if (res.ok && !st.logged) st.logged = writeAccessLog(res.logDetail);
+  // "Any activity" pages notify with the Master Log line (it names the credential owner, not who typed).
+  if (res.ok && st.logged && !hidden && ANY_ACTIVITY.includes(keyOf(a.system, a.module))) {
+    notify(s, a.system, a.module, st.logged.message, { owner: owner.id });
+  }
 
   const via = open ? 'open access (no code)' : owner.id === p.id ? `your credential ${cred.id}` : `${owner.name}'s credential ${cred.id}`;
   note(p, t, `${res.ok ? 'OK' : 'FAILED'}: ${def.label} on ${label} using ${via}${res.ok ? '' : ' - ' + res.message}`);
@@ -314,6 +326,21 @@ function shareCredential(s: GameState, p: Player, credentialId: string, toId: st
   note(p, t, `Shared credential ${cred.id} (${credScopeText(cred)}) with ${to.name}.`);
   note(to, t, `${p.name} shared credential ${cred.id} (${nameOf(s, cred.owner)}'s, ${credScopeText(cred)}) with you. Code ${cred.code}.`);
   return ok(`Shared ${cred.id} with ${to.name}.`);
+}
+
+/** The notification bell on a page. It can only be switched on where this workstation holds write access. */
+function setWatch(s: GameState, p: Player, system: string, module: string, on: boolean): ActionResult {
+  const key = keyOf(system, module);
+  const what = WATCHABLE[key];
+  if (!what) return fail('This page has no notifications.');
+  const label = targetLabel(system, module);
+  if (!on) {
+    p.watching = p.watching.filter((k) => k !== key);
+    return ok(`Notifications off for ${label}.`);
+  }
+  if (!canWriteModule(s, p, system, module)) return fail(`You need write access to ${label} to be notified from it.`);
+  if (!p.watching.includes(key)) p.watching.push(key);
+  return ok(`Notifications on for ${label}: ${what}.`);
 }
 
 function sendMessage(s: GameState, p: Player, toId: string, text: string): ActionResult {
@@ -408,6 +435,7 @@ function runDueRevocations(s: GameState): void {
     const message = `Credential ${cr.id} (${owner.name}) revoked, as started by ${nameOf(s, by)}`;
     const entry = addLog(s, { actor: 'SYSTEM', kind: 'CRED_REVOKED', message, sourceIp: null, actualPlayerId: null });
     addAlert(s, 'SECURITY_FATAL', `Fatal security activity: ${message}`, entry.id, 3);
+    notify(s, 'SECURITY', 'PERMISSIONS', message);
   }
   for (const r of s.revocations) {
     if (r.status !== 'PENDING' || r.executeAt > t) continue;
@@ -427,6 +455,7 @@ function runDueRevocations(s: GameState): void {
     const message = `Firewall: all access revoked for ${r.address} (${r.id})${victim ? `, ${revoked} of ${victim.name}'s credential${revoked === 1 ? '' : 's'} revoked` : ''}`;
     const entry = addLog(s, { actor: 'SYSTEM', kind: 'REVOKED_ALL', message, sourceIp: null, actualPlayerId: null });
     addAlert(s, 'SECURITY_FATAL', `Fatal security activity: ${message}`, entry.id, 3);
+    notify(s, 'SECURITY', 'FIREWALL', message);
     // The nuclear option: cutting off one of the bank's own systems shuts the bank down, and everybody loses.
     const bankSystem = SYSTEMS.find((sys) => !sys.hidden && sys.address === r.address);
     if (bankSystem && s.status === 'RUNNING') {

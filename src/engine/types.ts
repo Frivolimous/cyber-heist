@@ -275,6 +275,14 @@ export interface Message {
   text: string;
 }
 
+/** A pop-up notification from a watched page. Short-lived: the screen shows each one once. */
+export interface Notice {
+  id: string;
+  t: number;
+  page: string; // module label, e.g. "Firewall"
+  text: string;
+}
+
 export interface ActivityEntry {
   t: number;
   text: string;
@@ -300,6 +308,8 @@ export interface Player {
   lastActiveAt: number | null; // last time this workstation tried to use a system
   monitoring: string[]; // READ functions this player has opened with a logged read; only these can refresh quietly
   remoteAccess: { playerId: PlayerId; credentialId: string }[]; // other workstations this player has logged in to
+  watching: string[]; // pages (SYSTEM.MODULE) with the notification bell on
+  notifications: Notice[]; // the last few pop-ups, newest last
   fake?: boolean; // planted by a Black Hat (Infiltration): a record in Employee Records, not a real seat
 }
 
@@ -345,7 +355,7 @@ export interface GameState {
    */
   totals: { processed: number; stolen: number };
   hiddenHost: string;
-  counters: { log: number; alert: number; cred: number; tx: number; msg: number; req: number; change: number; revoke: number; host: number; player: number; crack: number };
+  counters: { log: number; alert: number; cred: number; tx: number; msg: number; req: number; change: number; revoke: number; host: number; player: number; crack: number; notice: number };
 }
 
 // ---- Actions -------------------------------------------------------------
@@ -385,7 +395,15 @@ export interface AccessWorkstationAction {
   targetId: PlayerId;
   code: string;
 }
-export type Action = ExecuteAction | ShareCredentialAction | SendMessageAction | ConnectAction | AccessWorkstationAction;
+/** Switches the notification bell on or off for one page. */
+export interface SetWatchAction {
+  type: 'SET_WATCH';
+  playerId: PlayerId;
+  system: SystemId;
+  module: string;
+  on: boolean;
+}
+export type Action = ExecuteAction | ShareCredentialAction | SendMessageAction | ConnectAction | AccessWorkstationAction | SetWatchAction;
 
 export interface ActionResult {
   ok: boolean;

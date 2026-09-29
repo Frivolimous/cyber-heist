@@ -34,7 +34,8 @@ import { createCredential } from './credentials';
 import { pick, rand, randInt } from './rng';
 import { computeRisk, paymentFor, recordTx, reverseTransaction, settleTransaction } from './bank';
 import type { TxActor } from './bank';
-import { accountRequestText, requestTimes } from './requests';
+import { accountRequestText, requestReceived, requestTimes } from './requests';
+import { notify } from './notify';
 import type { AccountChange, ClientRequest, CodeCrack, Credential, Customer, Message, RequestKind, Revocation, GameState, LogEntry, Player, RoleId, SystemId, Transaction, TxEvent, TxStatus } from './types';
 
 export interface Ctx {
@@ -92,7 +93,7 @@ const H: Record<string, Handler> = {};
 function securityAlert(c: Ctx, detail: string, level: 'SUSPICIOUS' | 'FATAL'): void {
   const entry = c.log(detail);
   const what = level === 'FATAL' ? 'Fatal security activity' : 'Suspicious security activity';
-  addAlert(c.s, `SECURITY_${level}`, `${what}: ${c.owner.name} ${detail}`, entry.id, level === 'FATAL' ? 3 : 2);
+  addAlert(c.s, `SECURITY_${level}`, `${what}: ${c.owner.name} ${detail}`, entry.id, level === 'FATAL' ? 3 : 2, c.owner.id);
 }
 
 // ---- Security: Firewall ---------------------------------------------------
@@ -385,7 +386,7 @@ function requestLines(c: Ctx, r: ClientRequest): string[] {
   const to = r.bankerId ? nameOf(c.s, r.bankerId) : 'nobody';
   const tags: string[] = [];
   if (r.urgent) tags.push('URGENT');
-  if (r.outcome === null) tags.push(`due in ${Math.max(0, Math.ceil(r.dueAt - c.t))}s`);
+  if (r.outcome === null && !r.phish) tags.push(`due in ${Math.max(0, Math.ceil(r.dueAt - c.t))}s`);
   if (r.reminders.length && r.status === 'OPEN') tags.push('REMINDER');
   const lines = [
     `${r.id.padEnd(7)} ${fmtClock(c.s.config, r.t)}  ${r.sender ?? cust?.name ?? '?'} -> ${to}  ${requestStatusText(c, r)}${tags.length ? '  ' + tags.join('  ') : ''}`,
@@ -575,6 +576,10 @@ function recordAccountChange(c: Ctx, x: Customer, action: AccountChange['action'
   };
   x.history.push(change);
   x.lastModifiedAt = c.t;
+  const what = { ADD_ACCOUNT: `added account ${account} to`, SET_PRIMARY: `made ${account} the primary of`, REMOVE_ACCOUNT: `removed account ${account} from` }[action];
+  const text = `${c.owner.name} ${what} ${x.id} (${change.id})`;
+  notify(c.s, 'CLIENT_DATA', 'CUSTOMER_RECORDS', text, { owner: c.owner.id, bankerId: x.bankerId });
+  notify(c.s, 'CLIENT_DATA', 'VERIFICATION', `${change.id} waiting: ${text}`, { owner: c.owner.id });
   return change;
 }
 
@@ -705,6 +710,8 @@ H['CLIENT_DATA.VERIFICATION.VERIFY_CHANGE'] = (c, q) => {
   h.verified = true;
   h.verifiedBy = c.owner.id;
   h.verifiedAt = c.t;
+  const cust = c.s.customers.find((x) => x.id === h.customerId);
+  notify(c.s, 'CLIENT_DATA', 'CUSTOMER_RECORDS', `${c.owner.name} verified ${h.id} on ${h.customerId}`, { owner: c.owner.id, bankerId: cust?.bankerId ?? null });
   return good(`${h.id} verified.`, undefined, `verified account change ${h.id} on ${h.customerId}`);
 };
 
@@ -1004,6 +1011,8 @@ function plantUser(s: GameState, name: string, role: RoleId, ip: string): Player
     lastActiveAt: null,
     monitoring: [],
     remoteAccess: [],
+    watching: [],
+    notifications: [],
     fake: true,
   };
   s.players[p.id] = p;
@@ -1173,8 +1182,8 @@ H['BLACKHAT_DB.SOCIAL.SCAM_REQUEST'] = (c, q) => {
     archiveReason: null,
   };
   c.s.requests.push(req);
-  // A normal-looking system entry, so in the Master Log it is indistinguishable from a real incoming request.
-  addLog(c.s, { actor: 'SYSTEM', kind: 'CLIENT_REQUEST', message: `Client request ${req.id} received`, sourceIp: null, actualPlayerId: null });
+  // Logged and notified exactly like a real incoming request, so nothing sets it apart.
+  requestReceived(c.s, req);
   note(c.actor, c.t, `Planted scam request ${req.id} from ${cust.name} (${kind} ${account}).`);
   raiseExposure(c, 2);
   const to = cust.bankerId ? nameOf(c.s, cust.bankerId) : 'their banker';

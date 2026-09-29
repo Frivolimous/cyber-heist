@@ -235,6 +235,20 @@ table.cred .rev { text-decoration: line-through; color: var(--muted); }
 .taskbar .task { max-width: 200px; overflow: hidden; text-overflow: ellipsis; border-bottom: 2px solid #5d6f92; border-radius: 5px 5px 0 0; }
 .taskbar .task.on { background: rgba(255, 255, 255, 0.14); border-bottom-color: var(--gold); }
 .taskbar .task.min { color: #8193b3; }
+/* Notification pop-ups rise from the bottom right, just above the taskbar. */
+.toasts { position: absolute; right: 10px; bottom: calc(var(--taskbar-h) + 8px); display: flex; flex-direction: column; align-items: flex-end; gap: 6px; z-index: 100000; pointer-events: none; max-width: min(360px, calc(100% - 20px)); }
+.toast { pointer-events: auto; text-align: left; display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 8px 12px; border-radius: 8px; border: 1px solid #2e4575; border-left: 4px solid var(--gold); background: rgba(12, 20, 38, 0.96); color: #dbe3f0; font-size: 13px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); animation: toast-in 0.2s ease-out; transform-origin: bottom right; }
+.toast b { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--gold); }
+.toast.err { border-left-color: var(--amber); }
+.toast.err b { color: var(--amber); }
+.toast.out { opacity: 0; transform: translateY(6px) scale(0.97); transition: opacity 0.2s, transform 0.2s; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(14px) scale(0.9); } to { opacity: 1; transform: none; } }
+
+/* The page's notification bell, at the right of the breadcrumb bar. */
+.crumbs .bell { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border: 1px solid #c9d2e0; border-radius: 12px; background: #f4f6fa; color: var(--muted); text-decoration: none; font-size: 12px; font-weight: 600; }
+.crumbs .bell.on { background: var(--amber-bg); border-color: var(--amber); color: var(--amber); }
+.win.host .crumbs .bell { background: transparent; border-color: var(--line); }
+
 .unread { margin-left: 8px; background: var(--amber); color: #fff; font-size: 11px; border-radius: 9px; padding: 0 6px; }
 
 @media (max-width: 900px) {

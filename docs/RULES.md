@@ -251,7 +251,8 @@ of "potential targets for fraudulent transactions").
   - Every other credential is revoked immediately.
 - **Master Log live monitor:** "Auto-update every second" refreshes the view in place. Opening the view is
   logged as usual; the refreshes are not (the engine only allows a quiet refresh of a view the player has
-  already opened with a logged read).
+  already opened with a logged read). Running a Trace switches auto-update off (the terminal says so), so
+  the trace result is not scrolled away.
 - A module taken offline rejects all use. While the **Master Log** is offline nothing is recorded but
   log ids keep counting, so the gap is visible.
 - **Trace** (in the **Master Log**; IT Specialists and the Bank Manager hold Master Log write): reveals
@@ -328,14 +329,41 @@ of "potential targets for fraudulent transactions").
   `Max`) at random times, from a set of tropes (the prince with a frozen fortune, the rich kid whose dad froze
   his cards, the lonely bride who needs a plane ticket, the lottery win, the stranded friend, ...). They
   arrive in Client Requests like any request, from a made-up sender, claim a customer tag that does not
-  exist, name no account to pay from, and ask for money to go to an account that does not exist. Nobody
-  chases them; they lapse at the deadline with no strike. Archive them.
+  exist, name no account to pay from, and ask for money to go to an account that does not exist. They
+  have no deadline and never expire: nobody chases them, and they stay open until someone archives them.
 - A request past its deadline can no longer be acted on. An **archived request stays archived** at its
   deadline (the status never gives away whether it was real); a real customer still takes the strike and
   complains.
 - Personal Bankers create the payments their customers ask for and approve them; Accounts &
   Receivables score risk and settle. A banker cannot verify their own account changes (Verification is
   read-only for them): Accounts & Receivables or the Bank Manager must.
+
+## Notifications
+
+- Every page listed below has a **bell** at the right of its breadcrumb bar, showing **On** or **Off**.
+  With it on, the page pops up a notification at the bottom right of the screen, above the taskbar. A
+  notification disappears after 5s or when tapped; nothing is kept.
+- The bell can only be switched on, and only delivers, while the workstation holds an active **write**
+  credential for that whole module (its own or one it knows the code of). Losing it silences the bell.
+- It never reports activity recorded under your own name. Using someone else's code counts as theirs, so
+  its owner is notified. Switching a bell on or off is not logged. There is no limit on bells.
+
+| Page | Notifies about |
+|---|---|
+| Firewall | any logged use, and a "revoke all access" going through |
+| Master Log | every alert (that is not muted) |
+| Employee Records | a workstation being locked out |
+| Permissions | any logged use, and a credential revocation going through |
+| Customer Records | account changes and verifications on customers you manage |
+| Verification | an account change waiting to be verified |
+| Client Requests | new requests and follow-ups from customers you manage (phishing and scam requests too) |
+| Payment Queue | a payment created (automatic or manual) |
+| Risk Check | a payment waiting for a risk score |
+| Authorization | a payment waiting for approval |
+| Settlement | a payment ready to settle |
+
+The debug auto-processor's own scoring and approvals are silent, except a risky payment it leaves for
+Authorization.
 
 ## Workstations
 

@@ -155,7 +155,7 @@ export function createGame(o: NewGameOptions): GameState {
     blacknet: [],
     totals: { processed: 0, stolen: 0 },
     hiddenHost: HIDDEN_HOST,
-    counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, req: 0, change: 0, revoke: 0, host: 0, player: 0, crack: 0 },
+    counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, req: 0, change: 0, revoke: 0, host: 0, player: 0, crack: 0, notice: 0 },
   };
 
   for (const sys of SYSTEMS) for (const m of sys.modules) s.modules[keyOf(sys.id, m.id)] = { status: 'ONLINE', open: false, encryption: [] };
@@ -215,6 +215,8 @@ export function createGame(o: NewGameOptions): GameState {
       lastActiveAt: null,
       monitoring: [],
       remoteAccess: [],
+      watching: [],
+      notifications: [],
     };
     const mins = Math.round(config.durationSec / 60);
     p.objective =

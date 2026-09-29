@@ -20,6 +20,7 @@ import {
   ROLE_ORDER,
   ROLES,
   SYSTEMS,
+  WATCHABLE,
 } from '../engine';
 import type { Action, GameState, Pace, PlayerId, PlayerView, SystemId, WorkstationView } from '../engine';
 
@@ -88,6 +89,7 @@ app.innerHTML = `
           <div id="icons" class="icons"></div>
           <div id="wins"></div>
           <footer id="taskbar" class="taskbar"></footer>
+          <div id="toasts" class="toasts" aria-live="polite"></div>
         </div>
       </div>
     </section>
@@ -122,7 +124,10 @@ function newGame(seed: number): void {
   game = createGame({ seed, players: roster, now: vNow, config: { autoProcess } });
   grantMasterAccess(game, MASTER_SEAT);
   desks = {};
-  for (const p of roster) seenMessages[p.id] = 0;
+  for (const p of roster) {
+    seenMessages[p.id] = 0;
+    seenNotices[p.id] = 0;
+  }
   if (!game.players[selected]) selected = MASTER_SEAT;
   tab = 'profile';
   renderAll();
@@ -490,7 +495,7 @@ function browserHtml(w: Win): string {
       const mod = findModule(r.system, r.module)!;
       parts.push(crumb(mod.label, null));
     }
-    crumbs = `<div class="crumbs">${parts.join('<i>/</i>')}</div>`;
+    crumbs = `<div class="crumbs">${parts.join('<i>/</i>')}${r.kind === 'module' ? bellHtml(`${r.system}.${r.module}`) : ''}</div>`;
     if (r.kind === 'system') {
       body = `<div class="tiles">${sys.modules
         .map((m) => {
@@ -895,7 +900,14 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         w.form['p:logFilter'] = arg ?? w.form['p:logFilter'] ?? 'PLAYERS';
         execute(w, 'SECURITY', 'MASTER_LOG', 'VIEW_LOG', { show: w.form['p:logFilter'] });
         w.liveEnd = w.out.length; // the block just printed is the one a live monitor keeps replacing
-      } else runFresh(w, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: w.form['p:logId'] ?? '' }, ['logId']);
+      } else {
+        // A live refresh would scroll the trace result away, so tracing stops the auto-update.
+        if (w.form['p:monitor'] === 'YES') {
+          w.form['p:monitor'] = 'NO';
+          w.out.push({ cls: 'dim', text: 'Auto-update disabled so the trace result stays on screen.' });
+        }
+        runFresh(w, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: w.form['p:logId'] ?? '' }, ['logId']);
+      }
     },
     monitor: (w) => ({ fn: 'VIEW_LOG', params: { show: w.form['p:logFilter'] ?? 'PLAYERS' } }),
   },
@@ -1239,6 +1251,54 @@ function doSend(w: Win): void {
   renderPersonal(true);
 }
 
+// ---- Notifications ------------------------------------------------------------------------------
+const BELL_SVG = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>`;
+const TOAST_MS = 5000;
+/** Last notification id each seat has already popped up (N12 -> 12). */
+const seenNotices: Record<PlayerId, number> = {};
+const noticeNum = (id: string): number => Number(id.slice(1));
+
+/** The page's bell: on or off. Only pages listed in WATCHABLE have one. */
+function bellHtml(key: string): string {
+  const what = WATCHABLE[key];
+  if (!what) return '';
+  const on = view().watching.includes(key);
+  return `<button class="bell ${on ? 'on' : ''}" data-act="watch:${key}" title="Notify me about ${esc(what)}" aria-pressed="${on}">${BELL_SVG}<span>${on ? 'On' : 'Off'}</span></button>`;
+}
+
+function toggleWatch(w: Win | undefined, key: string): void {
+  const [system, module] = key.split('.') as [SystemId, string];
+  const on = !view().watching.includes(key);
+  const r = applyAction(game, { type: 'SET_WATCH', playerId: selected, system, module, on }, vNow);
+  game = r.state;
+  if (!r.result.ok) toast(r.result.message, 'Notifications', true);
+  if (w) renderWin(w);
+}
+
+/** Pops up every notification this seat has not seen yet. Switching seats skips the backlog. */
+function pollNotices(skip = false): void {
+  const list = game.players[selected]?.notifications ?? [];
+  const seen = seenNotices[selected] ?? 0;
+  const fresh = list.filter((n) => noticeNum(n.id) > seen);
+  if (fresh.length) seenNotices[selected] = noticeNum(fresh[fresh.length - 1].id);
+  if (!skip) for (const n of fresh.slice(-4)) toast(n.text, n.page);
+}
+
+function toast(text: string, page: string, error = false): void {
+  const box = document.getElementById('toasts');
+  if (!box) return;
+  const el = document.createElement('button');
+  el.className = `toast${error ? ' err' : ''}`;
+  el.innerHTML = `<b>${esc(page)}</b><span>${esc(text)}</span>`;
+  const close = (): void => {
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 200);
+  };
+  el.addEventListener('click', close);
+  box.appendChild(el);
+  setTimeout(close, TOAST_MS);
+}
+
 // ---- Taskbar ----------------------------------------------------------------------------------
 function renderTaskbar(): void {
   const v = view();
@@ -1264,6 +1324,7 @@ function renderAll(): void {
 
 /** After any game action: everything that can change except browser windows the player is using. */
 function refresh(): void {
+  pollNotices();
   renderStatus();
   renderIcons();
   renderTaskbar();
@@ -1346,6 +1407,9 @@ app.addEventListener('click', (e) => {
         w.idx += 1;
         showRoute(w);
       }
+      break;
+    case 'watch':
+      toggleWatch(hostWin, args[0]);
       break;
     case 'wgo':
       if (w) {
@@ -1431,6 +1495,7 @@ app.addEventListener('input', (e) => {
   switch (key) {
     case 'seat':
       selected = el.value;
+      pollNotices(true); // a seat you just sat down at shows only what arrives from now on
       renderAll();
       break;
     case 'auto':
@@ -1508,6 +1573,7 @@ setInterval(() => {
   tickCount++;
   if (game.status !== 'RUNNING') return refresh();
   updateClock();
+  pollNotices();
   if (tickCount % 8 === 0) renderTruth();
 }, TICK_MS);
 

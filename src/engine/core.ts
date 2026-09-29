@@ -2,6 +2,7 @@
 
 import { findModule } from './catalog';
 import { randInt } from './rng';
+import { notify } from './notify';
 import type { ActionResult, Alert, Block, Customer, GameConfig, GameState, LogEntry, Player, Reroute } from './types';
 
 export const keyOf = (system: string, module: string): string => `${system}.${module}`;
@@ -41,12 +42,16 @@ export function addLog(s: GameState, e: Omit<LogEntry, 'id' | 't'>): LogEntry {
   return entry;
 }
 
-/** Raises a Master Log alert. `tier` (1-4) is its severity; while an Alert mute is active, tier 1-2 alerts are dropped. */
-export function addAlert(s: GameState, kind: string, message: string, logId: string | null, tier = 2): Alert | null {
+/**
+ * Raises a Master Log alert. `tier` (1-4) is its severity; while an Alert mute is active, tier 1-2 alerts are dropped.
+ * `owner`: whose name the alerted activity is under (they are not notified of it).
+ */
+export function addAlert(s: GameState, kind: string, message: string, logId: string | null, tier = 2, owner: string | null = null): Alert | null {
   const t = gameTime(s);
   if (tier <= 2 && t < s.alertMuteUntil) return null; // muted: dropped entirely, no id consumed
   const a: Alert = { id: nextId(s, 'alert', 'A'), t, kind, message, logId, tier };
   s.alerts.push(a);
+  notify(s, 'SECURITY', 'MASTER_LOG', message, { owner });
   return a;
 }
 

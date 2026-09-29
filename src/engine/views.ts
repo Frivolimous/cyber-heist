@@ -8,7 +8,7 @@ import { jobDescription } from './jobs';
 import { dayPhaseAt } from './pacing';
 import type { Pace } from './pacing';
 import type { JobDescription } from './jobs';
-import type { Allegiance, GameState, Player, PlayerId, RoleId, SystemId, Winner } from './types';
+import type { Allegiance, GameState, Notice, Player, PlayerId, RoleId, SystemId, Winner } from './types';
 
 /** Everything on one workstation: the owner's own screen, or someone else's once logged in to it. */
 export interface WorkstationView {
@@ -61,6 +61,10 @@ export interface PlayerView {
   systems: SystemDef[]; // only systems this player knows about
   /** Modules whose security is off (SYSTEM.MODULE): usable without a code. */
   openModules: string[];
+  /** Pages (SYSTEM.MODULE) with the notification bell on. */
+  watching: string[];
+  /** Recent pop-up notifications, newest last. The screen shows each one once. */
+  notifications: Notice[];
 }
 
 function workstationView(s: GameState, p: Player): WorkstationView {
@@ -130,5 +134,7 @@ export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
     players: s.playerOrder.map((id) => ({ id, name: s.players[id].name, roleLabel: ROLES[s.players[id].role].label })),
     systems: SYSTEMS.filter((sys) => p.knownSystems.includes(sys.id)),
     openModules: Object.entries(s.modules).filter(([, m]) => m.open).map(([k]) => k),
+    watching: [...p.watching],
+    notifications: p.notifications.map((n) => ({ ...n })),
   };
 }

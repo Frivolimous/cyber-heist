@@ -63,6 +63,8 @@ Full rules and tuning: [docs/RULES.md](docs/RULES.md).
   the window's **Terminal**, which keeps its history while you stay in one system.
 - **My workstation** in the taskbar holds your profile and job description, credentials, activity log
   and messages.
+- **The bell** at the right of a page's breadcrumbs switches its notifications on or off (write access
+  only). They pop up at the bottom right, above the taskbar, and vanish after 5s or a tap.
 - **Ground truth** in the yellow bar shows who really did what next to what the logs say.
 - **Auto-process routine payments** is a debug bot that settles low-risk automatic payments so a single
   tester is not buried in paperwork. Turn it off for a stricter game. Risky payments are always left
@@ -90,6 +92,7 @@ src/engine/
   handlers.ts     one handler per catalog function (incl. the Black Hat tools and their exposure)
   bank.ts         risk scoring, settlement, reversal, automatic payments, debug auto-processor
   requests.ts     client requests and banker assignment
+  notify.ts       the page bells: who gets a pop-up notification about what
   pacing.ts       time of day and how fast new work arrives
   jobs.ts         job descriptions shown in each profile
   views.ts        getPlayerView: the only data a given player may see

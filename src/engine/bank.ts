@@ -1,7 +1,8 @@
 // The bank's payment pipeline: NPC traffic, risk scoring, settlement and reversal.
 
 import { pick, rand, weightedPick } from './rng';
-import { accountVerified, addLog, balanceOf, gameTime, money, moveMoney, nextId } from './core';
+import { accountVerified, addLog, balanceOf, gameTime, money, moveMoney, nameOf, nextId } from './core';
+import { notify } from './notify';
 import type { ClientRequest, Customer, GameState, PlayerId, RiskResult, Transaction, TxEvent, TxStatus } from './types';
 
 /** Who did something to a payment: the credential owner the records will show, and who really did it. */
@@ -13,6 +14,22 @@ export const SYSTEM_ACTOR: TxActor = { by: 'SYSTEM', actualPlayerId: null };
 
 export function recordTx(s: GameState, tx: Transaction, action: TxEvent['action'], who: TxActor, detail: string | null = null): void {
   tx.history.push({ t: gameTime(s), action, by: who.by, actualPlayerId: who.actualPlayerId, detail });
+  notifyStage(s, tx, action, who);
+}
+
+/** Payment pipeline bells: each stage tells the next one there is work. The (debug) auto-processor stays quiet. */
+function notifyStage(s: GameState, tx: Transaction, action: TxEvent['action'], who: TxActor): void {
+  const scope = { owner: who.by === 'SYSTEM' ? null : who.by };
+  const pay = `${tx.id} (${money(tx.amount)} to ${tx.beneficiaryId})`;
+  if (action === 'CREATED') {
+    const by = who.by === 'SYSTEM' ? (tx.channel ?? 'automatic') : nameOf(s, who.by);
+    notify(s, 'TRANSACTIONS', 'PAYMENT_QUEUE', `New payment ${pay} from ${by}`, scope);
+    notify(s, 'TRANSACTIONS', 'RISK_CHECK', `${pay} is waiting for a risk score`, scope);
+  } else if (who.by !== 'SYSTEM' && action === 'RISK_CHECKED') {
+    notify(s, 'TRANSACTIONS', 'AUTHORIZATION', `${pay} is waiting for approval (${tx.riskResult} risk)`, scope);
+  } else if (who.by !== 'SYSTEM' && action === 'APPROVED') {
+    notify(s, 'TRANSACTIONS', 'SETTLEMENT', `${pay} is ready to settle`, scope);
+  }
 }
 
 export const riskDetail = (tx: Transaction): string =>
@@ -213,7 +230,10 @@ export function autoProcess(s: GameState): void {
     tx.riskFlags = r.flags;
     tx.status = 'RISK_CHECKED';
     recordTx(s, tx, 'RISK_CHECKED', SYSTEM_ACTOR, riskDetail(tx));
-    if (r.result !== 'LOW') continue; // leave for humans
+    if (r.result !== 'LOW') {
+      notify(s, 'TRANSACTIONS', 'AUTHORIZATION', `${tx.id} (${money(tx.amount)} to ${tx.beneficiaryId}) is waiting for approval (${r.result} risk)`);
+      continue; // leave for humans
+    }
     tx.status = 'AUTHORIZED';
     recordTx(s, tx, 'APPROVED', SYSTEM_ACTOR);
     const settled = settleTransaction(s, tx, SYSTEM_ACTOR);
