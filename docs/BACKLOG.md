@@ -31,21 +31,56 @@ Move an item out of here when it ships.
 
 Agreed 2026-09-28. The Black Hat tool list itself is kept by the designer and not written up here.
 
-- **Tools for the kits.** The kits exist (Infiltration, Social, Cleanup, Access; see RULES.md) but are
-  empty. Each tool is a function in a kit module plus a handler, like the rest of the game.
-- **Balance by exposure, not limits.** No cooldowns and no limited charges. Instead, every Black Hat
-  action raises an alert in the bank's Master Log, and stronger actions reveal more in that alert:
-  - weakest: nothing beyond the usual "Unknown server activity" (traceable for partial clues);
-  - stronger: a partial clue right away (the same kinds a trace gives);
-  - stronger still: one exact fact (the acting operative's workstation IP, or the server's address);
-  - strongest: the operative's exact IP and a working host credential (that operative's own code).
-  What leaks is always about the operative who acted. Tools with a duration pick their exposure level
-  by the duration chosen.
-- **Host Log alerts for exposure.** The Host Log exists; once tools raise exposing bank alerts, the Host
-  Log should also alert the operatives when one of them has been exposed.
-- **Scam requests from the hidden host.** Black Hats can send fake Client Requests.
-- **Log tampering from the hidden host**, not from the Master Log (which stays trustworthy): deleting
-  an entry leaves the id gap visible, like offline gaps.
+- **Tools for the kits.** The kits exist (Infiltration, Social, Cleanup, Access; see RULES.md). Each tool
+  is a function in a kit module plus a handler, like the rest of the game. Shipped so far:
+  - _Infiltration / Reroute IP_ — for 10/30/60s all your activity appears from a typed IP (Master Log
+    source IPs, Traces, and Employee Records "last activity" all follow it); routing stays on your real
+    workstation. Duration sets the exposure tier (10s→2, 30s→3, 60s→4).
+  - _Infiltration / Create user_ — plant a fake employee (typed name, one of the 5 roles, typed IP). It
+    becomes a real `Player` (flagged `fake`, poses as White staff), shows in Employee Records and the
+    Permissions "issue to" list, and can be issued credentials. Instant tool, fixed exposure tier 2.
+    Not a sandbox seat. No way to remove a planted user yet (White Hats can only revoke its credentials).
+
+  - _Social / Spoofed message_ — a private message that appears from another employee (typed To / from /
+    text). Lands only in the recipient's inbox, never the impersonated sender's history, so comparing
+    notes exposes it; made-up names render as typed (not in the roster, so easier to spot). Tier 2.
+  - _Social / Scam request_ — plant a fake Client Request from a customer to their banker (account-redirect
+    kinds: set primary / add & primary / add / remove). Looks like a normal request in the queue and adds
+    the usual "Client request received" system log; the leak is the hidden-host tier-2 alert. Payment-type
+    scam requests (payee + amount) are an easy follow-up if wanted.
+  - _Cleanup / Log wiper_ (tier 2) — delete one Master Log entry. It drops out of the log view leaving a
+    visible id gap (looks like an offline gap), but stays in `s.logs` flagged `deleted`, so a Trace still
+    reaches it until it ages out.
+  - _Cleanup / Alert mute_ (tier 3) — suppress the bank's alerts for 10s. Alerts now carry a `tier` (1-4);
+    while `s.alertMuteUntil` is in the future, tier 1-2 alerts are dropped at creation. Tier 3-4 (exact-IP
+    and host-code exposures, encryption bypass) and the mute's own tier-3 alert always get through, so a
+    mute can't cancel the loud end of the exposure system.
+  - _Access / Code crack_ (tier 2) — pick a module; a background process (`s.cracks`, advanced from the
+    engine's time loop) recovers one digit of a random covering credential every ~15s (~1 min for all
+    four). Each reveal leaves a tier-2 "Unknown server activity" entry and a `CODE_CRACK` alert pointing
+    at it (credential + owner + progress, no source clue); the operative sees the code assemble in their activity log and learns the credential on
+    completion. Aborts if the credential is revoked or the operative's workstation is blocked.
+  - _Access / Lockout bomb_ (tier 2) — spoof `lockoutAfterFails` failed logins pinned on the target's own
+    IP so their anti-brute-force lockout trips (`lockoutSec`). Counter: reset the lockout in Employee
+    Records. Pure disruption.
+
+  All four kits (Infiltration, Social, Cleanup, Access) now have tools.
+- **Balance by exposure, not limits.** No cooldowns and no limited charges. Instead, stronger Black Hat
+  actions leak more about the operative who acted. The alert itself names nothing; the leak is in the
+  **trace** of the action's "Unknown server activity" entry, which escalates with the tier. Implemented as
+  `raiseExposure(c, tier)` in handlers.ts (tags the entry with `exposure`) — reuse it for every new kit tool:
+  - tier 1: no alert; a trace of the entry gives one vague clue (range of four IPs, real + decoy pair,
+    one number of the server's address, or what was done);
+  - tier 2: "Suspicious server activity" alert linking to the entry; its trace gives one vague clue;
+  - tier 3: "Intrusion alert" linking to the entry; its trace gives one exact fact, picked at random —
+    the operative's workstation IP or the server's address;
+  - tier 4: "Critical breach" alert linking to the entry; its trace gives the operative's exact IP and a
+    working host credential code (their own).
+  Tier 2+ traces are always about the real operative, never a rerouted IP (tier 1 follows the recorded
+  source, so a reroute fools it). Each trace re-rolls its clue. Tools with a duration pick their tier by
+  the duration chosen.
+- **Host Log alerts for exposure.** Done: every tier 2+ alert also writes an alerting Host Log entry naming
+  the log entry and what a trace of it would give away, so operatives can react (e.g. wipe it) first.
 
 ## Roles and balance
 

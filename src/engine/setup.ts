@@ -68,6 +68,9 @@ export function createGame(o: NewGameOptions): GameState {
     customers: [],
     requests: [],
     blocks: [],
+    reroutes: [],
+    cracks: [],
+    alertMuteUntil: 0,
     hostLog: [],
     revocations: [],
     lastRequestAt: 0,
@@ -76,7 +79,7 @@ export function createGame(o: NewGameOptions): GameState {
     blacknet: [],
     totals: { processedNpc: 0, stolen: 0 },
     hiddenHost: HIDDEN_HOST,
-    counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, packet: 0, req: 0, change: 0, revoke: 0, host: 0 },
+    counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, packet: 0, req: 0, change: 0, revoke: 0, host: 0, player: 0, crack: 0 },
   };
 
   for (const sys of SYSTEMS) for (const m of sys.modules) s.modules[keyOf(sys.id, m.id)] = { status: 'ONLINE', open: false, encryption: [] };

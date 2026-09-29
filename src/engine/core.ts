@@ -1,7 +1,7 @@
 // Small helpers shared by the engine, handlers and setup code.
 
 import { findModule } from './catalog';
-import type { ActionResult, Alert, Block, Customer, GameConfig, GameState, LogEntry, Player } from './types';
+import type { ActionResult, Alert, Block, Customer, GameConfig, GameState, LogEntry, Player, Reroute } from './types';
 
 export const keyOf = (system: string, module: string): string => `${system}.${module}`;
 
@@ -40,8 +40,11 @@ export function addLog(s: GameState, e: Omit<LogEntry, 'id' | 't'>): LogEntry {
   return entry;
 }
 
-export function addAlert(s: GameState, kind: string, message: string, logId: string | null): Alert {
-  const a: Alert = { id: nextId(s, 'alert', 'A'), t: gameTime(s), kind, message, logId };
+/** Raises a Master Log alert. `tier` (1-4) is its severity; while an Alert mute is active, tier 1-2 alerts are dropped. */
+export function addAlert(s: GameState, kind: string, message: string, logId: string | null, tier = 2): Alert | null {
+  const t = gameTime(s);
+  if (tier <= 2 && t < s.alertMuteUntil) return null; // muted: dropped entirely, no id consumed
+  const a: Alert = { id: nextId(s, 'alert', 'A'), t, kind, message, logId, tier };
   s.alerts.push(a);
   return a;
 }
@@ -96,14 +99,6 @@ export const normAccount = (v: string): string | null => {
   return m ? `ACC-${m[1]}` : null;
 };
 
-/** Any traffic to the hidden host raises a (throttled) alert without the address; tracing its log entry gives clues. */
-export function flagHiddenTraffic(s: GameState, entry: LogEntry): void {
-  const last = [...s.alerts].reverse().find((a) => a.kind === 'UNREGISTERED_HOST');
-  if (!last || gameTime(s) - last.t >= 30) {
-    addAlert(s, 'UNREGISTERED_HOST', 'Traffic to an unregistered host detected', entry.id);
-  }
-}
-
 /** The customer an account number belongs to, if any (accounts can also float, owned by nobody). */
 export function accountOwner(s: GameState, account: string): Customer | undefined {
   return s.customers.find((c) => c.accounts.includes(account));
@@ -122,6 +117,16 @@ export function activeBlock(s: GameState, address: string): Block | undefined {
 
 export function blockText(s: GameState, b: Block): string {
   return b.until === null ? 'permanently' : `for ${Math.ceil(b.until - gameTime(s))}s`;
+}
+
+/** The IP reroute in force for a player, if any (the latest one that has not expired). */
+export function activeReroute(s: GameState, playerId: string, t: number): Reroute | undefined {
+  return [...s.reroutes].reverse().find((r) => r.playerId === playerId && r.until > t);
+}
+
+/** The IP a player's activity currently appears to come from: their own, unless an IP reroute is active. */
+export function effectiveIp(s: GameState, p: Player, t: number): string {
+  return activeReroute(s, p.id, t)?.toIp ?? p.ip;
 }
 
 /** Adds an entry to the hidden host's own log. */

@@ -292,11 +292,88 @@ export const SYSTEMS: SystemDef[] = [
         label: 'Credential Cache',
         fns: [fn('VIEW_CACHE', 'View cache', 'READ', 'Credentials of White Hat staff held by operatives.')],
       },
-      // Tool kits: each operative is dealt one or two at random each game. No tools in them yet.
-      { id: 'INFILTRATION', label: 'Infiltration', fns: [] },
-      { id: 'SOCIAL', label: 'Social', fns: [] },
-      { id: 'CLEANUP', label: 'Cleanup', fns: [] },
-      { id: 'ACCESS', label: 'Access', fns: [] },
+      // Tool kits: each operative is dealt one or two at random each game.
+      {
+        id: 'INFILTRATION',
+        label: 'Infiltration',
+        fns: [
+          fn(
+            'REROUTE_IP',
+            'Reroute IP',
+            'WRITE',
+            'For a limited time, make all your activity appear to come from another IP (Traces and Employee Records follow it). The longer the reroute, the louder the alert, and the more a trace of it reveals about your real workstation.',
+            [
+              { name: 'toIp', label: 'Appear as IP', kind: 'text', placeholder: '10.1.0.14' },
+              { name: 'duration', label: 'Seconds', kind: 'select', options: ['10', '30', '60'] },
+            ],
+          ),
+          fn(
+            'CREATE_USER',
+            'Create user',
+            'WRITE',
+            'Plant a fake employee in the bank\'s records. They show up in Employee Records and can be issued credentials from Permissions like any real employee.',
+            [
+              { name: 'name', label: 'Name', kind: 'text', placeholder: 'Dana Pruitt' },
+              { name: 'role', label: 'Role', kind: 'select', options: ['SECURITY_ANALYST', 'SYSTEMS_ADMIN', 'IT_SPECIALIST', 'PERSONAL_BANKER', 'ACCOUNTS_RECEIVABLES'] },
+              { name: 'ip', label: 'IP address', kind: 'text', placeholder: '10.1.0.30' },
+            ],
+          ),
+        ],
+      },
+      {
+        id: 'SOCIAL',
+        label: 'Social',
+        fns: [
+          fn(
+            'SPOOFED_MESSAGE',
+            'Spoofed message',
+            'WRITE',
+            'Send a private message that appears to come from someone else. It lands in the recipient\'s inbox but never in the impersonated sender\'s history, so comparing notes exposes it. Made-up names work, but are easier to spot as fakes.',
+            [
+              { name: 'to', label: 'To (employee)', kind: 'text', placeholder: 'Sarah' },
+              { name: 'from', label: 'Appear from', kind: 'text', placeholder: 'Mike' },
+              { name: 'text', label: 'Message', kind: 'text' },
+            ],
+          ),
+          fn(
+            'SCAM_REQUEST',
+            'Scam request',
+            'WRITE',
+            'Plant a fake Client Request from a customer to their banker, e.g. "we moved banks, make account X our primary". It looks like any other request in the queue.',
+            [
+              { name: 'customer', label: 'From customer', kind: 'text', placeholder: 'Tanaka Holdings or CU3' },
+              { name: 'kind', label: 'Asking for', kind: 'select', options: ['SET_PRIMARY', 'ADD_AND_PRIMARY', 'ADD_ACCOUNT', 'REMOVE_ACCOUNT'] },
+              { name: 'account', label: 'Account (5 digits)', kind: 'text', placeholder: '18392' },
+              { name: 'text', label: 'Message', kind: 'text' },
+            ],
+          ),
+        ],
+      },
+      {
+        id: 'CLEANUP',
+        label: 'Cleanup',
+        fns: [
+          fn('LOG_WIPER', 'Log wiper', 'WRITE', 'Delete one Master Log entry. The gap in the log ids stays visible, and the entry can still be traced until it ages out.', [
+            { name: 'logId', label: 'Log entry', kind: 'text', placeholder: 'L12' },
+          ]),
+          fn(
+            'ALERT_MUTE',
+            'Alert mute',
+            'WRITE',
+            'Suppress the bank\'s minor security alerts for 10s. Only minor alerts are hidden; loud and reckless alerts, including this tool\'s own, always get through.',
+          ),
+        ],
+      },
+      {
+        id: 'ACCESS',
+        label: 'Access',
+        fns: [
+          fn('CRACK_CODE', 'Code crack', 'WRITE', 'Slowly brute-force a random credential that can reach a module: one digit recovered roughly every 15s (about a minute for all four). Each reveal raises an alert, so defenders can revoke it, block you, or warn the owner.', [target]),
+          fn('LOCKOUT_BOMB', 'Lockout bomb', 'WRITE', 'Force failed logins from a workstation until it locks itself out. Pure disruption: knock a defender offline for a while.', [
+            { name: 'target', label: 'Workstation', kind: 'text', placeholder: '10.1.0.12' },
+          ]),
+        ],
+      },
     ],
   },
 ];
@@ -418,4 +495,5 @@ export const DEFAULT_CONFIG: GameConfig = {
   requestChangeShare: 0.3,
   blockSec: 60,
   revokeCountdownSec: 30,
+  crackRevealSec: 15,
 };

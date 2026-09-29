@@ -13,7 +13,10 @@ import {
   fmtClock,
   getPlayerView,
   grantMasterAccess,
+  HOST_KITS,
   money,
+  ROLE_ORDER,
+  ROLES,
   SYSTEMS,
 } from '../engine';
 import type { Action, GameState, PlayerId, PlayerView, SystemId, WorkstationView } from '../engine';
@@ -126,6 +129,7 @@ function renderDev(): void {
   $('dev').innerHTML = `
     <span class="dev-tag">Sandbox</span>
     <label>Viewing as <select data-f="seat">${game.playerOrder
+      .filter((id) => !game.players[id].fake) // planted users are records, not seats you can control
       .map((id) => `<option value="${id}" ${id === selected ? 'selected' : ''}>${esc(game.players[id].name)}${id === MASTER_SEAT ? ' (master access)' : ''}</option>`)
       .join('')}</select></label>
     <span class="grp">${btn('speed:0', 'Pause', speed === 0)}${btn('speed:1', '1x', speed === 1)}${btn('speed:5', '5x', speed === 5)}${btn('speed:20', '20x', speed === 20)}<button data-act="skip:30">+30s</button></span>
@@ -146,7 +150,7 @@ function renderTruth(): void {
   const people = s.playerOrder
     .map((id) => {
       const p = s.players[id];
-      return `${p.name.padEnd(8)} ${p.allegiance.padEnd(6)} ${p.role.padEnd(22)} ${p.ip}`;
+      return `${p.name.padEnd(8)} ${p.allegiance.padEnd(6)} ${p.role.padEnd(22)} ${p.ip}${p.fake ? '  (planted)' : ''}`;
     })
     .join('\n');
   const logs = s.logs
@@ -206,6 +210,7 @@ function updateClock(): void {
 // ---- Game: employee sidebar ------------------------------------------------------------
 function renderRail(): void {
   $('rail').innerHTML = `<h3>Employees</h3>${game.playerOrder
+    .filter((id) => !game.players[id].fake) // planted users are records, not real people: only the system views show them
     .map((id) => {
       const p = game.players[id];
       const v = getPlayerView(game, id);
@@ -425,6 +430,11 @@ function renderWin(w: Win): void {
   }
   placeWin(w, el);
   el.setAttribute('aria-label', winTitle(w));
+  // The unregistered host gets its own dark look; its tool kits get a purple accent on top.
+  const r = route(w);
+  const onHost = !!r && 'system' in r && r.system === 'BLACKHAT_DB';
+  el.classList.toggle('host', onHost);
+  el.classList.toggle('kit', onHost && r.kind === 'module' && HOST_KITS.includes(r.module));
   el.innerHTML = titleBar(w) + (w.kind === 'personal' ? personalHtml(w) : browserHtml(w)) + `<div class="grip" data-resize="${w.id}" aria-hidden="true"></div>`;
   const out = el.querySelector('.out');
   if (out) out.scrollTop = out.scrollHeight;
@@ -472,7 +482,8 @@ function browserHtml(w: Win): string {
       body = `<div class="tiles">${sys.modules
         .map((m) => {
           const a = moduleAccess(view(), sys.id, m.id);
-          return `<button class="tile ${a === 'NONE' ? 'locked' : ''}" data-act="wgo:${w.id}:${sys.id}:${m.id}"><b>${esc(m.label)}</b><i class="perm ${a}">${ACCESS_TEXT[a]}</i></button>`;
+          const kit = sys.id === 'BLACKHAT_DB' && HOST_KITS.includes(m.id);
+          return `<button class="tile ${kit ? 'kit' : ''} ${a === 'NONE' ? 'locked' : ''}" data-act="wgo:${w.id}:${sys.id}:${m.id}"><b>${esc(m.label)}</b><i class="perm ${a}">${ACCESS_TEXT[a]}</i></button>`;
         })
         .join('')}</div>${terminalHtml(w)}`;
     } else if (MODULE_PAGES[`${r.system}.${r.module}`]) {
@@ -705,6 +716,102 @@ const MODULE_PAGES: Record<string, ModulePage> = {
   'BLACKHAT_DB.CREDENTIAL_CACHE': {
     commands: (w) => card('View cache', 'READ', btn(w, 'view', 'Compromised credentials')),
     run: (w) => execute(w, 'BLACKHAT_DB', 'CREDENTIAL_CACHE', 'VIEW_CACHE', {}),
+  },
+  'BLACKHAT_DB.INFILTRATION': {
+    commands: (w) =>
+      card(
+        'Reroute IP',
+        'WRITE',
+        input(w, 'toIp', 'Appear as IP', '10.1.0.14', true, true) +
+          btns(
+            btn(w, 'reroute:10', '10s · noisy', '', true) +
+              btn(w, 'reroute:30', '30s · loud', 'loud', true) +
+              btn(w, 'reroute:60', '60s · reckless', 'reckless', true),
+          ),
+        `${w.id}:reroute:10`,
+      ) +
+      card(
+        'Create user',
+        'WRITE',
+        input(w, 'newName', 'Name', 'Dana Pruitt') +
+          select(w, 'newRole', 'Role', ROLE_ORDER.map((id) => ({ value: id, label: ROLES[id].label })), true) +
+          input(w, 'newIp', 'IP address', '10.1.0.30', true) +
+          btns(btn(w, 'createUser', 'Add user · noisy', '', true)),
+        `${w.id}:createUser`,
+      ),
+    run: (w, cmd, arg) => {
+      if (cmd === 'reroute') runFresh(w, 'BLACKHAT_DB', 'INFILTRATION', 'REROUTE_IP', { toIp: w.form['p:toIp'] ?? '', duration: arg ?? '' }, ['toIp']);
+      else if (cmd === 'createUser')
+        runFresh(w, 'BLACKHAT_DB', 'INFILTRATION', 'CREATE_USER', { name: w.form['p:newName'] ?? '', role: w.form['p:newRole'] ?? '', ip: w.form['p:newIp'] ?? '' }, ['newName', 'newIp']);
+    },
+  },
+  'BLACKHAT_DB.SOCIAL': {
+    commands: (w) =>
+      card(
+        'Spoofed message',
+        'WRITE',
+        input(w, 'spoofTo', 'To (employee)', 'Sarah') +
+          input(w, 'spoofFrom', 'Appear from', 'Mike', true) +
+          input(w, 'spoofText', 'Message', 'say something', true, true) +
+          btns(btn(w, 'spoof', 'Send · noisy', '', true)),
+        `${w.id}:spoof`,
+      ) +
+      card(
+        'Scam request',
+        'WRITE',
+        input(w, 'scamCust', 'From customer', 'Tanaka Holdings or CU3', true, true) +
+          select(
+            w,
+            'scamKind',
+            'Asking for',
+            [
+              { value: 'SET_PRIMARY', label: 'Make an account their primary' },
+              { value: 'ADD_AND_PRIMARY', label: 'Add an account and make it primary' },
+              { value: 'ADD_ACCOUNT', label: 'Add an account' },
+              { value: 'REMOVE_ACCOUNT', label: 'Remove an account' },
+            ],
+            true,
+          ) +
+          input(w, 'scamAcct', 'Account', '18392') +
+          input(w, 'scamText', 'Message', 'the con', true, true) +
+          btns(btn(w, 'scam', 'Plant request · noisy', '', true)),
+        `${w.id}:scam`,
+      ),
+    run: (w, cmd) => {
+      if (cmd === 'spoof')
+        runFresh(w, 'BLACKHAT_DB', 'SOCIAL', 'SPOOFED_MESSAGE', { to: w.form['p:spoofTo'] ?? '', from: w.form['p:spoofFrom'] ?? '', text: w.form['p:spoofText'] ?? '' }, ['spoofText']);
+      else if (cmd === 'scam')
+        runFresh(w, 'BLACKHAT_DB', 'SOCIAL', 'SCAM_REQUEST', { customer: w.form['p:scamCust'] ?? '', kind: w.form['p:scamKind'] ?? '', account: w.form['p:scamAcct'] ?? '', text: w.form['p:scamText'] ?? '' }, ['scamText', 'scamAcct']);
+    },
+  },
+  'BLACKHAT_DB.CLEANUP': {
+    commands: (w) =>
+      card('Log wiper', 'WRITE', input(w, 'wipeId', 'Log entry', 'L12', true, true) + btns(btn(w, 'wipe', 'Wipe entry · noisy', '', true)), `${w.id}:wipe`) +
+      card(
+        'Alert mute',
+        'WRITE',
+        `<p class="hint full">Hides the bank's minor alerts for 10s. Loud and reckless alerts, including this tool's own, still get through.</p>` +
+          btns(btn(w, 'mute', 'Mute alerts (10s) · loud', 'loud')),
+      ),
+    run: (w, cmd) => {
+      if (cmd === 'wipe') runFresh(w, 'BLACKHAT_DB', 'CLEANUP', 'LOG_WIPER', { logId: w.form['p:wipeId'] ?? '' }, ['wipeId']);
+      else if (cmd === 'mute') execute(w, 'BLACKHAT_DB', 'CLEANUP', 'ALERT_MUTE', {});
+    },
+  },
+  'BLACKHAT_DB.ACCESS': {
+    commands: (w) => {
+      const mods = view()
+        .systems.filter((sys) => !sys.hidden)
+        .flatMap((sys) => sys.modules.map((m) => ({ value: `${sys.id}.${m.id}`, label: `${sys.label} / ${m.label}` })));
+      return (
+        card('Code crack', 'WRITE', select(w, 'crackTarget', 'Module', mods, true) + btns(btn(w, 'crack', 'Start crack · noisy per digit', '', true)), `${w.id}:crack`) +
+        card('Lockout bomb', 'WRITE', input(w, 'bombIp', 'Workstation', '10.1.0.12', true, true) + btns(btn(w, 'bomb', 'Lock them out · noisy', '', true)), `${w.id}:bomb`)
+      );
+    },
+    run: (w, cmd) => {
+      if (cmd === 'crack') execute(w, 'BLACKHAT_DB', 'ACCESS', 'CRACK_CODE', { target: w.form['p:crackTarget'] ?? '' });
+      else if (cmd === 'bomb') runFresh(w, 'BLACKHAT_DB', 'ACCESS', 'LOCKOUT_BOMB', { target: w.form['p:bombIp'] ?? '' }, ['bombIp']);
+    },
   },
   'SECURITY.FIREWALL': {
     commands: (w) => {

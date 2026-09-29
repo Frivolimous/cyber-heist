@@ -45,6 +45,7 @@ export interface GameConfig {
   requestChangeShare: number; // share of requests that ask for an account change instead of a payment (0..1)
   blockSec: number; // how long a Firewall block lasts
   revokeCountdownSec: number; // how long anyone has to cancel a "revoke all access"
+  crackRevealSec: number; // Access / Code crack: seconds between digit reveals (4 digits ~= a minute)
 }
 
 /** A Firewall block on an address (a workstation IP or a system address). */
@@ -53,6 +54,17 @@ export interface Block {
   until: number | null; // game seconds; null = permanent (after "revoke all access")
   byOwner: PlayerId;
   actualPlayerId: PlayerId;
+}
+
+/**
+ * An IP reroute (Infiltration kit): for a while, one operative's activity appears to come from `toIp`.
+ * Attribution only — Master Log source IPs (so Traces) and Employee Records "last activity" follow the
+ * fake IP; actual routing (firewall blocks, lockouts) still tracks the real workstation.
+ */
+export interface Reroute {
+  playerId: PlayerId;
+  toIp: string;
+  until: number; // game seconds
 }
 
 /** "Revoke all access" for an address: runs when the countdown ends unless someone cancels it. */
@@ -65,6 +77,16 @@ export interface Revocation {
   actualPlayerId: PlayerId;
   status: 'PENDING' | 'DONE' | 'CANCELLED';
   cancelledBy: PlayerId | null; // credential owner who cancelled it (from the Firewall)
+}
+
+/** A Code crack (Access kit): reveals one digit of `credentialId`'s code every crackRevealSec, over ~1 minute. */
+export interface CodeCrack {
+  id: string; // K1
+  actorId: PlayerId; // the operative running it (its real source)
+  credentialId: string; // the credential being cracked
+  revealed: number; // digits recovered so far (0-4)
+  nextRevealAt: number; // game seconds
+  done: boolean; // completed, or aborted (credential revoked / source blocked)
 }
 
 export interface Credential {
@@ -97,6 +119,10 @@ export interface LogEntry {
   actualPlayerId: PlayerId | null;
   /** Hidden host entries only: what was really done ("posted on Blacknet"); a Trace may reveal it. */
   activity?: string;
+  /** Hidden host entries only: exposure tier 1-4 of the action (default 1). A higher tier makes a Trace reveal more. */
+  exposure?: number;
+  /** Wiped by Cleanup / Log wiper: hidden from the Master Log (leaving an id gap) but still traceable until it ages out. */
+  deleted?: boolean;
 }
 
 /** The hidden host's own log, readable by operatives (and by anyone who gets into the host). */
@@ -113,6 +139,8 @@ export interface Alert {
   kind: string;
   message: string;
   logId: string | null;
+  /** Severity 1-4 (mirrors the exposure tiers). Cleanup / Alert mute suppresses tier 1-2 while active. */
+  tier: number;
 }
 
 /** A change to a customer's accounts. `byOwner` is what the records show; `actualPlayerId` is the truth. */
@@ -253,6 +281,7 @@ export interface Player {
   lastActiveAt: number | null; // last time this workstation tried to use a system
   monitoring: string[]; // READ functions this player has opened with a logged read; only these can refresh quietly
   remoteAccess: { playerId: PlayerId; credentialId: string }[]; // other workstations this player has logged in to
+  fake?: boolean; // planted by a Black Hat (Infiltration): a record in Employee Records, not a real seat
 }
 
 export interface GameState {
@@ -275,6 +304,9 @@ export interface GameState {
   customers: Customer[];
   requests: ClientRequest[];
   blocks: Block[];
+  reroutes: Reroute[];
+  cracks: CodeCrack[];
+  alertMuteUntil: number; // game seconds: while now < this, tier 1-2 alerts are suppressed (Cleanup / Alert mute)
   hostLog: HostLogEntry[];
   revocations: Revocation[];
   lastRequestAt: number; // game seconds
@@ -283,7 +315,7 @@ export interface GameState {
   blacknet: BlacknetMessage[];
   totals: { processedNpc: number; stolen: number };
   hiddenHost: string;
-  counters: { log: number; alert: number; cred: number; tx: number; msg: number; packet: number; req: number; change: number; revoke: number; host: number };
+  counters: { log: number; alert: number; cred: number; tx: number; msg: number; packet: number; req: number; change: number; revoke: number; host: number; player: number; crack: number };
 }
 
 // ---- Actions -------------------------------------------------------------

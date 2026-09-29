@@ -262,5 +262,60 @@ fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
 .perm.NONE { background: #eceef2; color: var(--muted); }
 .tile.locked { background: #f1f3f6; border-style: dashed; }
 .tile.locked b { color: var(--muted); }
+/* ---- Unregistered host: a dark, off-brand look so it never feels like a bank system ---- */
+.win.host {
+  --line: #3a2a2e;
+  --text: #e6dcdc;
+  --muted: #9a8a8c;
+  --win-title: #8f2a22;
+  --win-title-off: #3a2426;
+  --ink: #b3372d;
+  --host-bg: #120d0e;
+  --host-panel: #1c1415;
+  --host-field: #0d0909;
+  --accent: #ff7a6e;
+  background: var(--host-bg);
+  color: var(--text);
+  color-scheme: dark;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6), 0 0 0 1px #5a1f1a;
+}
+.win.host .wtitle svg { color: var(--accent); }
+.win.host .navbar, .win.host .crumbs { background: var(--host-panel); border-color: var(--line); }
+.win.host .navbar button:not(:disabled):hover { background: #2c1f21; }
+.win.host .navbar input, .win.host .navbar button[type=submit] { background: var(--host-field); border-color: var(--line); color: var(--accent); }
+.win.host .crumbs button { color: var(--accent); }
+.win.host .tile, .win.host .cmd-card { background: var(--host-panel); border-color: var(--line); color: var(--text); }
+.win.host .tile:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.win.host .tile.locked { background: #161011; }
+.win.host .field input, .win.host .field select, .win.host .field textarea { background: var(--host-field); border-color: var(--line); color: var(--text); }
+.win.host .field input.code[readonly] { background: #1a1213; color: var(--muted); }
+.win.host .cred-row select.none, .win.host .cred-row option.none { color: var(--muted); }
+.win.host .cmd-btn { background: var(--win-title); border-color: var(--win-title); }
+.win.host .cmd-btn:hover { background: var(--ink); }
+.win.host .cmd-btn.alt, .win.host .cmd-btn.danger, .win.host .term-clear, .win.host .small-btn { background: transparent; border-color: var(--line); color: var(--accent); }
+.win.host .cmd-btn.alt:hover, .win.host .cmd-btn.danger:hover, .win.host .term-clear:hover { background: #2c1f21; }
+.win.host .seg-opt span { background: var(--host-field); border-color: var(--line); }
+.win.host .out { background: #070505; border: 1px solid var(--line); }
+.win.host .out .cmd { color: var(--accent); }
+.win.host .perm.READ { background: #2a2230; color: #c9b8ff; }
+.win.host .perm.WRITE { background: #3a2415; color: #ffbe8a; }
+.win.host .perm.NONE { background: #231b1c; color: var(--muted); }
+.win.host .grip { filter: invert(1); opacity: 0.5; }
+
+/* Tool kits: purple, set apart from the host's standard modules (tiles, and the kit's own page). */
+.win.host .tile.kit { background: #24143a; border-color: #5d3a8f; color: #efe6ff; }
+.win.host .tile.kit:hover { border-color: #b98cff; box-shadow: 0 0 0 1px #b98cff; }
+.win.host .tile.kit.locked { background: #1a1226; border-style: dashed; }
+.win.host .tile.kit.locked b { color: #9d8ab8; }
+.win.host.kit { --win-title: #5b2d99; --win-title-off: #2e2140; --ink: #7442bd; --accent: #c7a2ff; --line: #3a2d4d; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6), 0 0 0 1px #4a2d78; }
+.win.host.kit .cmd-card { background: #1c1428; border-color: #3a2d4d; }
+.win.host.kit .crumbs, .win.host.kit .navbar { background: #1a1424; }
+/* Kit tool buttons are all solid; colour warns of exposure: purple = noisy, maroon = loud, bright red = reckless. */
+.win.host.kit .cmd-btn { background: var(--win-title); border-color: var(--win-title); color: #fff; }
+.win.host.kit .cmd-btn:hover { background: var(--ink); border-color: var(--ink); }
+.win.host.kit .cmd-btn.loud { background: #7a1f2b; border-color: #7a1f2b; }
+.win.host.kit .cmd-btn.loud:hover { background: #962a38; border-color: #962a38; }
+.win.host.kit .cmd-btn.reckless { background: #e8241a; border-color: #e8241a; }
+.win.host.kit .cmd-btn.reckless:hover { background: #ff3b2f; border-color: #ff3b2f; }
 .cmd-row .warn { flex-basis: 100%; margin: 0; padding: 8px 10px; border-radius: 4px; background: #f7d9d5; color: #5c120c; font-size: 13px; }
 .banner.none { background: #e3e6ec; color: #22283a; }

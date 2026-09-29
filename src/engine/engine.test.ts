@@ -332,11 +332,9 @@ test('hidden host: guarded by credentials, discoverable through alerts, reachabl
   const denied = sim.run(white.id, '0000', 'BLACKHAT_DB', 'BLACKNET', 'READ_MESSAGES');
   assert.equal(denied.ok, false);
 
-  // The Master Log's alerts report the traffic but not the address; the alert points at a traceable entry.
+  // Everyday host use is exposure tier 1: it raises no alert at all.
   const alerts = sim.run(analyst.id, sim.code(analyst.id, 'SECURITY', 'MASTER_LOG'), 'SECURITY', 'MASTER_LOG', 'VIEW_LOG', { show: 'ALERTS' });
-  const alert = alerts.lines!.find((l) => l.includes('Traffic to an unregistered host detected'));
-  assert.ok(alert && alert.includes(`(log ${entry.id})`), alerts.lines!.join('\n'));
-  assert.ok(!alerts.lines!.some((l) => l.includes(sim.s.hiddenHost)), 'the address is not given away');
+  assert.ok(!alerts.lines!.some((l) => l.includes(`(log ${entry.id})`)), alerts.lines!.join('\n'));
 
   // Knowing the address makes the system appear; a wrong address does not.
   if (!sim.s.players[it.id].knownSystems.includes('BLACKHAT_DB')) {
@@ -1050,6 +1048,297 @@ test('Host Log: activity on the host by credential owner, and alerts when the ba
   assert.equal(alerts.length, 1);
   assert.ok(alerts[0].includes(`!! Relay entry ${relay.id} was traced by ${analyst.name}. The bank learned: `), alerts[0]);
   assert.ok(alerts[0].endsWith(trace.message.split('routed through a relay. ')[1]), 'same clue the bank got');
+});
+
+test('Infiltration / Reroute IP: activity follows the fake IP, exposure leaks the real one, and it wears off', () => {
+  const sim = new Sim({ traceCooldownSec: 0 });
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const victim = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE')!;
+  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  grantMasterAccess(sim.s, black.id);
+  const hostCode = sim.code(black.id, 'BLACKHAT_DB', null);
+  const secCode = sim.code(black.id, 'SECURITY', null);
+  const traceCode = sim.code(analyst.id, 'SECURITY', 'MASTER_LOG');
+  const cast = (toIp: string, duration: string) => sim.run(black.id, hostCode, 'BLACKHAT_DB', 'INFILTRATION', 'REROUTE_IP', { toIp, duration });
+  const lastAccess = () => sim.s.logs.filter((l) => l.kind === 'ACCESS').at(-1)!;
+
+  // A made-up IP is rejected; your own IP is rejected; a bad duration is rejected. None of these take effect.
+  assert.match(cast('nope', '10').message, /IP address/);
+  assert.match(cast(black.ip, '10').message, /already your workstation/);
+  assert.match(cast(victim.ip, '5').message, /Choose a duration/);
+  assert.equal(sim.s.reroutes.length, 0, 'nothing rerouted yet');
+
+  sim.at(10);
+  assert.ok(cast(victim.ip, '30').ok); // 30s = tier 3: leaks the exact real IP
+  assert.ok(sim.s.reroutes.some((r) => r.playerId === black.id && r.toIp === victim.ip));
+
+  sim.at(15);
+  assert.ok(sim.run(black.id, secCode, 'SECURITY', 'MASTER_LOG', 'VIEW_LOG').ok);
+  assert.equal(lastAccess().sourceIp, victim.ip, 'the Master Log records the fake IP');
+  assert.equal(sim.s.players[victim.id].lastActiveAt, 15, 'Employee Records frames the victim as active');
+  assert.equal(sim.s.players[black.id].lastActiveAt, 10, 'the real operative looks idle since the cast');
+
+  // A trace of that entry hands the bank the fake IP, keeping the story consistent.
+  const traced = sim.run(analyst.id, traceCode, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: lastAccess().id });
+  assert.ok(traced.message.includes(victim.ip) && !traced.message.includes(black.ip), traced.message);
+
+  // But casting it raised a tier-3 alert that names nothing and points at the cast's hidden host entry,
+  // and the operatives were warned in the Host Log.
+  const spoofAlert = sim.s.alerts.find((a) => a.kind === 'UNAUTHORIZED_ACTION')!;
+  assert.equal(spoofAlert.tier, 3);
+  assert.ok(!spoofAlert.message.includes(black.ip) && !spoofAlert.message.includes(sim.s.hiddenHost), spoofAlert.message);
+  assert.ok(sim.s.hostLog.some((h) => h.alert && h.message.includes(spoofAlert.logId!)), 'the Host Log warns of the exposure');
+  // Tracing that entry is loud: one exact fact about the REAL operative (their IP) or the server, never the fake IP.
+  const loud = sim.run(analyst.id, traceCode, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: spoofAlert.logId! });
+  assert.ok(loud.message.includes(black.ip) || loud.message.includes(sim.s.hiddenHost), loud.message);
+  assert.ok(!loud.message.includes(victim.ip), loud.message);
+
+  // Once it wears off, activity is the real workstation again.
+  sim.at(45);
+  assert.ok(sim.run(black.id, secCode, 'SECURITY', 'MASTER_LOG', 'VIEW_LOG').ok);
+  assert.equal(lastAccess().sourceIp, black.ip, 'reroute expired: back to the real IP');
+  assert.equal(sim.s.players[black.id].lastActiveAt, 45);
+});
+
+test('Infiltration / Create user: plants a fake employee that shows in the records and can be issued credentials', () => {
+  const sim = new Sim();
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const [it] = sim.byRole('IT_SPECIALIST'); // holds Employee Records and Permissions write
+  grantMasterAccess(sim.s, black.id);
+  const hostCode = sim.code(black.id, 'BLACKHAT_DB', null);
+  const create = (name: string, role: string, ip: string) => sim.run(black.id, hostCode, 'BLACKHAT_DB', 'INFILTRATION', 'CREATE_USER', { name, role, ip });
+
+  // Validation: a name, a real role, and an IP-shaped address are all required. None of these plant anyone.
+  assert.match(create('', 'IT_SPECIALIST', '10.1.0.30').message, /name/);
+  assert.match(create('Dana', 'WIZARD', '10.1.0.30').message, /role/i);
+  assert.match(create('Dana', 'IT_SPECIALIST', 'nope').message, /IP address/);
+  const before = sim.s.playerOrder.length;
+
+  sim.at(5);
+  assert.ok(create('Dana Pruitt', 'IT_SPECIALIST', '10.1.0.30').ok);
+  assert.equal(sim.s.playerOrder.length, before + 1, 'exactly one user planted');
+  const fake = Object.values(sim.s.players).find((p) => p.fake)!;
+  assert.equal(fake.name, 'Dana Pruitt');
+  assert.equal(fake.ip, '10.1.0.30');
+  assert.equal(fake.allegiance, 'WHITE', 'poses as bank staff');
+
+  // Shows up in Employee Records like any other employee.
+  const records = sim.run(it.id, sim.code(it.id, 'SECURITY', 'EMPLOYEE_RECORDS'), 'SECURITY', 'EMPLOYEE_RECORDS', 'VIEW_EMPLOYEES');
+  assert.ok(records.lines!.some((l) => l.includes('Dana Pruitt') && l.includes('10.1.0.30')), 'the planted user is in the records');
+
+  // And can be issued a credential from Permissions.
+  const issue = sim.run(it.id, sim.code(it.id, 'SECURITY', 'PERMISSIONS'), 'SECURITY', 'PERMISSIONS', 'CREATE_CREDENTIAL', { owner: fake.id, scope: 'CLIENT_DATA.CUSTOMER_RECORDS', permission: 'WRITE' });
+  assert.ok(issue.ok, issue.message);
+  assert.ok(Object.values(sim.s.credentials).some((cr) => cr.owner === fake.id), 'the planted user owns a credential');
+
+  // Exposure: an instant tool set to tier 2 leaks only a partial clue, plus a Host Log warning.
+  const alert = sim.s.alerts.find((a) => a.kind === 'UNAUTHORIZED_ACTION')!;
+  assert.match(alert.message, /^Suspicious server activity$/);
+  assert.ok(sim.s.hostLog.some((h) => h.alert));
+});
+
+test('Social / Spoofed message: lands in the recipient inbox but not the impersonated sender\'s history', () => {
+  const sim = new Sim();
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const recipient = Object.values(sim.s.players).find((p) => p.id !== black.id)!;
+  const impersonated = Object.values(sim.s.players).find((p) => p.id !== black.id && p.id !== recipient.id)!;
+  grantMasterAccess(sim.s, black.id);
+  const hostCode = sim.code(black.id, 'BLACKHAT_DB', null);
+  const spoof = (to: string, from: string, text: string) => sim.run(black.id, hostCode, 'BLACKHAT_DB', 'SOCIAL', 'SPOOFED_MESSAGE', { to, from, text });
+
+  assert.match(spoof('Nobody', impersonated.name, 'hi').message, /No employee/);
+  sim.at(5);
+  assert.ok(spoof(recipient.name, impersonated.name, 'wire it now').ok);
+  const inbox = sim.s.players[recipient.id].messages;
+  assert.equal(inbox.length, 1);
+  assert.equal(inbox[0].from, impersonated.id, 'appears to come from the impersonated player');
+  assert.equal(inbox[0].to, recipient.id);
+  assert.equal(sim.s.players[impersonated.id].messages.length, 0, 'the impersonated sender has no such message: comparing notes exposes it');
+
+  // A made-up name shows exactly as typed (no player owns it).
+  assert.ok(spoof(recipient.name, 'Reginald Crest', 'urgent').ok);
+  assert.equal(sim.s.players[recipient.id].messages.at(-1)!.from, 'Reginald Crest');
+
+  // Tier-2 exposure, like the other Social tools.
+  assert.match(sim.s.alerts.find((a) => a.kind === 'UNAUTHORIZED_ACTION')!.message, /^Suspicious server activity$/);
+});
+
+test('Social / Scam request: plants an open Client Request in the banker\'s queue, indistinguishable in the log', () => {
+  const sim = new Sim();
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  grantMasterAccess(sim.s, black.id);
+  const hostCode = sim.code(black.id, 'BLACKHAT_DB', null);
+  const cust = sim.s.customers[0];
+  const banker = sim.s.players[cust.bankerId!];
+  const scam = (customer: string, kind: string, account: string, text: string) => sim.run(black.id, hostCode, 'BLACKHAT_DB', 'SOCIAL', 'SCAM_REQUEST', { customer, kind, account, text });
+
+  assert.match(scam('Nobody Inc', 'SET_PRIMARY', '18392', 'x').message, /No customer/);
+  assert.match(scam(cust.name, 'SET_PRIMARY', 'nope', 'x').message, /account/);
+  assert.match(scam(cust.name, 'SET_PRIMARY', '18392', '').message, /message/i);
+
+  sim.at(5);
+  const r = scam(cust.name, 'SET_PRIMARY', '18392', 'We moved banks, pay us at 18392 from now on.');
+  assert.ok(r.ok, r.message);
+  const req = sim.s.requests.at(-1)!;
+  assert.equal(req.customerId, cust.id);
+  assert.equal(req.bankerId, banker.id);
+  assert.equal(req.kind, 'SET_PRIMARY');
+  assert.equal(req.account, 'ACC-18392');
+  assert.equal(req.status, 'OPEN');
+
+  // The banker sees it as an ordinary open request.
+  const seen = sim.run(banker.id, sim.code(banker.id, 'CLIENT_DATA', 'CLIENT_REQUESTS'), 'CLIENT_DATA', 'CLIENT_REQUESTS', 'VIEW_REQUESTS');
+  assert.ok(seen.lines!.some((l) => l.includes(req.id)) && seen.lines!.some((l) => l.includes('We moved banks')), 'the scam request is in the queue');
+
+  // Looks like a normal incoming request in the Master Log; the leak is the hidden-host tier-2 alert.
+  assert.ok(sim.s.logs.some((l) => l.kind === 'CLIENT_REQUEST' && l.message.includes(req.id)));
+  assert.match(sim.s.alerts.find((a) => a.kind === 'UNAUTHORIZED_ACTION')!.message, /^Suspicious server activity$/);
+});
+
+test('Access / Code crack: reveals a credential\'s digits over time, alerts each step, then hands over the code', () => {
+  const sim = new Sim();
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  grantMasterAccess(sim.s, black.id);
+  const host = sim.code(black.id, 'BLACKHAT_DB', null);
+  const reveal = sim.s.config.crackRevealSec;
+
+  sim.at(2);
+  assert.ok(sim.run(black.id, host, 'BLACKHAT_DB', 'ACCESS', 'CRACK_CODE', { target: 'SECURITY.MASTER_LOG' }).ok);
+  const crackId = sim.s.cracks.at(-1)!.id;
+  const credId = sim.s.cracks.at(-1)!.credentialId;
+  const code = sim.s.credentials[credId].code;
+  const crackNow = () => sim.s.cracks.find((k) => k.id === crackId)!;
+  const crackAlerts = () => sim.s.alerts.filter((a) => a.kind === 'CODE_CRACK');
+  assert.notEqual(sim.s.credentials[credId].owner, black.id, 'targets someone else\'s credential');
+
+  sim.at(2 + reveal - 1);
+  assert.equal(crackNow().revealed, 0, 'nothing revealed before the first interval');
+
+  sim.at(2 + reveal + 1);
+  assert.equal(crackNow().revealed, 1);
+  assert.equal(crackAlerts().length, 1);
+  assert.ok(crackAlerts()[0].message.includes(credId) && crackAlerts()[0].tier === 2);
+
+  sim.at(2 + reveal * 4 + 1);
+  assert.equal(crackNow().revealed, 4);
+  assert.ok(crackNow().done);
+  assert.equal(crackAlerts().length, 4);
+  assert.ok(crackAlerts().at(-1)!.message.includes('compromised'));
+  assert.ok(sim.s.players[black.id].heldCredentialIds.includes(credId), 'operative learns the cracked credential');
+  assert.ok(sim.s.players[black.id].activity.some((a) => a.text.includes(code)), 'and their notes reveal the code');
+});
+
+test('Access / Code crack: revoking the target credential aborts the crack', () => {
+  const sim = new Sim();
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const [it] = sim.byRole('IT_SPECIALIST');
+  grantMasterAccess(sim.s, black.id);
+  const host = sim.code(black.id, 'BLACKHAT_DB', null);
+  const reveal = sim.s.config.crackRevealSec;
+
+  sim.at(2);
+  sim.run(black.id, host, 'BLACKHAT_DB', 'ACCESS', 'CRACK_CODE', { target: 'SECURITY.MASTER_LOG' });
+  const crackId = sim.s.cracks.at(-1)!.id;
+  const credId = sim.s.cracks.at(-1)!.credentialId;
+
+  sim.at(2 + reveal + 1);
+  assert.equal(sim.s.cracks.find((k) => k.id === crackId)!.revealed, 1);
+  assert.ok(sim.run(it.id, sim.code(it.id, 'SECURITY', 'PERMISSIONS'), 'SECURITY', 'PERMISSIONS', 'REVOKE_CREDENTIAL', { credentialId: credId }).ok);
+
+  sim.at(2 + reveal * 4 + 2);
+  const k = sim.s.cracks.find((x) => x.id === crackId)!;
+  assert.ok(k.done && k.revealed < 4, 'aborted before completion');
+  assert.ok(!sim.s.players[black.id].heldCredentialIds.includes(credId), 'the operative never learns the code');
+});
+
+test('Access / Lockout bomb: locks the target out with failed attempts pinned on their own IP', () => {
+  const sim = new Sim();
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const target = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE' && p.id !== black.id)!;
+  grantMasterAccess(sim.s, black.id);
+  const host = sim.code(black.id, 'BLACKHAT_DB', null);
+
+  sim.at(3);
+  assert.match(sim.run(black.id, host, 'BLACKHAT_DB', 'ACCESS', 'LOCKOUT_BOMB', { target: 'nope' }).message, /No workstation/);
+  const before = sim.s.players[target.id].failTotal;
+  assert.ok(sim.run(black.id, host, 'BLACKHAT_DB', 'ACCESS', 'LOCKOUT_BOMB', { target: target.ip }).ok);
+
+  assert.ok(sim.s.players[target.id].lockedUntil > 3, 'target is locked out');
+  assert.equal(sim.s.players[target.id].failTotal, before + sim.s.config.lockoutAfterFails);
+  const fails = sim.s.logs.filter((l) => l.kind === 'AUTH_FAIL' && l.sourceIp === target.ip);
+  assert.equal(fails.length, sim.s.config.lockoutAfterFails, 'the failed attempts are pinned on the target\'s IP');
+  assert.match(sim.s.alerts.find((a) => a.kind === 'UNAUTHORIZED_ACTION')!.message, /^Suspicious server activity$/);
+  assert.match(sim.run(black.id, host, 'BLACKHAT_DB', 'ACCESS', 'LOCKOUT_BOMB', { target: target.ip }).message, /already locked out/);
+});
+
+test('Cleanup / Log wiper: hides a Master Log entry (id gap stays) but a Trace still reaches it', () => {
+  const sim = new Sim({ traceCooldownSec: 0 });
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  grantMasterAccess(sim.s, black.id);
+  const host = sim.code(black.id, 'BLACKHAT_DB', null);
+  const traceCode = sim.code(analyst.id, 'SECURITY', 'MASTER_LOG');
+  const viewLog = () => sim.run(analyst.id, traceCode, 'SECURITY', 'MASTER_LOG', 'VIEW_LOG', { show: 'ALL' }).lines!;
+
+  sim.at(5);
+  sim.run(black.id, sim.code(black.id, 'SECURITY', null), 'SECURITY', 'EMPLOYEE_RECORDS', 'VIEW_EMPLOYEES'); // a normal, traceable entry
+  const entry = sim.s.logs.filter((l) => l.kind === 'ACCESS').at(-1)!;
+  assert.ok(viewLog().some((l) => l.includes(entry.id + ' ')), 'listed before the wipe');
+
+  assert.ok(sim.run(black.id, host, 'BLACKHAT_DB', 'CLEANUP', 'LOG_WIPER', { logId: entry.id }).ok);
+  assert.match(sim.run(black.id, host, 'BLACKHAT_DB', 'CLEANUP', 'LOG_WIPER', { logId: entry.id }).message, /already wiped/);
+
+  assert.ok(!viewLog().some((l) => l.includes(entry.id + ' ')), 'gone from the log view');
+  assert.equal(sim.s.logs.find((l) => l.id === entry.id)!.deleted, true, 'still in the log, flagged deleted (so the id gap shows)');
+
+  const traced = sim.run(analyst.id, traceCode, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: entry.id });
+  assert.ok(traced.ok && traced.message.includes(black.ip), traced.message);
+  assert.match(sim.s.alerts.find((a) => a.kind === 'UNAUTHORIZED_ACTION')!.message, /^Suspicious server activity$/);
+});
+
+test('Cleanup / Alert mute: hides tier 1-2 alerts for 10s but never the loud tier 3-4 ones', () => {
+  const sim = new Sim();
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  grantMasterAccess(sim.s, black.id);
+  const host = sim.code(black.id, 'BLACKHAT_DB', null);
+  const reroute = (toIp: string, duration: string) => sim.run(black.id, host, 'BLACKHAT_DB', 'INFILTRATION', 'REROUTE_IP', { toIp, duration });
+  const spoofAlerts = () => sim.s.alerts.filter((a) => a.kind === 'UNAUTHORIZED_ACTION');
+
+  sim.at(5);
+  assert.ok(sim.run(black.id, host, 'BLACKHAT_DB', 'CLEANUP', 'ALERT_MUTE', {}).ok);
+  assert.equal(spoofAlerts().length, 1, 'the mute raised its own alert');
+  assert.equal(spoofAlerts()[0].tier, 3, 'and it is tier 3, so it is never muted');
+
+  sim.at(8); // still inside the 10s window
+  const warnings = () => sim.s.hostLog.filter((h) => h.alert).length;
+  const warned = warnings();
+  assert.ok(reroute('10.1.0.99', '10').ok);
+  assert.equal(spoofAlerts().length, 1, 'a tier-2 exposure is suppressed while muted');
+  assert.equal(warnings(), warned, 'and the operatives are not warned about an alert the bank never got');
+  assert.ok(reroute('10.1.0.98', '30').ok);
+  assert.equal(spoofAlerts().length, 2, 'a tier-3 exposure still gets through');
+  assert.equal(spoofAlerts().at(-1)!.tier, 3);
+
+  sim.at(20); // past the window
+  assert.ok(reroute('10.1.0.97', '10').ok);
+  assert.equal(spoofAlerts().length, 3, 'mute expired: tier-2 exposure fires again');
+});
+
+test('Infiltration / Reroute IP: the strongest reroute also hands over a working host code', () => {
+  const sim = new Sim();
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const victim = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE')!;
+  grantMasterAccess(sim.s, black.id);
+  sim.at(5);
+  assert.ok(sim.run(black.id, sim.code(black.id, 'BLACKHAT_DB', null), 'BLACKHAT_DB', 'INFILTRATION', 'REROUTE_IP', { toIp: victim.ip, duration: '60' }).ok);
+  const alert = sim.s.alerts.find((a) => a.kind === 'UNAUTHORIZED_ACTION')!;
+  assert.ok(!/\d{4}/.test(alert.message), 'the alert itself gives nothing away');
+  const [analyst] = sim.byRole('SECURITY_ANALYST');
+  const trace = sim.run(analyst.id, sim.code(analyst.id, 'SECURITY', 'MASTER_LOG'), 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: alert.logId! });
+  assert.ok(trace.message.includes(black.ip), trace.message);
+  const code = trace.message.match(/Captured host access code: (\d{4})/)?.[1];
+  assert.ok(code, trace.message);
+  assert.ok(Object.values(sim.s.credentials).some((cr) => cr.owner === black.id && cr.system === 'BLACKHAT_DB' && cr.code === code), 'a real code the operative owns');
 });
 
 test('Employee Records: reset a lockout', () => {

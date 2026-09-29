@@ -4,7 +4,9 @@
 import { ENCRYPTION_ENABLED, findModule, findSystem, ROLES, SYSTEMS } from './catalog';
 import {
   addAlert,
+  addLog,
   fmtClock,
+  gameTime,
   keyOf,
   money,
   nameOf,
@@ -17,6 +19,7 @@ import {
   addHostLog,
   activeBlock,
   blockText,
+  effectiveIp,
   normCred,
   normLog,
   normReq,
@@ -28,7 +31,7 @@ import { createCredential } from './credentials';
 import { pick, rand, randInt } from './rng';
 import { computeRisk, recordTx, reverseTransaction, settleTransaction } from './bank';
 import type { TxActor } from './bank';
-import type { AccountChange, ClientRequest, Credential, Customer, RequestKind, Revocation, GameState, LogEntry, Player, SystemId, Transaction, TxEvent, TxStatus } from './types';
+import type { AccountChange, ClientRequest, CodeCrack, Credential, Customer, Message, RequestKind, Revocation, GameState, LogEntry, Player, RoleId, SystemId, Transaction, TxEvent, TxStatus } from './types';
 
 export interface Ctx {
   s: GameState;
@@ -115,7 +118,7 @@ H['SECURITY.FIREWALL.BYPASS_ENCRYPTION'] = (c, q) => {
   const n = m.encryption.length;
   m.encryption = [];
   const entry = c.log(`bypassed ${n} encryption layer${n > 1 ? 's' : ''} on ${label}`);
-  addAlert(c.s, 'ENCRYPTION_BYPASS', `Encryption bypassed on ${label}`, entry.id);
+  addAlert(c.s, 'ENCRYPTION_BYPASS', `Encryption bypassed on ${label}`, entry.id, 3); // loud, deliberate: never muted
   return good(`Stripped ${n} layer${n > 1 ? 's' : ''} from ${label}.`);
 };
 
@@ -247,7 +250,8 @@ H['SECURITY.MASTER_LOG.VIEW_LOG'] = (c, q) => {
       .map((a) => `[${fmtClock(c.s.config, a.t)}] ${a.id.padEnd(5)} ${a.kind}: ${a.message}${a.logId ? ` (log ${a.logId})` : ''}`);
     return good(`Master Log alerts: ${rows.length}.`, rows.length ? rows : ['No alerts.']);
   }
-  const entries = show === 'ALL' ? c.s.logs : c.s.logs.filter((e) => e.actor !== 'SYSTEM');
+  // Wiped entries (Cleanup / Log wiper) drop out here, leaving a visible gap in the ids; a Trace can still reach them.
+  const entries = (show === 'ALL' ? c.s.logs : c.s.logs.filter((e) => e.actor !== 'SYSTEM')).filter((e) => !e.deleted);
   const rows = entries.slice(-limit).map((e) => `[${fmtClock(c.s.config, e.t)}] ${e.id.padEnd(5)} ${e.message}`);
   return good(`Master Log: ${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}.`, rows);
 };
@@ -283,29 +287,47 @@ H['SECURITY.EMPLOYEE_RECORDS.VIEW_EMPLOYEES'] = (c) => {
  * One true but partial clue about hidden host activity:
  * a range of four workstations, a pair (real + decoy), one number of the server's address, or what was done.
  */
-function relayClue(c: Ctx, e: LogEntry): string {
-  const ips = c.s.playerOrder.map((id) => c.s.players[id].ip);
-  const last = (ip: string): number => Number(ip.split('.').pop());
-  const kinds = ['RANGE', 'PAIR', 'SERVER', ...(e.activity ? ['ACTIVITY'] : [])];
-  const kind = pick(c.s, kinds);
+function relayClue(s: GameState, ip: string, activity?: string): string {
+  const ips = s.playerOrder.map((id) => s.players[id].ip);
+  const last = (x: string): number => Number(x.split('.').pop());
+  const kinds = ['RANGE', 'PAIR', 'SERVER', ...(activity ? ['ACTIVITY'] : [])];
+  const kind = pick(s, kinds);
   if (kind === 'RANGE' && ips.length > 4) {
     const nums = ips.map(last).sort((a, b) => a - b);
     const lo = nums[0];
     const hi = nums[nums.length - 1];
-    const real = last(e.sourceIp!);
-    const start = Math.min(Math.max(real - randInt(c.s, 0, 3), lo), hi - 3);
-    const prefix = e.sourceIp!.split('.').slice(0, 3).join('.');
+    const start = Math.min(Math.max(last(ip) - randInt(s, 0, 3), lo), hi - 3);
+    const prefix = ip.split('.').slice(0, 3).join('.');
     return `The origin workstation is within ${prefix}.${start}-${start + 3}.`;
   }
   if (kind === 'SERVER') {
-    const parts = c.s.hiddenHost.split('.');
-    const keep = randInt(c.s, 0, parts.length - 1);
+    const parts = s.hiddenHost.split('.');
+    const keep = randInt(s, 0, parts.length - 1);
     return `The server's IP address is ${parts.map((p, i) => (i === keep ? p : 'x')).join('.')}.`;
   }
-  if (kind === 'ACTIVITY') return `Activity performed: ${e.activity}.`;
-  const decoy = pick(c.s, ips.filter((ip) => ip !== e.sourceIp));
-  const pair = rand(c.s) < 0.5 ? [e.sourceIp, decoy] : [decoy, e.sourceIp];
+  if (kind === 'ACTIVITY') return `Activity performed: ${activity}.`;
+  const others = ips.filter((x) => x !== ip);
+  const decoy = others.length ? pick(s, others) : ip;
+  const pair = rand(s) < 0.5 ? [ip, decoy] : [decoy, ip];
   return `The origin is one of two workstations: ${pair[0]} or ${pair[1]}.`;
+}
+
+/**
+ * What a trace of a hidden host entry reveals, by the action's exposure tier:
+ * 1-2 (vague): one partial clue; 3 (loud): one exact fact, the operative's IP or the server's address;
+ * 4 (reckless): the operative's IP and a working host credential code (their own).
+ * Tier 1 follows the recorded (possibly rerouted) source; tier 2+ is always about the real operative.
+ */
+function exposureClue(s: GameState, e: LogEntry): string {
+  const tier = e.exposure ?? 1;
+  const real = e.actualPlayerId ? s.players[e.actualPlayerId] : undefined;
+  const ip = tier >= 2 && real ? real.ip : e.sourceIp!;
+  if (tier <= 2) return relayClue(s, ip, e.activity);
+  if (tier === 3) {
+    return rand(s) < 0.5 ? `The relay leaked the origin workstation: ${ip}.` : `The relay leaked the server's address: ${s.hiddenHost}.`;
+  }
+  const code = real ? ownHostCode(s, real) : null;
+  return `The relay leaked the origin workstation: ${ip}.${code ? ` Captured host access code: ${code}.` : ''}`;
 }
 
 H['SECURITY.MASTER_LOG.TRACE'] = (c, q) => {
@@ -317,9 +339,9 @@ H['SECURITY.MASTER_LOG.TRACE'] = (c, q) => {
   if (c.t - e.t > c.s.config.traceMaxAgeSec) return bad('That entry is too old to trace.');
   c.actor.lastTraceAt = c.t;
   if (!e.sourceIp) return good(`Trace ${e.id}: system event, no workstation origin.`, undefined, `ran a trace on ${e.id}`);
-  // Hidden host traffic is relayed: a trace only returns one true partial clue, picked at random.
+  // Hidden host traffic is relayed. What a trace returns escalates with the action's exposure tier.
   if (e.kind === 'HIDDEN_ACCESS') {
-    const clue = relayClue(c, e);
+    const clue = exposureClue(c.s, e);
     // The host notices: operatives see who traced it and what the bank learned.
     addHostLog(c.s, `Relay entry ${e.id} was traced by ${c.owner.name}. The bank learned: ${clue}`, true);
     return good(`Trace ${e.id}: routed through a relay. ${clue}`, undefined, `ran a trace on ${e.id}`);
@@ -841,6 +863,269 @@ H['TRANSACTIONS.AUTHORIZATION.VIEW_AUTH_QUEUE'] = (c, q) =>
 
 H['TRANSACTIONS.SETTLEMENT.VIEW_SETTLEMENT'] = (c, q) =>
   stageView(c, q, 'SETTLE', 'Settlement queue', ['AUTHORIZED'], (tx) => ['AUTHORIZED', 'SETTLED', 'REVERSED'].includes(tx.status));
+
+// ---- Hidden host: tool kits & exposure ----------------------------------------
+// Black Hat tools have no cooldowns or charges; they are balanced by exposure. Each tool tags its "Unknown
+// server activity" entry with a tier: tier 2+ raises an alert pointing at the entry (never naming anyone),
+// and a trace of the entry reveals more the higher the tier, always about the REAL operative (tier 2+).
+type ExposureTier = 1 | 2 | 3 | 4;
+
+/** An active host credential code the operative owns, if any (the strongest exposure hands over a working one). */
+function ownHostCode(s: GameState, actor: Player): string | null {
+  const cr = Object.values(s.credentials).find((x) => x.owner === actor.id && x.system === 'BLACKHAT_DB' && x.status === 'ACTIVE');
+  return cr?.code ?? null;
+}
+
+/** Alert text per tier. It never says who or where; it only points at the log entry to trace. */
+const EXPOSURE_ALERT: Record<number, string> = {
+  2: 'Suspicious server activity',
+  3: 'Intrusion alert: unauthorized server activity',
+  4: 'Critical breach: unauthorized server activity',
+};
+/** What the operatives are told a trace would give away. */
+const EXPOSURE_LEAK: Record<number, string> = {
+  2: 'a vague clue',
+  3: 'the operative\'s exact IP or the server\'s address',
+  4: 'the operative\'s exact IP and their host access code',
+};
+
+/** Raises the exposure alert for a hidden host entry (tier 2+) and warns the operatives in the Host Log. */
+function exposeEntry(s: GameState, entry: LogEntry, tier: ExposureTier, kind = 'UNAUTHORIZED_ACTION', message = EXPOSURE_ALERT[tier]): void {
+  entry.exposure = tier;
+  if (tier === 1) return; // tier 1: no alert, just the cryptic entry
+  if (!addAlert(s, kind, message, entry.id, tier)) return; // muted: the bank never saw it, so no warning either
+  addHostLog(s, `An operative's action raised an alert on log ${entry.id}. A trace of it gives the bank ${EXPOSURE_LEAK[tier]}.`, true);
+}
+
+/**
+ * The cost of a Black Hat tool. Its "Unknown server activity" entry is tagged with the tier, so a trace of it
+ * reveals more the louder the tool; tier 2+ also raises an alert pointing at that entry.
+ */
+function raiseExposure(c: Ctx, tier: ExposureTier): void {
+  exposeEntry(c.s, c.log(), tier);
+}
+
+/** A hidden host entry for background work (no Ctx), e.g. a running Code crack. */
+function hiddenEntry(s: GameState, actor: Player, activity: string): LogEntry {
+  return addLog(s, { actor: 'SYSTEM', kind: 'HIDDEN_ACCESS', message: 'Unknown server activity', sourceIp: effectiveIp(s, actor, gameTime(s)), actualPlayerId: actor.id, activity });
+}
+
+// ---- Infiltration -------------------------------------------------------------
+/** Insert a fabricated employee into the bank's records: a real player row (so it can own credentials and
+ *  show in Employee Records), flagged `fake` and kept out of the sandbox seat picker. Poses as White staff. */
+function plantUser(s: GameState, name: string, role: RoleId, ip: string): Player {
+  const p: Player = {
+    id: nextId(s, 'player', 'FAKE'),
+    name,
+    role,
+    allegiance: 'WHITE',
+    objective: '',
+    motivation: '',
+    ip,
+    bankAccount: '',
+    heldCredentialIds: [],
+    knownSystems: ['SECURITY', 'CLIENT_DATA', 'TRANSACTIONS'],
+    packets: [],
+    activity: [],
+    messages: [],
+    failStreak: 0,
+    lockedUntil: 0,
+    lastTraceAt: -9999,
+    failTotal: 0,
+    lastActiveAt: null,
+    monitoring: [],
+    remoteAccess: [],
+    fake: true,
+  };
+  s.players[p.id] = p;
+  s.playerOrder.push(p.id);
+  return p;
+}
+
+H['BLACKHAT_DB.INFILTRATION.CREATE_USER'] = (c, q) => {
+  const name = str(q, 'name').slice(0, 24);
+  if (!name) return bad('Enter a name for the user.');
+  const role = str(q, 'role').toUpperCase() as RoleId;
+  if (!ROLES[role]) return bad('Pick a role from the list.');
+  const ip = str(q, 'ip');
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return bad('Enter an IP address, e.g. 10.1.0.30.');
+  const p = plantUser(c.s, name, role, ip);
+  raiseExposure(c, 2);
+  return good(`${p.name} (${ROLES[role].label}) planted at ${ip}. They now appear in Employee Records; issue them credentials from Permissions.`);
+};
+
+// ---- Access -------------------------------------------------------------------
+/** A partly-recovered code: revealed digits shown, the rest as underscores ("3 7 _ _"). */
+const maskedCode = (code: string, revealed: number): string => code.split('').map((d, i) => (i < revealed ? d : '_')).join(' ');
+
+/**
+ * Advances every running Code crack (called from the engine's time loop). Each due reveal recovers one more
+ * digit (noted privately to the operative) and leaves a tier-2 hidden host entry, with an alert naming the
+ * credential and pointing at that entry. Revoking the credential or blocking the operative's workstation aborts the crack.
+ */
+export function advanceCracks(s: GameState): void {
+  const t = gameTime(s);
+  for (const k of s.cracks) {
+    if (k.done) continue;
+    const cred = s.credentials[k.credentialId];
+    const actor = s.players[k.actorId];
+    if (!cred || cred.status !== 'ACTIVE' || !actor || activeBlock(s, actor.ip)) {
+      k.done = true; // aborted: credential revoked, or the source was blocked
+      continue;
+    }
+    while (!k.done && k.nextRevealAt <= t && k.revealed < 4) {
+      k.revealed += 1;
+      const revealAt = k.nextRevealAt;
+      k.nextRevealAt += s.config.crackRevealSec;
+      const complete = k.revealed >= 4;
+      note(actor, revealAt, `Code crack ${k.id} on ${cred.id}: recovered digit ${k.revealed}. Code so far: ${maskedCode(cred.code, k.revealed)}`);
+      exposeEntry(
+        s,
+        hiddenEntry(s, actor, 'cracked a code digit'),
+        2,
+        'CODE_CRACK',
+        `Brute-force on ${cred.id} (${nameOf(s, cred.owner)}, ${scopeLabel(cred)}): ${k.revealed} of 4 digits recovered${complete ? ' — credential compromised' : ''}`,
+      );
+      if (complete) {
+        k.done = true;
+        if (!actor.heldCredentialIds.includes(cred.id)) actor.heldCredentialIds.push(cred.id);
+        note(actor, revealAt, `Code crack ${k.id} complete: ${cred.id} code is ${cred.code}.`);
+      }
+    }
+  }
+}
+
+H['BLACKHAT_DB.ACCESS.CRACK_CODE'] = (c, q) => {
+  const tgt = moduleTarget(c, q);
+  if (typeof tgt === 'string') return bad(tgt);
+  if (tgt.system === 'BLACKHAT_DB') return bad('No codes to crack on that host.');
+  const creds = Object.values(c.s.credentials).filter(
+    (cr) => cr.status === 'ACTIVE' && cr.owner !== c.actor.id && cr.system === tgt.system && (cr.module === null || cr.module === tgt.module),
+  );
+  if (!creds.length) return bad(`No active credential reaches ${targetLabel(tgt.system, tgt.module)}.`);
+  const cred = pick(c.s, creds);
+  const crack: CodeCrack = { id: nextId(c.s, 'crack', 'K'), actorId: c.actor.id, credentialId: cred.id, revealed: 0, nextRevealAt: c.t + c.s.config.crackRevealSec, done: false };
+  c.s.cracks.push(crack);
+  return good(`Code crack ${crack.id} started on ${cred.id} (${scopeLabel(cred)}). A digit about every ${c.s.config.crackRevealSec}s — watch your activity log.`);
+};
+
+H['BLACKHAT_DB.ACCESS.LOCKOUT_BOMB'] = (c, q) => {
+  const ip = str(q, 'target');
+  const target = Object.values(c.s.players).find((p) => p.ip === ip);
+  if (!target) return bad('No workstation with that address.');
+  if (target.id === c.actor.id) return bad('That is your own workstation.');
+  if (target.lockedUntil > c.t) return bad(`${ip} is already locked out.`);
+  const fails = c.s.config.lockoutAfterFails;
+  // Failed logins spoofed to come FROM the target, so their own anti-brute-force lockout trips.
+  for (let i = 0; i < fails; i++) {
+    const entry = addLog(c.s, { actor: 'UNKNOWN', kind: 'AUTH_FAIL', message: `Failed authentication attempt from ${ip}`, sourceIp: ip, actualPlayerId: c.actor.id });
+    addAlert(c.s, 'AUTH_FAIL', `Failed authentication attempt from ${ip}`, entry.id, 2);
+  }
+  target.failTotal += fails;
+  target.failStreak = 0;
+  target.lockedUntil = c.t + c.s.config.lockoutSec;
+  raiseExposure(c, 2);
+  return good(`${ip} (${target.name}) locked out for ${c.s.config.lockoutSec}s.`);
+};
+
+// ---- Cleanup ------------------------------------------------------------------
+H['BLACKHAT_DB.CLEANUP.LOG_WIPER'] = (c, q) => {
+  const id = normLog(str(q, 'logId'));
+  const e = c.s.logs.find((x) => x.id === id);
+  if (!e) return bad(`No such log entry: ${id}.`);
+  if (e.deleted) return bad(`${id} is already wiped.`);
+  e.deleted = true; // hidden from the log view; still in s.logs, so a Trace works until it ages out
+  raiseExposure(c, 2);
+  return good(`Wiped ${id} from the Master Log. The gap in the ids stays, and it can still be traced for now.`);
+};
+
+const ALERT_MUTE_SEC = 10;
+H['BLACKHAT_DB.CLEANUP.ALERT_MUTE'] = (c) => {
+  c.s.alertMuteUntil = Math.max(c.s.alertMuteUntil, c.t + ALERT_MUTE_SEC);
+  raiseExposure(c, 3); // tier 3: this alert (and any tier 3-4) is never muted, so the mute cannot hide the loud stuff
+  return good(`Alerts muted for ${ALERT_MUTE_SEC}s. Only weak alerts are hidden; strong exposures still get through.`);
+};
+
+// ---- Social -------------------------------------------------------------------
+const findPlayerByName = (s: GameState, name: string): Player | undefined => {
+  const n = name.trim().toLowerCase();
+  return n ? s.playerOrder.map((id) => s.players[id]).find((p) => p.name.toLowerCase() === n) : undefined;
+};
+const findCustomerByRef = (s: GameState, ref: string): Customer | undefined => {
+  const byId = s.customers.find((x) => x.id === normCust(ref));
+  if (byId) return byId;
+  const n = ref.trim().toLowerCase();
+  return n ? s.customers.find((x) => x.name.toLowerCase() === n) : undefined;
+};
+
+H['BLACKHAT_DB.SOCIAL.SPOOFED_MESSAGE'] = (c, q) => {
+  const recipient = findPlayerByName(c.s, str(q, 'to'));
+  if (!recipient) return bad('No employee by that name to send to.');
+  const fromName = str(q, 'from').trim().slice(0, 24);
+  if (!fromName) return bad('Enter who the message should appear to be from.');
+  const text = str(q, 'text').trim().slice(0, 500);
+  if (!text) return bad('Write a message first.');
+  // A real employee's name spoofs THEM (nameOf resolves the id); any other name shows as typed and is easier to spot.
+  const impersonated = findPlayerByName(c.s, fromName);
+  const from = impersonated ? impersonated.id : fromName;
+  const m: Message = { id: nextId(c.s, 'msg', 'M'), t: c.t, from, to: recipient.id, text };
+  recipient.messages.push(m); // ONLY the recipient's inbox: the impersonated sender's history stays clean
+  note(c.actor, c.t, `Sent a spoofed message to ${recipient.name} as "${nameOf(c.s, from)}": ${text}`);
+  raiseExposure(c, 2);
+  return good(`Delivered to ${recipient.name}, appearing to be from ${nameOf(c.s, from)}.`);
+};
+
+H['BLACKHAT_DB.SOCIAL.SCAM_REQUEST'] = (c, q) => {
+  const cust = findCustomerByRef(c.s, str(q, 'customer'));
+  if (!cust) return bad('No customer by that name or id.');
+  const kind = str(q, 'kind').toUpperCase() as RequestKind;
+  if (!(['SET_PRIMARY', 'ADD_AND_PRIMARY', 'ADD_ACCOUNT', 'REMOVE_ACCOUNT'] as RequestKind[]).includes(kind)) return bad('Pick what the request asks for.');
+  const account = normAccount(str(q, 'account'));
+  if (!account) return bad('Enter a 5-digit account number.');
+  const text = str(q, 'text').trim().slice(0, 300);
+  if (!text) return bad('Write the message the customer would send.');
+  const req: ClientRequest = {
+    id: nextId(c.s, 'req', 'REQ-'),
+    t: c.t,
+    customerId: cust.id,
+    bankerId: cust.bankerId,
+    kind,
+    text,
+    payeeId: null,
+    amount: null,
+    originAccount: null,
+    account,
+    status: 'OPEN',
+    closedAt: null,
+    closedBy: null,
+    closedByActual: null,
+    txId: null,
+    archiveReason: null,
+  };
+  c.s.requests.push(req);
+  // A normal-looking system entry, so in the Master Log it is indistinguishable from a real incoming request.
+  addLog(c.s, { actor: 'SYSTEM', kind: 'CLIENT_REQUEST', message: `Client request ${req.id} received`, sourceIp: null, actualPlayerId: null });
+  note(c.actor, c.t, `Planted scam request ${req.id} from ${cust.name} (${kind} ${account}).`);
+  raiseExposure(c, 2);
+  const to = cust.bankerId ? nameOf(c.s, cust.bankerId) : 'their banker';
+  return good(`Scam request ${req.id} planted, from ${cust.name} to ${to}.`);
+};
+
+H['BLACKHAT_DB.INFILTRATION.REROUTE_IP'] = (c, q) => {
+  const toIp = str(q, 'toIp');
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(toIp)) return bad('Enter an IP address to appear as, e.g. 10.1.0.14.');
+  if (toIp === c.actor.ip) return bad('That is already your workstation.');
+  const tierByDuration: Record<string, ExposureTier> = { '10': 2, '30': 3, '60': 4 };
+  const duration = str(q, 'duration');
+  const tier = tierByDuration[duration];
+  if (!tier) return bad('Choose a duration: 10, 30 or 60 seconds.');
+  const seconds = Number(duration);
+  // One reroute per operative: a new one replaces any that is still running.
+  c.s.reroutes = c.s.reroutes.filter((r) => r.playerId !== c.actor.id);
+  c.s.reroutes.push({ playerId: c.actor.id, toIp, until: c.t + seconds });
+  raiseExposure(c, tier);
+  return good(`For ${seconds}s your activity appears to come from ${toIp}. Longer reroutes leak more — check the Host Log.`);
+};
 
 // ---- Hidden host: Black Hat Database ------------------------------------------
 H['BLACKHAT_DB.BLACKNET.READ_MESSAGES'] = (c, q) => {

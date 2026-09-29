@@ -189,21 +189,31 @@ of "potential targets for fraudulent transactions").
 - Host modules: **Blacknet**, **Target Ledger**, **Host Log** and **Credential Cache** are shared: every
   operative starts with a credential for each. The **tool kits** (Infiltration, Social, Cleanup, Access)
   are dealt at random each game: every operative gets one, and each kit left over has an even chance of
-  going to a random operative as a second. With more kits than operatives, some go unused. Kits have no
-  tools yet. Operatives can share kit codes like any other credential.
+  going to a random operative as a second. With more kits than operatives, some go unused. Operatives can
+  share kit codes like any other credential.
+- **Kit tools**: Infiltration (Reroute IP, Create user), Social (Spoofed message, Scam request), Cleanup
+  (Log wiper, Alert mute), Access (Code crack, Lockout bomb). Details are in BACKLOG.md under Black Hats.
+  They have no cooldowns or charges; each is balanced by its **exposure tier**, shown on its button:
+  - noisy (tier 2): an alert pointing at the tool's "Unknown server activity" entry; a trace of it gives a
+    vague clue;
+  - loud (tier 3): an alert; a trace gives the operative's exact IP or the server's address;
+  - reckless (tier 4): an alert; a trace gives the operative's IP and their host access code.
+  Everyday host use (tier 1) raises no alert. Alerts never name anyone; the leak is in the trace, and it
+  is always about the real operative, even during a reroute. Operatives get a Host Log warning for each
+  alert. Alert mute drops noisy and other minor alerts (and their warnings) for 10s.
 - **Host Log**: the host's own log, for operatives (and anyone who gets in). It records activity on the
   host named after the host credential's owner ("Anna: posted on Blacknet"; failed logins and bare
   connections are unnamed), and raises an alert whenever the bank traces one of the host's "Unknown
   server activity" entries, naming whose credential ran the trace and the clue the bank got.
 - Every use of the host (and every Connect to its address) writes only a cryptic, nameless system entry,
   **"Unknown server activity"**, visible under the Master Log's **Everything** filter but not **Player
-  activity**. Quiet live-monitor refreshes write nothing. It also raises an alert (Master Log > Alerts),
-  "Traffic to an unregistered host detected", with **no address** (throttled to one per 30s). The alert
-  points at a log entry that can be traced for clues.
+  activity**. Quiet live-monitor refreshes write nothing. Everyday host use raises **no alert**; only
+  kit tools do (by exposure tier, see BACKLOG.md), and their alerts just point at the entry to trace.
 - Failed code attempts on the host (unknown, revoked, wrong access) also write only "Unknown server
   activity". They still count toward the lockout and the failed-attempts total in Employee Records.
 - **Tracing** an "Unknown server activity" entry ("routed through a relay.") returns one true but
-  partial clue, chosen at random:
+  partial clue, chosen at random (entries from louder kit tools give more: an exact IP or the server's
+  address at tier 3, the IP plus a host access code at tier 4):
   - a window of four workstations: "The origin workstation is within 10.1.0.13-16."
   - a pair, the real one and a random decoy in random order: "one of two workstations: A or B."
   - one number of the server's address: "The server's IP address is x.66.x.x."
