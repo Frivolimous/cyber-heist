@@ -27,7 +27,7 @@ export function createCredential(
   const cred: Credential = {
     // The host's credentials are numbered apart (X1, X2...): Permissions never lists them, so sharing the
     // C series would leave gaps that give away who holds them.
-    id: o.system === 'BLACKHAT_DB' ? nextId(s, 'xcred', 'X') : nextId(s, 'cred', 'C'),
+    id: o.system === 'HIDDEN_HOST' ? nextId(s, 'xcred', 'X') : nextId(s, 'cred', 'C'),
     owner: o.owner,
     code: newUniqueCode(s),
     system: o.system,

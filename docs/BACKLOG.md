@@ -14,11 +14,11 @@ Move an item out of here when it ships. Firebase, the lobby and real multiplayer
 
 - **Switched off: credential sharing and the Credential Cache** (`CREDENTIAL_SHARING_ENABLED`,
   `CREDENTIAL_CACHE_ENABLED` in catalog.ts; the code remains). They were not working well: the Share
-  action, keeping a credential after typing its code, and the host module listing White Hat credentials
+  action, keeping a credential after typing its code, and the host module listing regular employee credentials
   held by operatives. Fix or delete.
 
 - **Removing planted users.** Infiltration / Create user plants a fake employee, but there is no way to
-  remove one: White Hats can only revoke its credentials (which terminates it once it has any).
+  remove one: regular employees can only revoke its credentials (which terminates it once it has any).
 
 ## Bank and customers
 
@@ -45,7 +45,7 @@ Built, but the numbers or the balance are a first guess.
   6-7 players there is just one. Personal Bankers hold both Customer Records write and Payment Queue
   write, so one banker can divert a customer and start payments to them (verification and risk sit with
   other roles). Employee Records write (reset a lockout) is IT-only.
-- **Economy** (see RULES.md > Win conditions). Targets ($15M per player, $1M per Black Hat), volume
+- **Economy** (see RULES.md > Win conditions). Targets ($15M per player, $1M per Thief), volume
   (automatic capped at 80% of the target, about 1.15-1.2x offered in total) and request rate (one per banker
   every 90s) scale with the table. Automatic payments are many and small ($165k-$1.32M), requests fewer
   and big (x2.18). To check:
@@ -54,15 +54,15 @@ Built, but the numbers or the balance are a first guess.
   - small customers going broke: a request can take up to ~87% of an account, and money drifts to the
     wealthy. If too many customers can only ask to add accounts, raise the small tier (e.g. $0.5M-$3M);
   - the Master Log gets a "Batch processor queued" line per automatic payment (~120 a game at 10 players):
-    good cover for the Black Hats, or just noise?
+    good cover for the Thieves, or just noise?
   - the amount factors in `scaledConfig` (0.94 automatic, 0.39 requested) were measured by simulation;
     re-measure if payment sizing or tiers change;
-  - the hacker target grows with Black Hats, but their chances per payment do not;
+  - the hacker target grows with Thieves, but their chances per payment do not;
   - the 20-minute timer (was 40), and time-of-day pacing (busy = 4x slow).
 - **Endings.** At close of business the bank wins if it met its target; otherwise both sides lose, so
-  Black Hats short of their goal may prefer to stall the bank rather than steal. Terminating every Black
-  Hat, or revoking the unregistered host, wins at once for the White Hats; a wrong IP revocation
-  permanently removes a White Hat. A losing White Hat side may prefer to shut the bank down. Watch whether
+  Thieves short of their goal may prefer to stall the bank rather than steal. Terminating every Thief
+  , or revoking the unregistered host, wins at once for the bank; a wrong IP revocation
+  permanently removes a regular employee. Regular employees who are losing may prefer to shut the bank down. Watch whether
   any of this is too swingy.
 - **Limits.** Workstation IPs are random in 10.1.0.2-254, so the subnet is not the limit any more; past
   30 players the game needs more than 42 customer names.
@@ -82,7 +82,7 @@ Suggested, not agreed. Pick up if a playtest shows the need.
 
 ## Deferred (from the original design)
 
-Personal Node hacking, credential spoofing, quarantine, neutral players, multiple Black Hat objectives,
+Personal Node hacking, credential spoofing, quarantine, neutral players, multiple Thief objectives,
 more roles and departments, function- or system-level encryption (encryption layers are switched off).
 
 ## Rejected

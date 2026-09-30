@@ -5,8 +5,8 @@
   --muted: #5b667a;
   --amber: #c98200;
   --amber-bg: #fff3d6;
-  --white-hat: #1f6f8b;
-  --black-hat: #b3261e;
+  --bank-side: #1f6f8b;
+  --thief-side: #b3261e;
   --term-bg: #0f1a2c;
   --term-text: #d3dbe8;
   --term-dim: #7f8ca3;
@@ -85,8 +85,8 @@ button:disabled { cursor: default; opacity: 0.4; }
 .throughput .bar i { display: block; height: 100%; background: var(--gold); width: 0; transition: width 0.3s; }
 .throughput span { font-size: 12px; color: #b9c6dc; }
 .chip { font-size: 12px; padding: 1px 8px; border-radius: 10px; color: #fff; }
-.chip.WHITE { background: var(--white-hat); }
-.chip.BLACK { background: var(--black-hat); }
+.chip.WHITE { background: var(--bank-side); }
+.chip.BLACK { background: var(--thief-side); }
 .chip.lock { background: var(--amber); }
 .banner { grid-column: 1 / -1; border-radius: 4px; padding: 8px 12px; font-weight: 600; }
 .banner.white { background: #d6edf4; color: #0e3d4d; }
@@ -105,8 +105,8 @@ button:disabled { cursor: default; opacity: 0.4; }
 .pl.me { background: #1d2f52; box-shadow: inset 3px 0 0 var(--gold); }
 /* sandbox-only allegiance tag, dashed so it reads as tooling */
 .pl .tag { position: absolute; right: 8px; top: 7px; font-style: normal; font-size: 10px; padding: 0 5px; border-radius: 3px; color: #fff; outline: 1px dashed var(--dev-line); outline-offset: 1px; }
-.tag.WHITE { background: var(--white-hat); }
-.tag.BLACK { background: var(--black-hat); }
+.tag.WHITE { background: var(--bank-side); }
+.tag.BLACK { background: var(--thief-side); }
 
 /* desktop */
 .desk { position: relative; overflow: hidden; background: radial-gradient(ellipse at 30% 20%, var(--os-desk-a), var(--os-desk-b) 70%); }
@@ -152,7 +152,7 @@ button:disabled { cursor: default; opacity: 0.4; }
 .navbar button[type=submit] { font-size: 13px; border-color: var(--line); background: #fff; padding: 0 10px; }
 .navbar input { flex: 1; min-width: 0; height: 28px; border: 1px solid var(--line); border-radius: 14px; padding: 0 12px; background: #fff; font: 13px var(--mono); }
 
-.crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; padding: 6px 12px; font-size: 13px; border-bottom: 1px solid #e1e6ee; background: #fff; flex: none; }
+.crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; padding: 6px 12px; font-size: 13px; border-bottom: 1px solid #e1e6ee; background: #fff; flex: none; min-height: 36px; box-sizing: border-box; } /* the same with or without the bell, so pages line up */
 .crumbs i { font-style: normal; color: var(--muted); margin: 0 4px; }
 .crumbs button { border: 0; background: none; padding: 0; color: var(--win-title); text-decoration: underline; text-underline-offset: 2px; }
 .crumbs span { font-weight: 600; }
@@ -183,7 +183,7 @@ button:disabled { cursor: default; opacity: 0.4; }
 .perm { font-style: normal; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 9px; flex: none; }
 .perm.READ { background: #e1ecf7; color: #1f4f80; }
 .perm.WRITE { background: #fbe6c9; color: #7a4a00; }
-.noroute h2 { color: var(--black-hat); }
+.noroute h2 { color: var(--thief-side); }
 .lock { display: grid; gap: 10px; justify-items: center; text-align: center; max-width: 320px; margin: 16px auto; }
 .lock svg { color: var(--win-title); }
 .lock .field { width: 100%; text-align: left; }
@@ -220,6 +220,22 @@ button:disabled { cursor: default; opacity: 0.4; }
 .mod-sec h3 { margin: 0; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
 .mod-sec.term { flex: 1; min-height: 230px; grid-template-rows: auto 1fr; }
 .cmds { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+/* A system's pages (splitBody in main.ts): what is pinned (a module's credential row), then what scrolls
+   (module tiles or commands), then the terminal. The terminal is the same height on every page of a window:
+   40% of it (150-320px), or the height dragged with the bar above it. The scrolling part gets the rest. */
+.wbody.mod { overflow: auto; } /* only scrolls when the window is too small for the three parts */
+.mod-cred { flex: none; }
+.wbody.mod .mod-cred .field > span { display: none; } /* the select and the code box explain themselves */
+.mod-top { flex: 1 1 0; min-height: 110px; overflow: auto; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px; margin-top: -2px; }
+.wbody.mod > .mod-sec.term { flex: 0 0 clamp(150px, 40%, 320px); min-height: 100px; }
+.wbody.mod > .mod-top:first-child { border-top: 0; padding-top: 0; margin-top: 0; } /* nothing pinned above it */
+/* The splitter above the terminal: drag to resize it (its height is then kept per window). */
+.split { flex: none; height: 12px; margin: -12px 0; position: relative; z-index: 1; cursor: row-resize; touch-action: none; }
+.split::after { content: ''; position: absolute; left: calc(50% - 24px); width: 48px; top: 5px; height: 3px; border-radius: 2px; background: var(--line); }
+.split:hover::after, .win.splitting .split::after { background: var(--win-title); }
+.win.splitting { user-select: none; }
+.win.splitting, .win.splitting * { cursor: row-resize !important; }
+.wbody.mod > .mod-sec.term .out { min-height: 0; }
 .cmd-card { display: grid; gap: 10px; align-content: start; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 0; }
 .cmd-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .cmd-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
@@ -238,14 +254,17 @@ button:disabled { cursor: default; opacity: 0.4; }
 .kv { display: grid; grid-template-columns: 90px 1fr; gap: 2px 8px; margin: 0; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; font-family: var(--mono); }
+/* Profile: which side you are on, above the objective. */
+.side-line { margin: 2px 0 0; padding: 7px 12px; border-radius: 6px; font-weight: 700; color: #fff; background: var(--bank-side); }
+.side-line.BLACK { background: var(--thief-side); }
 .note { background: var(--amber-bg); border-left: 3px solid var(--amber); padding: 6px 10px; border-radius: 0 4px 4px 0; }
 .notice { border-radius: 4px; padding: 6px 10px; font-size: 13px; }
 .notice.ok { background: #dff3ea; color: #0f5132; }
 .notice.bad { background: #f7d9d5; color: #5c120c; }
 .job-summary { margin: 0; }
 .job-list { margin: 0; padding-left: 20px; display: grid; gap: 3px; }
-.job-secret { border-left: 3px solid var(--black-hat); background: #f7e6e4; border-radius: 0 4px 4px 0; padding: 6px 10px 8px; }
-.job-secret h4 { color: var(--black-hat) !important; }
+.job-secret { border-left: 3px solid var(--thief-side); background: #f7e6e4; border-radius: 0 4px 4px 0; padding: 6px 10px 8px; }
+.job-secret h4 { color: var(--thief-side) !important; }
 table.cred { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.cred td { padding: 5px 4px; border-bottom: 1px solid #e3e7ee; vertical-align: top; }
 table.cred .code { font: 700 15px var(--mono); letter-spacing: 0.1em; }
@@ -275,6 +294,8 @@ table.cred .rev { text-decoration: line-through; color: var(--muted); }
 .toast b { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--gold); }
 .toast.err { border-left-color: var(--amber); }
 .toast.err b { color: var(--amber); }
+.toast.host { background: rgba(26, 12, 20, 0.97); border-color: #5a2a3a; border-left-color: #e0445c; }
+.toast.host b { color: #ff7a8c; }
 .toast.out { opacity: 0; transform: translateY(6px) scale(0.97); transition: opacity 0.2s, transform 0.2s; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(14px) scale(0.9); } to { opacity: 1; transform: none; } }
 
@@ -293,7 +314,7 @@ table.cred .rev { text-decoration: line-through; color: var(--muted); }
   .icons { grid-template-columns: repeat(2, 130px); grid-auto-rows: 130px; gap: 14px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
-.cmd-btn.danger { background: #fff; color: var(--black-hat); border-color: #d9a39e; }
+.cmd-btn.danger { background: #fff; color: var(--thief-side); border-color: #d9a39e; }
 .cmd-btn.danger:hover { background: #fbeceb; }
 .cmd-row .field.full { flex-basis: 100%; }
 .cmd-btns { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -311,7 +332,7 @@ fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
 .seg-opt input:focus-visible + span { outline: 2px solid var(--gold); outline-offset: 1px; }
 .seg-opt.LOW input:checked + span { background: #dff3ea; border-color: #3c9a73; color: #0f5132; }
 .seg-opt.MEDIUM input:checked + span { background: #fff1d1; border-color: #c98200; color: #6b4500; }
-.seg-opt.HIGH input:checked + span { background: #f7d9d5; border-color: var(--black-hat); color: #5c120c; }
+.seg-opt.HIGH input:checked + span { background: #f7d9d5; border-color: var(--thief-side); color: #5c120c; }
 /* terminal header + session handshake */
 .mod-sec.term h3 { display: flex; align-items: center; justify-content: space-between; }
 .term-clear { font: 600 11px var(--sans); text-transform: none; letter-spacing: 0; background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 1px 10px; color: var(--muted); }
@@ -390,11 +411,11 @@ fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
 .endscreen { position: absolute; inset: 0; z-index: 200000; display: grid; place-items: center; padding: 16px; background: rgba(6, 12, 24, 0.72); overflow: auto; }
 .endscreen[hidden] { display: none; }
 .end-card { width: min(760px, 100%); background: #f4f6f9; color: var(--text); border-radius: 12px; padding: 22px 24px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5); display: grid; gap: 12px; border-top: 6px solid #6b7488; }
-.end-card.WHITE { border-top-color: var(--white-hat); }
-.end-card.BLACK { border-top-color: var(--black-hat); }
+.end-card.WHITE { border-top-color: var(--bank-side); }
+.end-card.BLACK { border-top-color: var(--thief-side); }
 .end-card h2 { margin: 0; font-size: 26px; }
-.end-card.WHITE h2 { color: var(--white-hat); }
-.end-card.BLACK h2 { color: var(--black-hat); }
+.end-card.WHITE h2 { color: var(--bank-side); }
+.end-card.BLACK h2 { color: var(--thief-side); }
 .end-kicker { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
 .end-text { margin: 0; line-height: 1.45; }
 .end-teams { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
@@ -402,16 +423,16 @@ fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
 .end-team.won { box-shadow: 0 0 0 2px var(--gold); }
 .end-team header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .end-team h3 { margin: 0; font-size: 15px; }
-.end-team.WHITE h3 { color: var(--white-hat); }
-.end-team.BLACK h3 { color: var(--black-hat); }
+.end-team.WHITE h3 { color: var(--bank-side); }
+.end-team.BLACK h3 { color: var(--thief-side); }
 .end-team .result { font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 1px 8px; border-radius: 9px; background: #e3e6ec; color: var(--muted); }
 .end-team.won .result { background: var(--gold); color: #3d2a00; }
 .end-made { font-size: 13px; color: var(--muted); }
 .end-made b { font-size: 18px; color: var(--text); }
 .end-bar { height: 6px; border-radius: 3px; background: #e3e6ec; overflow: hidden; }
 .end-bar i { display: block; height: 100%; }
-.end-team.WHITE .end-bar i { background: var(--white-hat); }
-.end-team.BLACK .end-bar i { background: var(--black-hat); }
+.end-team.WHITE .end-bar i { background: var(--bank-side); }
+.end-team.BLACK .end-bar i { background: var(--thief-side); }
 .end-team ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .end-team li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 4px 0; border-top: 1px solid #eef1f5; }
 .end-team li .nm { font-weight: 600; }
@@ -442,4 +463,4 @@ fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
 /* a proxy's address typed into the nav bar */
 .noroute.proxy h2 { color: var(--win-title); font-family: var(--mono); }
 .noroute .relay { font-weight: 600; color: var(--muted); }
-.noroute .relay.on { color: var(--black-hat); }
+.noroute .relay.on { color: var(--thief-side); }

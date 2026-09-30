@@ -9,35 +9,35 @@ Every way the game ends (`EndKind`, ending.ts and engine.ts):
 
 | Ending | Winner | When |
 |---|---|---|
-| Black Hat target | Black Hats | at once, when the money sitting in the mule accounts reaches $1M per Black Hat |
-| Bank target | White Hats | at close of business (timer runs out), if $15M per player of legitimate payments settled |
+| Thief target | Thieves | at once, when the money sitting in the mule accounts reaches $1M per Thief |
+| Bank target | the bank | at close of business (timer runs out), if $15M per player of legitimate payments settled |
 | Bank short | nobody (both lose) | at close of business, with neither target met |
-| Black Hats terminated | White Hats | at once, when every Black Hat is terminated |
-| Host shut down | White Hats | at once, when a Firewall "revoke all access" completes on the unregistered host |
+| Thieves terminated | the bank | at once, when every Thief is terminated |
+| Host shut down | the bank | at once, when a Firewall "revoke all access" completes on the unregistered host |
 | Bank shut down | nobody | at once, when a Firewall "revoke all access" completes on one of the bank's own systems |
 
 Details:
 
-- **Black Hats** win **at once** when stolen money reaches **$1M per Black Hat** ($3M at 10 players).
+- **Thieves** win **at once** when stolen money reaches **$1M per Thief** ($3M at 10 players).
   Stolen money is whatever sits in the Target Ledger (mule) accounts, which start empty: it arrives when a
   payment SETTLES into one of them, and leaves again on a successful reversal or when a mule account pays out.
-- **White Hats** win **at close of business** (when the timer runs out) if **$15M per player** ($150M at
+- **The bank** (the regular employees) wins **at close of business** (when the timer runs out) if **$15M per player** ($150M at
   10 players) of legitimate payments have been SETTLED by then. Meeting the target early does not end the
   game: the bank has to survive the whole day. Legitimate = every automatic payment, plus manual payments that **fulfil a payment request**
   (linked to it by request id, to the payee and for the amount the customer asked). Other manual
   payments never count, so players cannot invent payments to win. Rejected, held, failed and reversed
   payments do not count, so defence has a throughput cost. Payments settled into an employee's own
   account (**embezzled**) count for nobody.
-- **Timer:** 20 minutes. If it runs out with the bank short of its target (and the Black Hats short of
+- **Timer:** 20 minutes. If it runs out with the bank short of its target (and the Thieves short of
   theirs, or they would already have won), **both sides lose**.
-- **White Hats** also win **at once** when **every Black Hat is terminated** (see Termination), or when a
+- **The bank** also wins **at once** when **every Thief is terminated** (see Termination), or when a
   Firewall "revoke all access" completes on the **unregistered host**: it is shut down and
   the heist is over.
 - **Everybody loses** if a Firewall "revoke all access" completes on one of the bank's own systems
   (Security, Client Data or Transaction Processing): the bank shuts down and the game ends with no
   winner. It is the nuclear option for a side about to lose.
 - **End screen**: who won and how (worded for each ending), both teams with their members and what each
-  team made against its goal (settled for the bank, diverted for the Black Hats), who was terminated, and
+  team made against its goal (settled for the bank, diverted for the Thieves), who was terminated, and
   as an aside anyone who **embezzled** ("Embezzled $2,351": payments settled into their own account, which
   count toward no goal). It can be put away to look at the desk and brought back from the status bar.
 
@@ -87,12 +87,12 @@ Details:
 
 - A player is **terminated** for good when **every bank credential they own has been revoked**, or when
   a Firewall **"revoke all access" completes on their workstation's IP**. Nothing brings them back,
-  White Hat or Black Hat.
+  regular employee or Thief.
 - The Master Log records "<name> (<ip>) terminated: ..." and Employee Records mark them **TERMINATED**.
   Permissions refuses to issue them credentials.
 - They lose every bank system, workstation logins and connections: every bank page shows "ERROR: Your
   credentials are invalid." Private messages still work.
-- A terminated Black Hat **keeps the unregistered host**: it is outside the bank's firewall, so a revoked
+- A terminated Thief **keeps the unregistered host**: it is outside the bank's firewall, so a revoked
   IP does not cut it off and its credentials are not revoked. (A timed Firewall block still does.)
 - Planted users (Infiltration) are terminated the same way once they have been issued a credential.
 ## Roles
@@ -106,16 +106,16 @@ for now and may move. For `n` players
 - Personal Banker = 2 + ceil((n − 6) / 2)
 - Accounts & Receivables = n − 1 − IT − Personal Banker (the rest)
 - **Exception at 7 players:** 1 Bank Manager, 2 IT, 2 Personal Bankers, 2 A&R (the formula would give a
-  single IT Specialist, who would then always be the role's White Hat).
-- Black Hats = floor(n / 3), unless `blackHatCount` fixes it. Any role can be a Black Hat, but
-  every role other than the Bank Manager always keeps **at least one White Hat**. The Bank Manager can be a
-  Black Hat.
+  single IT Specialist, who would then always be the role's regular employee).
+- Thieves = floor(n / 3), unless `thiefCount` fixes it. Any role can be a Thief, but
+  every role other than the Bank Manager always keeps **at least one regular employee**. The Bank Manager can be a
+  Thief.
 - **Exception at 6 players** (`SHARED_SECURITY_TABLE`): there is a single IT Specialist, so the Bank Manager
   also gets **Firewall write**, and the IT Specialist and the Bank Manager count as **one group** for the
-  White Hat rule: at least one of the two is a White Hat, and either can be the Black Hat. So nobody can
+  regular employee rule: at least one of the two is a regular employee, and either can be the Thief. So nobody can
   assume the lone IT is clean.
 
-| Players | Bank Manager | IT | Personal Banker | A&R | Black Hats |
+| Players | Bank Manager | IT | Personal Banker | A&R | Thieves |
 |---|---|---|---|---|---|
 | 6 | 1 | 1 | 2 | 2 | 2 |
 | 7 | 1 | 2 | 2 | 2 | 2 |
@@ -141,12 +141,16 @@ Roles are dealt over a shuffled seat order. Each role starts with one credential
 | Authorization | - | W | R | R |
 | Settlement | - | R | W | W |
 
-- **Personal Bankers** are scoped to their own customers (Customer Records and Client Requests). Every
+- **Personal Bankers** are scoped to their own customers: they change only those in Customer Records
+  (though they can view all of them) and read only their own Client Requests. Every
   other role sees all customers and, with Client Requests access, every banker's requests; the Bank
   Manager reads them all. A whole-system Client Data credential also sees everything.
+- **Sides:** everyone is a **regular employee** (the bank) or a **Thief**. A Thief's screen shows a
+  "Thief" tag by their name; a regular employee has no tag. The top of every Profile says which side it
+  is, in a highlighted line above the objective: "You are a regular employee" or "You are a thief".
 - Every workstation's Profile holds a **job description**: what the job is, its tools, who it depends on,
-  and the rules that matter for it (numbers come from the config). Black Hats also get an **Operative
-  handbook** there, which anyone who logs in to their workstation can read.
+  and the rules that matter for it (numbers come from the config). Thieves also get an **Operative
+  handbook** there (their own screen only: a visitor to their workstation does not see it).
 - There are no info packets: nobody is dealt hidden facts at the start.
 
 ## Credentials and attribution
@@ -172,7 +176,7 @@ Roles are dealt over a shuffled seat order. Each role starts with one credential
 - **Every account has a balance.** Only these accounts exist; any other number is refused wherever an
   account is typed ("There is no account ACC-12345."):
   - customer accounts;
-  - the Black Hats' Target Ledger (mule) accounts, starting at $0;
+  - the Thieves' Target Ledger (mule) accounts, starting at $0;
   - every player's own account (on their workstation profile), starting at $1,000-$100,000;
   - the new accounts customers ask to have added (created when the request arrives, $50k-$1M).
   A planted user (Infiltration / Create user) gets a made-up number that does not exist.
@@ -181,8 +185,9 @@ Roles are dealt over a shuffled seat order. Each role starts with one credential
 - **Wealth is a fixed split every game**: 20% of customers are wealthy ($30M-$60M in total), 30% mid-sized
   ($5M-$15M), and the rest (half) small ($250k-$2M). The primary holds 60-85% of a customer's money and
   the rest is split at random over their other accounts, so many accounts start under $1M.
-- Customer Records: **View customers** shows a Personal Banker the customers whose banker is the
-  credential owner; anyone else sees all of them, with every account's balance. **Add account** (an
+- Customer Records: **View customers** shows **My customers** (those whose banker is the credential owner;
+  "You have no customers assigned to you." for anyone without) or **All**, with every account's balance.
+  Anyone can view all; with nothing picked a Personal Banker sees their own and everyone else sees all. **Add account** (an
   existing floating account, optionally as the new primary), **Set primary account** (one of the customer's
   accounts), **Remove account** (never the primary, so never the last one; a removed account floats
   away **with its money**). The change commands are scoped like the view: a Personal Banker's credential only reaches
@@ -197,7 +202,7 @@ Roles are dealt over a shuffled seat order. Each role starts with one credential
 - **What customers believe is separate from the bank's file** (`Customer.known`). A customer believes
   their accounts are as they were at the start, updated only by their own requests, **at the moment they
   ask** (add, add as primary, set primary, remove), whether or not the bank ever does it. Changes nobody
-  asked for (a Black Hat's) are invisible to them. Scam and phishing requests change nothing.
+  asked for (a Thief's) are invisible to them. Scam and phishing requests change nothing.
   - Their payment requests ("from our main account", "from our account 12345", "from our other account")
     and their automatic payments go by what they believe. So a customer never *asks* to pay from a mule
     account (a banker can still pay from one by mistake), and an account removed unasked keeps paying
@@ -244,7 +249,7 @@ Queue -> Risk Check -> Authorization -> Settlement. Because a payment lands in t
 account **at settlement time**, making another account (for example a floating mule account) a customer's
 primary diverts every payment to that customer, even ones already approved. This is the core heist.
 
-**Risk is scored by hand:** the checker picks LOW, MEDIUM or HIGH and must type a reason. Re-scoring a
+**Risk is scored by hand:** the checker picks LOW, MEDIUM or HIGH, with an optional reason. Re-scoring a
 checked payment replaces the score. **Hold and Reject need a typed reason**; Approve takes an optional one.
 Scores and reasons go into the payment history and show in the stage views. Approval requires a risk
 check but does **not** require LOW: humans decide.
@@ -318,7 +323,7 @@ of "potential targets for fraudulent transactions").
     one in progress, until it completes or is cancelled.
     When it runs, the address is blocked permanently, and a workstation's owner loses every bank credential
     and is terminated. It cannot be undone. Completing it on a bank system ends the game with no winner; on
-    the unregistered host, the White Hats win.
+    the unregistered host, the bank wins.
 - **Security alerts**: every Firewall action that weakens the bank, and every credential issued or revoked,
   raises a Master Log alert naming the credential owner, like the log entry it points at.
   - **Suspicious security activity** (tier 2, so Alert mute can hide it): blocking an address, switching a
@@ -345,7 +350,7 @@ of "potential targets for fraudulent transactions").
     are not revoked at once: a 30s countdown (`revokeCountdownSec`) starts, the owner is told, and the
     credential keeps working until it ends. Anyone with Permissions write can **Cancel a revocation** by
     credential id, including the owner with the very credential under threat. Pending ones head the view.
-    This stops a Black Hat quietly locking the bank's security staff out of their own tools.
+    This stops a Thief quietly locking the bank's security staff out of their own tools.
   - Every other credential is revoked immediately.
 - **Master Log live monitor:** "Auto-update every second" refreshes the view in place. Opening the view is
   logged as usual; the refreshes are not (the engine only allows a quiet refresh of a view the player has
@@ -356,7 +361,7 @@ of "potential targets for fraudulent transactions").
 - **Trace** (in the **Master Log**; IT Specialists and the Bank Manager hold Master Log write): reveals
   the source IP of one log entry. Entry must be under 3 minutes old, 30s cooldown per player. Employee
   Records list every registered IP, so a trace can identify a person. That is strong on purpose; whoever
-  traces could itself be a Black Hat who lies about the result.
+  traces could itself be a Thief who lies about the result.
 
 ## Client Data and Permissions
 
@@ -461,22 +466,22 @@ whether the request is one you can see. So the action goes through and the reque
 it is still judged by the table above: if what was asked has not happened, the customer follows up
 halfway (the request reopens) and it expires at the deadline with a strike. A mislinked payment never
 counts toward the target, and does not block the right payment, which still answers the request if it is
-made later (linked or not). Black Hats can use this to make a request look handled until the customer
+made later (linked or not). Thieves can use this to make a request look handled until the customer
 chases it.
 
 **With mule accounts in play** (see "What customers believe" under Customers and accounts):
 
-- **Payments into a mule.** A payment lands in the payee's primary *on file* at settlement, so if a Black
-  Hat has made a mule the primary, automatic and requested payments to that customer go into the mule.
+- **Payments into a mule.** A payment lands in the payee's primary *on file* at settlement, so if a Thief
+   has made a mule the primary, automatic and requested payments to that customer go into the mule.
 - **Payments out of a mule.** A request for a payment "from our main account" means the account the
   customer *believes* is primary. A banker who takes the primary from Customer Records pays from the mule
   instead. Since the source is not checked, that still **fulfils the request and counts toward the bank's
-  target** if it settles, and the money leaves the mule (the Black Hats' stolen total drops). If the mule
+  target** if it settles, and the money leaves the mule (the Thieves' stolen total drops). If the mule
   cannot cover it, the payment fails at settlement: not done, so a follow-up and possibly a strike.
 - **A linked payment from anywhere counts**, even from an account that is no longer on the customer's file
   (floating). An unlinked payment from a floating account is not matched to the request.
 - **Tampering can cost a banker a strike.** If a customer asked for account X to become primary and a
-  Black Hat swaps the primary to a mule before the deadline, the request is not done: the customer
+  Thief swaps the primary to a mule before the deadline, the request is not done: the customer
   complains, naming the banker. After the deadline, the same swap changes nothing about that request.
 - **Some requests cannot be done as asked.** A customer who does not know an account was removed may ask
   to make it primary: that means adding the account back first. (Asking to remove it is already done.)
@@ -489,10 +494,12 @@ chases it.
 - The bell can only be switched on, and only delivers, while the workstation holds an active **write**
   credential for that whole module (its own or one it knows the code of). Losing it silences the bell.
 - It never reports activity recorded under your own name. Using someone else's code counts as theirs, so
-  its owner is notified. Switching a bell on or off is not logged. There is no limit on bells.
+  its owner is notified. Switching a bell on or off is not logged, but says so in the page's terminal
+  ("Alerts for Firewall enabled. You will receive a notification when ..."). There is no limit on bells.
 - Each role starts with its usual bells on (`watch` in `ROLES`): IT Specialist: Employee Records;
   Personal Banker: Client Requests and Authorization; Accounts & Receivables: Verification, Risk Check and
-  Settlement; Bank Manager: Master Log.
+  Settlement; Bank Manager: Master Log. Thieves also start with Host Log, Blacknet and (if dealt it)
+  Access on; the Target Ledger's bell starts off.
 - A seat's desk opens with its workstation window on screen at the start of the game.
 
 | Page | Notifies about |
@@ -508,8 +515,15 @@ chases it.
 | Risk Check | a payment waiting for a risk score |
 | Authorization | a payment waiting for approval |
 | Settlement | a payment ready to settle |
+| Host Log (hidden host) | the bank tracing an entry from the host, or an operative's action raising an alert |
+| Blacknet (hidden host) | another operative posting (the alias and the start of the message) |
+| Target Ledger (hidden host) | money settling into a mule account; a mule account added to a customer, removed, made primary, or replaced as primary (not by you) |
+| Access kit (hidden host) | a code crack or workstation unlock you started finishing or being stopped (the same words as your activity note) |
 
-A stage whose automation will take a payment is not rung for it.
+A stage whose automation will take a payment is not rung for it. Only operatives hold the hidden host's
+credentials, so only they can switch its bells on; its pop-ups have the host's dark red look. A terminated
+Thief keeps the hidden host's bells (the host still answers them) and loses the bank's. The other kits
+have no timed tools, so no bell.
 
 ## Workstations
 
@@ -523,17 +537,19 @@ A stage whose automation will take a payment is not rung for it.
   read off your workstation, and that access is for good.
 - **Access / Unlock workstation** makes another workstation credential (a normal `C` id) that is not
   listed in Permissions either: it shows only as a gap in the ids, and Revoke credential by id removes it.
-- Logged in, you see their whole workstation read-only: profile, objective, job description (and a Black
-  Hat's operative handbook), every
-  credential they hold with codes, their activity log and messages. The session lasts until the
+- Logged in, you see their workstation read-only: profile, job description, every credential they hold
+  with codes, their activity log and messages. **Nothing that says which side they are on** is shown: not
+  the "You are a ..." line, their objective or motivation, and on a Thief's workstation not their Blacknet
+  alias, operative handbook, hidden host credentials or the host among their known systems. Their activity
+  log is shown as it is, so a careful visitor may still work it out from what they did. The session lasts until the
   credential you used is revoked (only possible for an unlocked one).
 - Trace: the Master Log records "<owner> logged in to their workstation", named after the credential's
   owner, which is always the workstation's owner. Their personal activity log records the visitor's IP.
 
-## Hidden host (Black Hat Database)
+## Hidden host (the Thieves' server)
 
 - Its address is random each game (`10.x.x.x`, never in the bank's `10.0`/`10.1` ranges); it is in every
-  Black Hat's objective. Black Hats start knowing it (assumed: Black Hats do **not** start knowing who
+  Thief's objective. Thieves start knowing it (assumed: Thieves do **not** start knowing who
   the other operatives are; they find each other on Blacknet).
 - Host modules: **Blacknet**, **Target Ledger** and **Host Log** are shared: every operative starts with
   a credential for each. (The **Credential Cache** module is switched off: `CREDENTIAL_CACHE_ENABLED`.) The **tool kits** (Infiltration, Social, Cleanup, Access)
@@ -542,8 +558,8 @@ A stage whose automation will take a payment is not rung for it.
   kit codes like any other code.
 - **Blacknet aliases**: every player is dealt a random hacker alias at the start (from 40 in
   `HACKER_ALIASES`, core.ts, never repeated in a game) and cannot change it. A post carries the alias of
-  the credential's owner, so a borrowed code posts as its owner. A Black Hat sees their alias on their
-  workstation profile and on the Blacknet page, and so does anyone who logs in to their workstation.
+  the credential's owner, so a borrowed code posts as its owner. A Thief sees their alias on their
+  workstation profile and on the Blacknet page; a visitor to their workstation does not.
 - **Target Ledger** is read-only: the total diverted against the goal, then each of the 3 mule accounts
   with the customer it is on (marked `(primary)` when it is that customer's primary) or `floating`, and
   its balance. It can auto-update every second like Blacknet.
@@ -583,7 +599,8 @@ A stage whose automation will take a payment is not rung for it.
   - **Access / Code crack** (2): pick a module; one digit of a random credential covering it is recovered
     about every 15s (a minute for all four), each leaving an alert naming the credential and its
     progress. The operative learns the credential when it completes. Revoking the credential or a timed
-    block on the operative's workstation stops it.
+    block on the operative's workstation stops it. **Only one code crack can run at a time**, across the
+    whole team: another is refused until it completes or is stopped.
   - **Access / Unlock workstation** (3): type a workstation IP. After 30s (`unlockSec`) that player gets a
     new workstation credential, and only the operative learns its code (in their activity log). The alert
     names the target's IP. A block on either end, the target or the operative (its real IP or the one
@@ -621,25 +638,30 @@ A stage whose automation will take a payment is not rung for it.
   - one number of the server's address: "The server's IP address is x.143.x.x."
   - what was done: "Activity performed: posted on Blacknet." (also: read the board, viewed the target
     ledger, connected, failed login attempt)
-- White Hats find the address from trace clues (one number of it at a time, or all of it from a loud
+- **A Blacknet entry also leaks a message**, on top of its clue: tracing a post reveals the message posted
+  with its Blacknet alias (`The message posted by Z3r0_C00l: "..."`), and tracing a read of the board
+  reveals the newest message on the board at the time it was read, with its alias (nothing if the board was
+  empty). An alias names nobody at the bank. The Host Log's trace
+  notice tells the operatives what leaked.
+- Regular employees find the address from trace clues (one number of it at a time, or all of it from a loud
   tool's trace), use **Connect** to make the system appear, then need a credential: guess one, get one
-  from a reckless tool's trace, be told one, or find one on a Black Hat's workstation. Permissions
+  from a reckless tool's trace, be told one, or find one on a Thief's workstation. Permissions
   cannot issue host credentials.
-- A Firewall "revoke all access" that completes on the host's address shuts it down, and the White Hats
-  win (see Win conditions). A timed block only cuts the operatives off for its duration.
+- A Firewall "revoke all access" that completes on the host's address shuts it down, and the bank
+  wins (see Win conditions). A timed block only cuts the operatives off for its duration.
 
 ## Dev test scenarios
 
 Testing tools, never offered in a real lobby. Pick one in the sandbox's yellow bar (**table**, applies on New
 game) or open `?sandbox&scenario=duo` / `?sandbox&scenario=solo` (`createGame`'s `scenario` option).
 
-- **2-player test (DUO):** exactly two seats, one Personal Banker and one Accounts & Receivables, no Black
-  Hats and no Black Hat goal (the game runs to close of business). The economy is a **3-player game's**
+- **2-player test (DUO):** exactly two seats, one Personal Banker and one Accounts & Receivables, no Thieves
+  and no Thief goal (the game runs to close of business). The economy is a **3-player game's**
   (half of 6): the bank target, payment volume and customers (3) are halved, with one banker's requests
   (every 90s). For two people on two machines, open the online sandbox with the scenario
   (`?host=new&scenario=duo`) and have each open the tester link and pick a seat.
-- **Solo Black Hat test (SOLO):** you are the only Black Hat (Accounts & Receivables) against five scripted
-  seats (`autopilot.ts`), in a **6-player economy** (bank target $90M, Black Hat goal $2M). The bots use real
+- **Solo Thief test (SOLO):** you are the only Thief (Accounts & Receivables) against five scripted
+  seats (`autopilot.ts`), in a **6-player economy** (bank target $90M, Thief goal $2M). The bots use real
   codes, so every log, alert and bell is real. They wait `BOT_DELAY_SEC` (8s) before acting on new work:
   - banker bots archive obvious phishing and do everything else their customers ask (a scam works on them);
     the first one also approves LOW and MEDIUM payments, and HIGH ones made for a request, and holds the rest;
@@ -649,8 +671,8 @@ game) or open `?sandbox&scenario=duo` / `?sandbox&scenario=solo` (`createGame`'s
     activity" entry, **every time its cooldown allows** (normal cooldown and age limit). It never acts on what
     it learns; the Manager bot does nothing.
   - A strip under the yellow bar turns red when a trace first exposes **your workstation IP** or **the hidden
-    host's address**, and lists the latest traces. This is a worst case for the Black Hat (a tracer that
-    never misses a chance), not a model of attentive White Hat play.
+    host's address**, and lists the latest traces. This is a worst case for the Thief (a tracer that
+    never misses a chance), not a model of attentive regular employee play.
 - **Custom settings** (a button in the sandbox's yellow bar, applying on New game, and on the host's lobby
   page): every tunable `DEFAULT_CONFIG` value as a form, grouped (game, targets, volume, amounts, customers,
   security timing, starting automation). Only changed values are passed to `createGame`; the values derived

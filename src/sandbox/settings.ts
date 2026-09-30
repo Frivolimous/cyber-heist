@@ -19,11 +19,11 @@ const GROUPS: { title: string; note?: string; fields: Field[] }[] = [
   { title: 'Game', fields: [{ key: 'durationSec', label: 'Game length (s)', int: true, min: 60 }] },
   {
     title: 'Targets',
-    note: 'The test scenarios ignore the Black Hat count.',
+    note: 'The test scenarios ignore the Thief count.',
     fields: [
       { key: 'whiteTargetPerPlayer', label: 'Bank target per player ($)' },
-      { key: 'blackTargetPerHacker', label: 'Heist goal per Black Hat ($)', min: 1 },
-      { key: 'blackHatCount', label: 'Black Hats (blank: a third of the table)', int: true, min: 1, blank: true },
+      { key: 'blackTargetPerHacker', label: 'Heist goal per Thief ($)', min: 1 },
+      { key: 'thiefCount', label: 'Thieves (blank: a third of the table)', int: true, min: 1, blank: true },
     ],
   },
   {

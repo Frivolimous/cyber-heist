@@ -1,4 +1,4 @@
-// SOLO test scenario: the scripted White Hat seats (see ScenarioKind in types.ts). Dev tooling, not gameplay.
+// SOLO test scenario: the scripted regular employee seats (see ScenarioKind in types.ts). Dev tooling, not gameplay.
 //
 // The bots play through the same actions as people, with their own codes, so every log, alert and bell is
 // real. They are diligent but not detectives:

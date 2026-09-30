@@ -61,7 +61,7 @@ const inbox: ParamSpec = { name: 'show', label: 'Show', kind: 'select', options:
 
 /** Encryption layers (Firewall add/remove/bypass + layer codes on every function) are switched off for now. */
 export const ENCRYPTION_ENABLED = false;
-/** The host's Credential Cache module (White Hat credentials held by operatives) is switched off for now. */
+/** The host's Credential Cache module (regular employee credentials held by operatives) is switched off for now. */
 export const CREDENTIAL_CACHE_ENABLED = false;
 /**
  * Credential sharing is switched off for now: the "Share" action, and keeping a credential in your list after
@@ -158,7 +158,7 @@ export const SYSTEMS: SystemDef[] = [
         id: 'CUSTOMER_RECORDS',
         label: 'Customer Records',
         fns: [
-          fn('VIEW_CUSTOMERS', 'View customers', 'READ', 'Customers with their accounts, primary and banker. Personal Bankers see their own customers; everyone else sees all of them.', [
+          fn('VIEW_CUSTOMERS', 'View customers', 'READ', 'Customers with their accounts, primary and banker: your own customers, or all of them. Personal Bankers can change only their own.', [
             { name: 'show', label: 'Show', kind: 'select', options: ['MINE', 'ALL'], optional: true },
           ]),
           fn('ADD_ACCOUNT', 'Add account', 'WRITE', 'Attach an account number to a customer, optionally as their primary.', [
@@ -231,10 +231,10 @@ export const SYSTEMS: SystemDef[] = [
         label: 'Risk Check',
         fns: [
           fn('VIEW_RISK_QUEUE', 'View risk queue', 'READ', 'Payments waiting for a risk check (or all checked but not yet approved).', [inbox]),
-          fn('RUN_RISK_CHECK', 'Score risk', 'WRITE', 'Give a queued payment a risk score, with a reason.', [
+          fn('RUN_RISK_CHECK', 'Score risk', 'WRITE', 'Give a queued payment a risk score, with a reason if you like.', [
             tx,
             { name: 'score', label: 'Score', kind: 'select', options: ['LOW', 'MEDIUM', 'HIGH'] },
-            reason,
+            { ...reason, label: 'Reason (optional)', optional: true },
           ]),
           fn('SET_AUTO_SCORE', 'Automatic scoring', 'WRITE', 'Score routine payments LOW automatically. A max amount of 0 switches it off.', [
             { name: 'maxAmount', label: 'Max amount', kind: 'number', placeholder: '1000000' },
@@ -272,7 +272,7 @@ export const SYSTEMS: SystemDef[] = [
     ],
   },
   {
-    id: 'BLACKHAT_DB',
+    id: 'HIDDEN_HOST',
     label: 'Unregistered host',
     address: '', // random each game: GameState.hiddenHost (use systemAddress)
     hidden: true,
@@ -306,7 +306,7 @@ export const SYSTEMS: SystemDef[] = [
             {
               id: 'CREDENTIAL_CACHE',
               label: 'Credential Cache',
-              fns: [fn('VIEW_CACHE', 'View cache', 'READ', 'Credentials of White Hat staff held by operatives.')],
+              fns: [fn('VIEW_CACHE', 'View cache', 'READ', 'Credentials of regular employees held by operatives.')],
             },
           ]
         : []),
@@ -396,7 +396,7 @@ export const SYSTEMS: SystemDef[] = [
         id: 'ACCESS',
         label: 'Access',
         fns: [
-          fn('CRACK_CODE', 'Code crack', 'WRITE', 'Slowly brute-force a random credential that can reach a module: one digit recovered roughly every 15s (about a minute for all four). Each reveal raises an alert, so defenders can revoke it, block you, or warn the owner.', [target]),
+          fn('CRACK_CODE', 'Code crack', 'WRITE', 'Slowly brute-force a random credential that can reach a module: one digit recovered roughly every 15s (about a minute for all four). Only one crack can run at a time. Each reveal raises an alert, so defenders can revoke it, block you, or warn the owner.', [target]),
           fn('UNLOCK_WORKSTATION', 'Unlock workstation', 'WRITE', 'Make a new login credential for another workstation. It takes 30s, and a block on your address or theirs stops it. The new code never shows in Permissions, only as a gap in the credential ids.', [
             { name: 'target', label: 'Workstation', kind: 'text', placeholder: '10.1.0.12' },
           ]),
@@ -517,7 +517,7 @@ export const MAX_PLAYERS = 30;
 /**
  * How many of each role a game of `n` players gets. Always exactly one Bank Manager; IT and Personal
  * Bankers grow with the table; Accounts & Receivables take the rest. Seven players is a fixed exception (two
- * of everything but the Manager), so the lone IT seat of the formula never has to be a guaranteed White Hat.
+ * of everything but the Manager), so the lone IT seat of the formula never has to be a guaranteed regular employee.
  */
 export function roleCounts(n: number): Record<RoleId, number> {
   if (n === 7) return { BANK_MANAGER: 1, IT_SPECIALIST: 2, PERSONAL_BANKER: 2, ACCOUNTS_RECEIVABLES: 2 };
@@ -528,7 +528,7 @@ export function roleCounts(n: number): Record<RoleId, number> {
 
 /**
  * At exactly this many players there is a single IT Specialist, so the Bank Manager also gets Firewall write,
- * and the two count as one group for the "every role keeps a White Hat" rule (see setup.ts).
+ * and the two count as one group for the "every role keeps a regular employee" rule (see setup.ts).
  */
 export const SHARED_SECURITY_TABLE = 6;
 
@@ -539,7 +539,7 @@ export function roleCreds(role: RoleId, n: number): CredTemplate[] {
   return creds.map((t) => (t.system === 'SECURITY' && t.module === 'FIREWALL' ? { ...t, permission: 'WRITE' } : t));
 }
 
-/** How many Black Hats a game of `n` players gets (unless the config fixes it). */
+/** How many Thieves a game of `n` players gets (unless the config fixes it). */
 export const hackerCount = (n: number): number => Math.floor(n / 3);
 
 export const DEFAULT_CONFIG: GameConfig = {
@@ -552,7 +552,7 @@ export const DEFAULT_CONFIG: GameConfig = {
   // Derived at game creation (scaledConfig); these are the 10-player values, for reference only.
   whiteTarget: 150_000_000,
   blackTarget: 3_000_000,
-  blackHatCount: null,
+  thiefCount: null,
   npcIntervalSec: 19.6,
   npcMinAmount: 165_000,
   npcMaxAmount: 1_320_000,

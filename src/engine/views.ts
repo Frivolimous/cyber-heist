@@ -18,11 +18,15 @@ export interface WorkstationView {
   name: string;
   role: RoleId;
   roleLabel: string;
-  allegiance: Allegiance;
-  /** Blacknet alias: only a Black Hat's (theirs to know; a visitor to their workstation can read it too). */
+  /**
+   * Which side, the objective and the personal motivation: the owner's eyes only (null to a visitor). A visitor
+   * also never sees a Thief's alias, operative handbook or hidden host credentials (its activity log is left as is).
+   */
+  allegiance: Allegiance | null;
+  /** Blacknet alias: only a Thief's, and only on their own screen. */
   alias: string | null;
-  objective: string;
-  motivation: string;
+  objective: string | null;
+  motivation: string | null;
   ip: string;
   bankAccount: string;
   bankBalance: number | null; // null: the account does not exist (a planted user's made-up number)
@@ -82,7 +86,8 @@ export interface PlayerView {
   proxies: { ip: string; unavailable: string | null }[];
 }
 
-function workstationView(s: GameState, p: Player): WorkstationView {
+/** `visitor`: someone else logged in to this workstation, who sees nothing that gives its side away (see WorkstationView). */
+function workstationView(s: GameState, p: Player, visitor = false): WorkstationView {
   const t = gameTime(s);
   const time = (x: number): string => fmtClock(x);
   return {
@@ -90,18 +95,18 @@ function workstationView(s: GameState, p: Player): WorkstationView {
     name: p.name,
     role: p.role,
     roleLabel: ROLES[p.role].label,
-    allegiance: p.allegiance,
-    alias: p.allegiance === 'BLACK' ? p.alias : null,
-    objective: p.objective,
-    motivation: p.motivation,
+    allegiance: visitor ? null : p.allegiance,
+    alias: p.allegiance === 'BLACK' && !visitor ? p.alias : null,
+    objective: visitor ? null : p.objective,
+    motivation: visitor ? null : p.motivation,
     ip: p.ip,
     bankAccount: p.bankAccount,
     bankBalance: accountExists(s, p.bankAccount) ? balanceOf(s, p.bankAccount) : null,
     lockedForSec: Math.max(0, Math.ceil(p.lockedUntil - t)),
     terminated: !!p.terminated,
-    job: jobDescription(p.role, p.allegiance, s.config, tableSize(s)),
-    knownSystems: p.knownSystems,
-    credentials: p.heldCredentialIds.map((id) => {
+    job: jobDescription(p.role, visitor ? 'WHITE' : p.allegiance, s.config, tableSize(s)), // a visitor gets no handbook
+    knownSystems: visitor ? p.knownSystems.filter((id) => id !== 'HIDDEN_HOST') : p.knownSystems,
+    credentials: p.heldCredentialIds.filter((id) => !visitor || s.credentials[id].system !== 'HIDDEN_HOST').map((id) => {
       const cr = s.credentials[id];
       return {
         id,
@@ -131,7 +136,7 @@ function workstationView(s: GameState, p: Player): WorkstationView {
 const holdsInfiltration = (s: GameState, p: Player): boolean =>
   p.heldCredentialIds.some((id) => {
     const cr = s.credentials[id];
-    return cr.status === 'ACTIVE' && cr.system === 'BLACKHAT_DB' && (cr.module === null || cr.module === 'INFILTRATION');
+    return cr.status === 'ACTIVE' && cr.system === 'HIDDEN_HOST' && (cr.module === null || cr.module === 'INFILTRATION');
   });
 
 export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
@@ -139,7 +144,7 @@ export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
   const t = gameTime(s);
   const remote: Record<PlayerId, WorkstationView> = {};
   for (const g of p.remoteAccess) {
-    if (s.credentials[g.credentialId]?.status === 'ACTIVE') remote[g.playerId] = workstationView(s, s.players[g.playerId]);
+    if (s.credentials[g.credentialId]?.status === 'ACTIVE') remote[g.playerId] = workstationView(s, s.players[g.playerId], true);
   }
   return {
     gameId: s.id,

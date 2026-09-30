@@ -176,8 +176,8 @@ function workstationBlocked(s: GameState, p: Player, toHiddenHost = false): stri
 function execute(s: GameState, p: Player, a: ExecuteAction): ActionResult {
   const t = gameTime(s);
   // A terminated employee keeps nothing but the unregistered host.
-  if (p.terminated && a.system !== 'BLACKHAT_DB') return fail(TERMINATED_TEXT);
-  const blocked = workstationBlocked(s, p, a.system === 'BLACKHAT_DB');
+  if (p.terminated && a.system !== 'HIDDEN_HOST') return fail(TERMINATED_TEXT);
+  const blocked = workstationBlocked(s, p, a.system === 'HIDDEN_HOST');
   if (blocked) return fail(blocked);
   if (p.lockedUntil > t) {
     return fail(`Workstation locked for ${Math.ceil(p.lockedUntil - t)}s after repeated failed attempts.`);
@@ -201,7 +201,7 @@ function execute(s: GameState, p: Player, a: ExecuteAction): ActionResult {
   // One deliberately uninformative reply for: unknown code / revoked code / code without the right scope.
   const deny = (actor: string, kind: string, message: string, reason: string): ActionResult => {
     // On the hidden host even a failure only shows up as nameless "Unknown server activity".
-    if (a.system === 'BLACKHAT_DB') hiddenActivity(s, p, 'failed login attempt', 'Failed login attempt');
+    if (a.system === 'HIDDEN_HOST') hiddenActivity(s, p, 'failed login attempt', 'Failed login attempt');
     else {
       const entry = addLog(s, { actor, kind, message, sourceIp: effectiveIp(s, p, t), actualPlayerId: p.id });
       addAlert(s, kind, message, entry.id);
@@ -271,7 +271,7 @@ function run(
   p.failStreak = 0;
 
   const st: { logged: LogEntry | null } = { logged: null };
-  const hidden = a.system === 'BLACKHAT_DB';
+  const hidden = a.system === 'HIDDEN_HOST';
   const writeAccessLog = (detail?: string): LogEntry => {
     // The hidden host leaves only a cryptic system entry (shown under "Everything"); tracing it gives a partial answer.
     if (hidden) {
@@ -306,6 +306,7 @@ function run(
   if (quiet && res.ok) return { ok: true, message: res.message, lines: res.lines };
   if (res.ok && def.permission === 'READ' && !p.monitoring.includes(monitorKey)) p.monitoring.push(monitorKey);
   if (res.ok && !st.logged) st.logged = writeAccessLog(res.logDetail);
+  if (res.ok && hidden && st.logged) st.logged.leak ??= blacknetLeak(s, a.fn);
   // "Any activity" pages notify with the Master Log line (it names the credential owner, not who typed).
   if (res.ok && st.logged && !hidden && ANY_ACTIVITY.includes(keyOf(a.system, a.module))) {
     notify(s, a.system, a.module, st.logged.message, { owner: owner.id });
@@ -338,11 +339,11 @@ function setWatch(s: GameState, p: Player, system: string, module: string, on: b
   const label = targetLabel(system, module);
   if (!on) {
     p.watching = p.watching.filter((k) => k !== key);
-    return ok(`Notifications off for ${label}.`);
+    return ok(`Alerts for ${label} disabled.`);
   }
   if (!canWriteModule(s, p, system, module)) return fail(`You need write access to ${label} to be notified from it.`);
   if (!p.watching.includes(key)) p.watching.push(key);
-  return ok(`Notifications on for ${label}: ${what}.`);
+  return ok(`Alerts for ${label} enabled. You will receive a notification when ${what}.`);
 }
 
 function sendMessage(s: GameState, p: Player, toId: string, text: string): ActionResult {
@@ -374,8 +375,8 @@ function connect(s: GameState, p: Player, address: string): ActionResult {
     return { ok: true, message: `${addr} is a proxy relay.`, proxy: { ip: addr, relaying } };
   }
   if (addr !== s.hiddenHost) return fail('No route to host.');
-  const first = !p.knownSystems.includes('BLACKHAT_DB');
-  if (first) p.knownSystems.push('BLACKHAT_DB');
+  const first = !p.knownSystems.includes('HIDDEN_HOST');
+  if (first) p.knownSystems.push('HIDDEN_HOST');
   hiddenActivity(s, p, 'connected to the server', 'Unknown workstation connected to the server');
   note(p, t, `Connected to ${s.hiddenHost}.`);
   return ok(`Connected to ${s.hiddenHost}. It now appears in your terminal, but every module needs a credential.`);
@@ -458,7 +459,7 @@ function runDueRevocations(s: GameState): void {
     if (victim) {
       for (const cr of Object.values(s.credentials)) {
         // The unregistered host is not the bank's: its credentials survive. Workstation logins are not bank credentials either.
-        if (cr.owner !== victim.id || cr.status === 'REVOKED' || cr.system === 'BLACKHAT_DB' || cr.system === 'WORKSTATION') continue;
+        if (cr.owner !== victim.id || cr.status === 'REVOKED' || cr.system === 'HIDDEN_HOST' || cr.system === 'WORKSTATION') continue;
         cr.status = 'REVOKED';
         revoked++;
       }
@@ -471,9 +472,9 @@ function runDueRevocations(s: GameState): void {
     // The nuclear option: cutting off one of the bank's own systems shuts the bank down, and everybody loses.
     const bankSystem = SYSTEMS.find((sys) => !sys.hidden && sys.address === r.address);
     if (bankSystem) endGame(s, 'SHUTDOWN', null, `All access to ${bankSystem.label} was revoked and the bank shut down. Nobody wins.`);
-    // Cutting off the unregistered host ends the heist: the White Hats win.
+    // Cutting off the unregistered host ends the heist: the bank wins.
     else if (r.address === s.hiddenHost) {
-      endGame(s, 'HOST_SHUT_DOWN', 'WHITE', `The Firewall revoked all access to the unregistered host at ${s.hiddenHost} and shut it down. Without it the heist is over. The Black Hats had diverted ${money(s.totals.stolen)} of their ${money(s.config.blackTarget)} goal.`);
+      endGame(s, 'HOST_SHUT_DOWN', 'WHITE', `The Firewall revoked all access to the unregistered host at ${s.hiddenHost} and shut it down. Without it the heist is over. The Thieves had diverted ${money(s.totals.stolen)} of their ${money(s.config.blackTarget)} goal.`);
     }
   }
 }
@@ -485,6 +486,18 @@ function hiddenActivity(s: GameState, p: Player, activity: string, hostMessage: 
   // The host keeps its own record, named after the host credential's owner.
   addHostLog(s, hostMessage);
   return entry;
+}
+
+/**
+ * What tracing a Blacknet entry gives away besides its clue: the message just posted, or the newest message on
+ * the board when it was read (none on an empty board).
+ */
+function blacknetLeak(s: GameState, fn: string): string | undefined {
+  const last = s.blacknet.at(-1);
+  if (!last) return undefined;
+  if (fn === 'POST_MESSAGE') return `The message posted by ${last.alias}: "${last.text}"`;
+  if (fn === 'READ_MESSAGES') return `The newest message on the board then, by ${last.alias}: "${last.text}"`;
+  return undefined;
 }
 
 /** How a trace describes what was done on the hidden host. */

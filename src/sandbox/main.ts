@@ -41,7 +41,7 @@ let playerCount = 10;
 /** A dev test scenario for the next New game (?scenario=duo or ?scenario=solo), or null for a normal table. */
 const urlScenario = new URLSearchParams(location.search).get('scenario')?.toUpperCase();
 let scenario: ScenarioKind | null = urlScenario === 'DUO' || urlScenario === 'SOLO' ? urlScenario : null;
-const SCENARIO_LABEL: Record<ScenarioKind, string> = { DUO: '2-player test', SOLO: 'solo Black Hat test' };
+const SCENARIO_LABEL: Record<ScenarioKind, string> = { DUO: '2-player test', SOLO: 'solo Thief test' };
 /** Custom settings for New game: kept in one element that renderDev re-attaches, so it survives redraws. */
 const settingsEl = document.createElement('span');
 const customSettings = mountSettings(settingsEl);
@@ -79,6 +79,7 @@ interface Win {
   scrollEnd?: boolean; // a command just ran: the next render scrolls the page and its terminal to the bottom
   liveEnd?: number; // live monitor: w.out length right after its last block (so the next refresh can replace it)
   unsnap?: { w: number; h: number }; // snapped to half the desk: its size before, given back when dragged away
+  termH?: number; // module pages: the terminal's height, once dragged by the splitter above it (px)
 }
 
 // ---- Sandbox state ----------------------------------------------------------------
@@ -183,7 +184,7 @@ const ICONS: Record<SystemId, string> = {
   CLIENT_DATA: '<rect x="6" y="10" width="36" height="28" rx="3"/><circle cx="18" cy="22" r="4"/><path d="M11 32c1-4 4-6 7-6s6 2 7 6M29 19h8M29 25h8M29 31h5"/>',
   TRANSACTIONS: '<path d="M8 17h28l-7-7M40 31H12l7 7"/>',
   WORKSTATION: '<rect x="6" y="9" width="36" height="24" rx="2"/><path d="M18 39h12M24 33v6"/>',
-  BLACKHAT_DB: '<path d="M8 30c4-2 10-3 16-3s12 1 16 3M13 28l3-16c1-3 4-3 6-2l2 1 2-1c2-1 5-1 6 2l3 16"/><circle cx="18" cy="36" r="3"/><circle cx="30" cy="36" r="3"/><path d="M21 36h6"/>',
+  HIDDEN_HOST: '<path d="M8 30c4-2 10-3 16-3s12 1 16 3M13 28l3-16c1-3 4-3 6-2l2 1 2-1c2-1 5-1 6 2l3 16"/><circle cx="18" cy="36" r="3"/><circle cx="30" cy="36" r="3"/><path d="M21 36h6"/>',
 };
 const icon = (id: SystemId, size = 48): string =>
   `<svg viewBox="0 0 48 48" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[id]}</svg>`;
@@ -330,7 +331,7 @@ function renderScenario(): void {
   if (!sc) return;
   if (sc.kind === 'DUO') {
     el.className = 'dev scenario';
-    el.innerHTML = `<b>${SCENARIO_LABEL.DUO}</b> <span>One Personal Banker and one Accounts &amp; Receivables, no Black Hats. The economy is a 3-player game's.</span>`;
+    el.innerHTML = `<b>${SCENARIO_LABEL.DUO}</b> <span>One Personal Banker and one Accounts &amp; Receivables, no Thieves. The economy is a 3-player game's.</span>`;
     return;
   }
   const exposed = sc.exposedIpAt !== null || sc.exposedHostAt !== null;
@@ -397,7 +398,7 @@ function renderStatus(): void {
       : '';
   $('status').innerHTML = `
     <div class="who"><b>${esc(v.me.name)}</b><span>${esc(v.me.roleLabel)}</span>
-      <span class="chip ${v.me.allegiance}">${v.me.allegiance === 'BLACK' ? 'Black Hat' : 'White Hat'}</span>
+      ${v.me.allegiance === 'BLACK' ? '<span class="chip BLACK">Thief</span>' : ''}
       ${v.me.terminated ? '<span class="chip terminated">Terminated</span>' : ''}
       <span id="lock" class="chip lock" hidden></span></div>
     <div class="clock"><span id="phase" class="phase"></span><span id="pace" class="pace"></span><b id="elapsed"></b><span class="ends" title="The game ends at this time">/ ${fmtClock(v.durationSec)}</span></div>
@@ -412,12 +413,12 @@ function renderStatus(): void {
 /** The end screen already built (seat and ending), so redraws do not replay its reveal. */
 let endKey = '';
 const REVEAL_START = 0.5; // seconds: the first name appears
-const REVEAL_STEP = 0.22; // then one name after another, the Black Hats last
+const REVEAL_STEP = 0.22; // then one name after another, the Thieves last
 const BAR_SEC = 0.9;
 
 /**
  * The end screen is revealed in steps, for everyone watching on the call: the teams' names one at a time
- * (Black Hats last), then how far each side got, then who won. A click on the card skips to the end.
+ * (Thieves last), then how far each side got, then who won. A click on the card skips to the end.
  */
 function renderEnd(): void {
   const el = $('endscreen');
@@ -431,7 +432,7 @@ function renderEnd(): void {
   if (key === endKey) return;
   endKey = key;
   const at = (sec: number): string => `style="--d:${sec.toFixed(2)}s"`;
-  // Reveal order: White Hats first, then the Black Hats.
+  // Reveal order: regular employees first, then the Thieves.
   const order = [...end.teams].sort((a, b) => (a.side === 'BLACK' ? 1 : 0) - (b.side === 'BLACK' ? 1 : 0)).flatMap((t) => t.members);
   const barsAt = REVEAL_START + order.length * REVEAL_STEP + 0.1;
   const verdictAt = barsAt + BAR_SEC;
@@ -495,7 +496,7 @@ function renderRail(): void {
       const side = god && game ? game.players[p.id].allegiance : null;
       return `<div class="pl ${p.id === selected ? 'me' : ''}">
         <span class="nm">${esc(p.name)}${p.id === selected ? ' <small>(you)</small>' : ''}</span><span class="rl">${esc(p.roleLabel)}${p.terminated ? ' <b class="gone">Terminated</b>' : ''}</span>
-        ${side ? `<i class="tag ${side}" title="Sandbox: allegiance">${side === 'BLACK' ? 'Black' : 'White'}</i>` : ''}
+        ${side === 'BLACK' ? `<i class="tag BLACK" title="Sandbox: allegiance">Thief</i>` : ''}
       </div>`;
     })
     .join('')}`;
@@ -804,16 +805,18 @@ function renderWin(w: Win): void {
   el.setAttribute('aria-label', winTitle(w));
   // The unregistered host gets its own dark look; its tool kits get a purple accent on top.
   const r = route(w);
-  const onHost = !!r && 'system' in r && r.system === 'BLACKHAT_DB';
+  const onHost = !!r && 'system' in r && r.system === 'HIDDEN_HOST';
   el.classList.toggle('host', onHost);
   el.classList.toggle('kit', onHost && r.kind === 'module' && HOST_KITS.includes(r.module));
-  // Redrawing replaces the page, so keep where it was scrolled to (or jump to the bottom after a command).
-  const prevScroll = el.querySelector<HTMLElement>('.wbody')?.scrollTop ?? 0;
+  // Redrawing replaces the page, so keep where it was scrolled to (or jump to the bottom after a command, so the
+  // terminal shows; a module page keeps its terminal in view anyway, so its commands stay where they were).
+  const scroller = (): HTMLElement | null => el!.querySelector<HTMLElement>('.mod-top') ?? el!.querySelector<HTMLElement>('.wbody');
+  const prevScroll = scroller()?.scrollTop ?? 0;
   el.innerHTML = titleBar(w) + (w.kind === 'personal' ? personalHtml(w) : browserHtml(w)) + resizeHandles();
   const out = el.querySelector('.out');
   if (out) out.scrollTop = out.scrollHeight;
-  const body = el.querySelector<HTMLElement>('.wbody');
-  if (body) body.scrollTop = w.scrollEnd ? body.scrollHeight : prevScroll;
+  const body = scroller();
+  if (body) body.scrollTop = w.scrollEnd && !body.classList.contains('mod-top') ? body.scrollHeight : prevScroll;
   w.scrollEnd = false;
 }
 
@@ -851,7 +854,7 @@ function browserHtml(w: Win): string {
   if (r.kind === 'noroute') {
     const known = view().systems.map((s) => `${esc(s.label)} <code>${esc(s.address)}</code>`).join('<br>');
     body = `<div class="noroute"><h2>Can't reach ${esc(r.address || 'that address')}</h2><p>${esc(r.message)}</p><p class="hint">Addresses you know:<br>${known}</p></div>`;
-  } else if (view().me.terminated && r.system !== 'BLACKHAT_DB') {
+  } else if (view().me.terminated && r.system !== 'HIDDEN_HOST') {
     body = `<div class="noroute terminated"><h2>${esc(TERMINATED_TEXT)}</h2><p>This workstation has been terminated. The bank's systems no longer accept it.</p></div>`;
   } else {
     const sys = findSystem(r.system)!;
@@ -864,18 +867,18 @@ function browserHtml(w: Win): string {
     }
     crumbs = `<div class="crumbs">${parts.join('<i>/</i>')}${r.kind === 'module' ? bellHtml(`${r.system}.${r.module}`) : ''}</div>`;
     if (r.kind === 'system') {
-      body = `<div class="tiles">${sys.modules
+      return `${nav}${crumbs}${splitBody(w, '', `<div class="tiles">${sys.modules
         .map((m) => {
           const a = moduleAccess(view(), sys.id, m.id);
-          const kit = sys.id === 'BLACKHAT_DB' && HOST_KITS.includes(m.id);
+          const kit = sys.id === 'HIDDEN_HOST' && HOST_KITS.includes(m.id);
           return `<button class="tile ${kit ? 'kit' : ''} ${a === 'NONE' ? 'locked' : ''}" data-act="wgo:${w.id}:${sys.id}:${m.id}"><b>${esc(m.label)}</b><i class="perm ${a}">${ACCESS_TEXT[a]}</i></button>`;
         })
-        .join('')}</div>${terminalHtml(w)}`;
+        .join('')}</div>`)}`;
     } else if (MODULE_PAGES[`${r.system}.${r.module}`]) {
-      body = modulePageHtml(w, r);
+      return `${nav}${crumbs}${modulePageHtml(w, r)}`;
     } else {
       const empty = findModule(r.system, r.module)?.fns.length === 0;
-      body = `<p class="hint">${empty ? 'No tools in this kit yet.' : 'This module has no page yet.'}</p>${terminalHtml(w)}`;
+      return `${nav}${crumbs}${splitBody(w, '', `<p class="hint">${empty ? 'No tools in this kit yet.' : 'This module has no page yet.'}</p>`)}`;
     }
   }
   return `${nav}${crumbs}<div class="wbody">${body}</div>`;
@@ -883,17 +886,17 @@ function browserHtml(w: Win): string {
 
 type Cred = PlayerView['me']['credentials'][number];
 
-/** "Yours · Read & write · all of Transaction Processing" */
+/**
+ * "Access Level: Read & Write" (this module), "System Access Level: Read Only" (the whole system). The list only
+ * offers credentials that reach the page, so it never needs to name it. Credentials in your list are your own
+ * except a few (one you issued to someone, a cracked code, an unlocked workstation): those name their owner.
+ */
 function credLabel(c: Cred): string {
-  const who = c.own ? 'Yours' : `${c.ownerName}'s`;
-  if (c.system === 'WORKSTATION') return `${who} · Workstation login`;
-  const access = c.permission === 'WRITE' ? 'Read & write' : 'Read only';
-  const where = c.fn
-    ? findFn(c.system, c.module ?? '', c.fn)?.label ?? c.fn
-    : c.module
-      ? findModule(c.system, c.module)?.label ?? c.module
-      : `all of ${findSystem(c.system)?.label ?? c.system}`;
-  return `${who} · ${access} · ${where}`;
+  const whose = c.own ? '' : ` (${c.ownerName}'s)`;
+  if (c.system === 'WORKSTATION') return `Workstation login${whose}`;
+  const access = c.permission === 'WRITE' ? 'Read & Write' : 'Read Only';
+  const only = c.fn ? ` (${findFn(c.system, c.module ?? '', c.fn)?.label ?? c.fn} only)` : '';
+  return `${c.module ? 'Access Level' : 'System Access Level'}: ${access}${only}${whose}`;
 }
 
 /**
@@ -915,16 +918,17 @@ function credentialFields(w: Win, v: PlayerView, applies: (c: Cred) => boolean, 
   const manual = sel === 'manual';
   w.form.code = manual ? (w.form.manualCode ?? '') : (list.find((c) => c.id === sel)?.code ?? '');
   return `<div class="cred-row">
-      <label class="field grow"><span>Credential</span><select data-f="credSel" class="${sel === 'none' ? 'none' : ''}">${opts
+      <label class="field grow"><span>Credential</span><select data-f="credSel" aria-label="Credential" class="${sel === 'none' ? 'none' : ''}">${opts
         .map(([id, label]) => `<option value="${id}" class="${id === 'none' ? 'none' : ''}" ${id === sel ? 'selected' : ''}>${esc(label)}</option>`)
         .join('')}</select></label>
-      <label class="field"><span>4-digit code</span><input class="mono code" data-f="code" maxlength="4" inputmode="numeric" value="${esc(w.form.code)}" ${manual ? 'placeholder="0000"' : 'readonly tabindex="-1"'} autocomplete="off"></label>
+      <label class="field"><span>4-digit code</span><input class="mono code" data-f="code" aria-label="4-digit code" maxlength="4" inputmode="numeric" value="${esc(w.form.code)}" ${manual ? 'placeholder="0000"' : 'readonly tabindex="-1"'} autocomplete="off"></label>
     </div>`;
 }
 
 /** The window's terminal: persists across one system's pages, with a Clear button. */
-function terminalHtml(w: Win): string {
-  return `<section class="mod-sec term"><h3>Terminal <button type="button" class="term-clear" data-act="wclear:${w.id}">Clear</button></h3><div class="out" aria-live="polite">${w.out.map((l) => `<div class="${l.cls}">${esc(l.text)}</div>`).join('') || '<div class="dim">Output appears here.</div>'}</div></section>`;
+/** `height`: a height the player dragged it to (module pages); otherwise it takes its share of the window. */
+function terminalHtml(w: Win, height?: number): string {
+  return `<section class="mod-sec term" ${height ? `style="flex: 0 0 ${height}px"` : ''}><h3>Terminal <button type="button" class="term-clear" data-act="wclear:${w.id}">Clear</button></h3><div class="out" aria-live="polite">${w.out.map((l) => `<div class="${l.cls}">${esc(l.text)}</div>`).join('') || '<div class="dim">Output appears here.</div>'}</div></section>`;
 }
 
 /** Runs one function with the window's credential code and prints the result to the window's terminal. */
@@ -1072,7 +1076,7 @@ interface ModulePage {
 }
 
 const MODULE_PAGES: Record<string, ModulePage> = {
-  'BLACKHAT_DB.BLACKNET': {
+  'HIDDEN_HOST.BLACKNET': {
     commands: (w) =>
       card('Read messages', 'READ', btn(w, 'view', 'Read the board') + checkbox(w, 'monitor', 'Auto-update every second (only opening the board is logged)')) +
       card(
@@ -1089,23 +1093,23 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       ),
     run: (w, cmd) => {
       if (cmd === 'view') {
-        execute(w, 'BLACKHAT_DB', 'BLACKNET', 'READ_MESSAGES', {});
+        execute(w, 'HIDDEN_HOST', 'BLACKNET', 'READ_MESSAGES', {});
         w.liveEnd = w.out.length;
-      } else runFresh(w, 'BLACKHAT_DB', 'BLACKNET', 'POST_MESSAGE', { text: w.form['p:text'] ?? '' }, ['text']);
+      } else runFresh(w, 'HIDDEN_HOST', 'BLACKNET', 'POST_MESSAGE', { text: w.form['p:text'] ?? '' }, ['text']);
     },
     monitor: () => ({ fn: 'READ_MESSAGES', params: {} }),
   },
-  'BLACKHAT_DB.TARGET_LEDGER': {
+  'HIDDEN_HOST.TARGET_LEDGER': {
     commands: (w) =>
       card('View targets', 'READ', btn(w, 'view', 'All target accounts') + checkbox(w, 'monitor', 'Auto-update every second (only opening the ledger is logged)')),
     run: (w, cmd) => {
       if (cmd !== 'view') return;
-      execute(w, 'BLACKHAT_DB', 'TARGET_LEDGER', 'VIEW_TARGETS', {});
+      execute(w, 'HIDDEN_HOST', 'TARGET_LEDGER', 'VIEW_TARGETS', {});
       w.liveEnd = w.out.length;
     },
     monitor: () => ({ fn: 'VIEW_TARGETS', params: {} }),
   },
-  'BLACKHAT_DB.HOST_LOG': {
+  'HIDDEN_HOST.HOST_LOG': {
     commands: (w) =>
       card(
         'View host log',
@@ -1114,16 +1118,16 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       ),
     run: (w, _cmd, arg) => {
       w.form['p:hostFilter'] = arg ?? w.form['p:hostFilter'] ?? 'ALL';
-      execute(w, 'BLACKHAT_DB', 'HOST_LOG', 'VIEW_HOST_LOG', { show: w.form['p:hostFilter'] });
+      execute(w, 'HIDDEN_HOST', 'HOST_LOG', 'VIEW_HOST_LOG', { show: w.form['p:hostFilter'] });
       w.liveEnd = w.out.length;
     },
     monitor: (w) => ({ fn: 'VIEW_HOST_LOG', params: { show: w.form['p:hostFilter'] ?? 'ALL' } }),
   },
-  'BLACKHAT_DB.CREDENTIAL_CACHE': {
+  'HIDDEN_HOST.CREDENTIAL_CACHE': {
     commands: (w) => card('View cache', 'READ', btn(w, 'view', 'Compromised credentials')),
-    run: (w) => execute(w, 'BLACKHAT_DB', 'CREDENTIAL_CACHE', 'VIEW_CACHE', {}),
+    run: (w) => execute(w, 'HIDDEN_HOST', 'CREDENTIAL_CACHE', 'VIEW_CACHE', {}),
   },
-  'BLACKHAT_DB.INFILTRATION': {
+  'HIDDEN_HOST.INFILTRATION': {
     commands: (w) =>
       card(
         'Create proxy',
@@ -1151,14 +1155,14 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         `${w.id}:createUser`,
       ),
     run: (w, cmd) => {
-      if (cmd === 'createProxy') runFresh(w, 'BLACKHAT_DB', 'INFILTRATION', 'CREATE_PROXY', { ip: w.form['p:proxyIp'] ?? '' }, ['proxyIp']);
+      if (cmd === 'createProxy') runFresh(w, 'HIDDEN_HOST', 'INFILTRATION', 'CREATE_PROXY', { ip: w.form['p:proxyIp'] ?? '' }, ['proxyIp']);
       else if (cmd === 'reroute')
-        runFresh(w, 'BLACKHAT_DB', 'INFILTRATION', 'REROUTE_IP', { source: w.form['p:rerouteFrom'] ?? '', proxy: w.form['p:rerouteProxy'] ?? '', seconds: w.form['p:rerouteSec'] || '10' }, []);
+        runFresh(w, 'HIDDEN_HOST', 'INFILTRATION', 'REROUTE_IP', { source: w.form['p:rerouteFrom'] ?? '', proxy: w.form['p:rerouteProxy'] ?? '', seconds: w.form['p:rerouteSec'] || '10' }, []);
       else if (cmd === 'createUser')
-        runFresh(w, 'BLACKHAT_DB', 'INFILTRATION', 'CREATE_USER', { name: w.form['p:newName'] ?? '', role: w.form['p:newRole'] ?? '', proxy: w.form['p:newProxy'] ?? '' }, ['newName']);
+        runFresh(w, 'HIDDEN_HOST', 'INFILTRATION', 'CREATE_USER', { name: w.form['p:newName'] ?? '', role: w.form['p:newRole'] ?? '', proxy: w.form['p:newProxy'] ?? '' }, ['newName']);
     },
   },
-  'BLACKHAT_DB.SOCIAL': {
+  'HIDDEN_HOST.SOCIAL': {
     commands: (w) =>
       card(
         'Spoofed message',
@@ -1209,13 +1213,13 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       ),
     run: (w, cmd) => {
       if (cmd === 'spoof')
-        runFresh(w, 'BLACKHAT_DB', 'SOCIAL', 'SPOOFED_MESSAGE', { to: w.form['p:spoofTo'] ?? '', from: w.form['p:spoofFrom'] ?? '', text: w.form['p:spoofText'] ?? '' }, ['spoofText']);
+        runFresh(w, 'HIDDEN_HOST', 'SOCIAL', 'SPOOFED_MESSAGE', { to: w.form['p:spoofTo'] ?? '', from: w.form['p:spoofFrom'] ?? '', text: w.form['p:spoofText'] ?? '' }, ['spoofText']);
       else if (cmd === 'scam')
-        runFresh(w, 'BLACKHAT_DB', 'SOCIAL', 'SCAM_REQUEST', { customer: w.form['p:scamCust'] ?? '', kind: w.form['p:scamKind'] ?? '', account: w.form['p:scamAcct'] ?? '' }, ['scamAcct']);
+        runFresh(w, 'HIDDEN_HOST', 'SOCIAL', 'SCAM_REQUEST', { customer: w.form['p:scamCust'] ?? '', kind: w.form['p:scamKind'] ?? '', account: w.form['p:scamAcct'] ?? '' }, ['scamAcct']);
       else if (cmd === 'scamPay')
         runFresh(
           w,
-          'BLACKHAT_DB',
+          'HIDDEN_HOST',
           'SOCIAL',
           'SCAM_REQUEST',
           { customer: w.form['p:scamPayFrom'] ?? '', kind: 'PAYMENT', payee: w.form['p:scamPayee'] ?? '', amount: w.form['p:scamAmount'] ?? '', urgent: w.form['p:scamUrgent'] ?? 'NO' },
@@ -1223,7 +1227,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         );
     },
   },
-  'BLACKHAT_DB.CLEANUP': {
+  'HIDDEN_HOST.CLEANUP': {
     commands: (w) =>
       card('Log wiper', 'WRITE', input(w, 'wipeId', 'Log entry', 'L12', true, true) + btns(btn(w, 'wipe', 'Wipe entry · noisy', '', true)), `${w.id}:wipe`) +
       card(
@@ -1233,11 +1237,11 @@ const MODULE_PAGES: Record<string, ModulePage> = {
           btns(btn(w, 'mute', 'Mute alerts (10s) · loud', 'loud')),
       ),
     run: (w, cmd) => {
-      if (cmd === 'wipe') runFresh(w, 'BLACKHAT_DB', 'CLEANUP', 'LOG_WIPER', { logId: w.form['p:wipeId'] ?? '' }, ['wipeId']);
-      else if (cmd === 'mute') execute(w, 'BLACKHAT_DB', 'CLEANUP', 'ALERT_MUTE', {});
+      if (cmd === 'wipe') runFresh(w, 'HIDDEN_HOST', 'CLEANUP', 'LOG_WIPER', { logId: w.form['p:wipeId'] ?? '' }, ['wipeId']);
+      else if (cmd === 'mute') execute(w, 'HIDDEN_HOST', 'CLEANUP', 'ALERT_MUTE', {});
     },
   },
-  'BLACKHAT_DB.ACCESS': {
+  'HIDDEN_HOST.ACCESS': {
     commands: (w) => {
       const mods = view()
         .systems.filter((sys) => !sys.hidden)
@@ -1249,9 +1253,9 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       );
     },
     run: (w, cmd) => {
-      if (cmd === 'crack') execute(w, 'BLACKHAT_DB', 'ACCESS', 'CRACK_CODE', { target: w.form['p:crackTarget'] ?? '' });
-      else if (cmd === 'bomb') runFresh(w, 'BLACKHAT_DB', 'ACCESS', 'LOCKOUT_BOMB', { target: w.form['p:bombIp'] ?? '' }, ['bombIp']);
-      else if (cmd === 'unlock') runFresh(w, 'BLACKHAT_DB', 'ACCESS', 'UNLOCK_WORKSTATION', { target: w.form['p:unlockIp'] ?? '' }, ['unlockIp']);
+      if (cmd === 'crack') execute(w, 'HIDDEN_HOST', 'ACCESS', 'CRACK_CODE', { target: w.form['p:crackTarget'] ?? '' });
+      else if (cmd === 'bomb') runFresh(w, 'HIDDEN_HOST', 'ACCESS', 'LOCKOUT_BOMB', { target: w.form['p:bombIp'] ?? '' }, ['bombIp']);
+      else if (cmd === 'unlock') runFresh(w, 'HIDDEN_HOST', 'ACCESS', 'UNLOCK_WORKSTATION', { target: w.form['p:unlockIp'] ?? '' }, ['unlockIp']);
     },
   },
   'SECURITY.FIREWALL': {
@@ -1487,7 +1491,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         'WRITE',
         input(w, 'txId', 'Transaction', 'TX-0001 or 1', true, true) +
           scorePicker(w) +
-          input(w, 'reason', 'Reason', 'Why this score?', true, true) +
+          input(w, 'reason', 'Reason (optional)', 'Why this score?', true, true) +
           btns(btn(w, 'check', 'Submit score', '', true)),
         `${w.id}:check`,
       ) +
@@ -1564,17 +1568,30 @@ function parseAmount(raw: string): number | null {
 function modulePageHtml(w: Win, r: ModuleRoute): string {
   const v = view();
   const page = MODULE_PAGES[`${r.system}.${r.module}`];
-  return `
-    <section class="mod-sec"><h3>Credential</h3>${credentialFields(
-      w,
-      v,
-      (c) => c.system === r.system && (c.module === null || c.module === r.module),
-      // Prefer one that allows everything on this module.
-      (c) => c.permission === 'WRITE' && c.fn === null,
-      `${r.system}.${r.module}`,
-    )}</section>
-    <section class="mod-sec"><h3>Commands</h3><div class="cmds">${page.commands(w)}</div></section>
-    ${terminalHtml(w)}`;
+  // The credential row stays put at the top, the commands scroll under it.
+  const cred = `<section class="mod-cred" aria-label="Credential">${credentialFields(
+    w,
+    v,
+    (c) => c.system === r.system && (c.module === null || c.module === r.module),
+    // Prefer one that allows everything on this module.
+    (c) => c.permission === 'WRITE' && c.fn === null,
+    `${r.system}.${r.module}`,
+  )}</section>`;
+  return splitBody(w, cred, `<div class="cmds">${page.commands(w)}</div>`);
+}
+
+/**
+ * A system's pages (its module list and every module page): `pinned` stays at the top, `scrolling` scrolls
+ * under it, and the terminal below keeps its share of the window, or the height the player dragged it to with
+ * the bar above it. The window keeps that height from page to page, so the terminal never jumps.
+ */
+function splitBody(w: Win, pinned: string, scrolling: string): string {
+  return `<div class="wbody mod">
+    ${pinned}
+    <div class="mod-top">${scrolling}</div>
+    <div class="split" data-split="${w.id}" title="Drag to resize the terminal (double-click to reset)" aria-hidden="true"></div>
+    ${terminalHtml(w, w.termH)}
+  </div>`;
 }
 
 // ---- Workstation screens: your own (My workstation) or someone else's once logged in ------------
@@ -1602,8 +1619,9 @@ function workstationHtml(w: Win, ws: WorkstationView, current: Tab, remote: bool
     const list = (items: string[]): string => `<ul class="job-list">${items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
     body = `
       <dl class="kv"><dt>Name</dt><dd>${esc(ws.name)}</dd><dt>Role</dt><dd>${esc(ws.roleLabel)}</dd><dt>IP</dt><dd>${esc(ws.ip)}</dd>${ws.alias ? `<dt>Blacknet alias</dt><dd class="mono">${esc(ws.alias)}</dd>` : ''}<dt>Account</dt><dd>${esc(ws.bankAccount)}${ws.bankBalance === null ? "" : " · " + money(ws.bankBalance)}</dd></dl>
-      <h4>${their} objective</h4><div class="note">${esc(ws.objective)}</div>
-      <p class="hint">${esc(ws.motivation)}</p>
+      ${ws.allegiance ? `<p class="side-line ${ws.allegiance}">You are ${ws.allegiance === 'BLACK' ? 'a thief' : 'a regular employee'}</p>` : ''}
+      ${ws.objective === null ? '' : `<h4>${their} objective</h4><div class="note">${esc(ws.objective)}</div>`}
+      ${ws.motivation === null ? '' : `<p class="hint">${esc(ws.motivation)}</p>`}
       <h4>Job: ${esc(ws.roleLabel)}</h4><p class="job-summary">${esc(job.summary)}</p>
       <h4>What you do</h4>${list(job.duties)}
       <h4>Your tools</h4>${list(job.tools)}
@@ -1714,15 +1732,19 @@ function bellHtml(key: string): string {
   const what = WATCHABLE[key];
   if (!what) return '';
   const on = view().watching.includes(key);
-  return `<button class="bell ${on ? 'on' : ''}" data-act="watch:${key}" title="Notify me about ${esc(what)}" aria-pressed="${on}">${BELL_SVG}<span>${on ? 'On' : 'Off'}</span></button>`;
+  return `<button class="bell ${on ? 'on' : ''}" data-act="watch:${key}" title="Notify me when ${esc(what)}" aria-pressed="${on}">${BELL_SVG}<span>${on ? 'On' : 'Off'}</span></button>`;
 }
 
 async function toggleWatch(w: Win | undefined, key: string): Promise<void> {
   const [system, module] = key.split('.') as [SystemId, string];
   const on = !view().watching.includes(key);
   const result = await act({ type: 'SET_WATCH', playerId: selected, system, module, on });
-  if (!result.ok) toast(result.message, 'Notifications', true);
-  if (w) renderWin(w);
+  if (w) {
+    // Said in the page's terminal, like a command's result.
+    w.out.push({ cls: result.ok ? 'ok' : 'bad', text: result.message });
+    if (w.out.length > TERMINAL_LINES) w.out.splice(0, w.out.length - TERMINAL_LINES);
+    renderWin(w);
+  } else if (!result.ok) toast(result.message, 'Notifications', true);
 }
 
 /** Pops up every notification this seat has not seen yet. Switching seats skips the backlog. */
@@ -1731,14 +1753,17 @@ function pollNotices(skip = false): void {
   const seen = seenNotices[selected] ?? 0;
   const fresh = list.filter((n) => noticeNum(n.id) > seen);
   if (fresh.length) seenNotices[selected] = noticeNum(fresh[fresh.length - 1].id);
-  if (!skip) for (const n of fresh.slice(-4)) toast(n.text, n.page);
+  if (!skip) for (const n of fresh.slice(-4)) toast(n.text, n.page, false, HOST_PAGES.has(n.page));
 }
 
-function toast(text: string, page: string, error = false): void {
+/** The hidden host's page labels: their pop-ups get the host's look, so an operative spots them at once. */
+const HOST_PAGES = new Set(findSystem('HIDDEN_HOST')!.modules.map((m) => m.label));
+
+function toast(text: string, page: string, error = false, host = false): void {
   const box = document.getElementById('toasts');
   if (!box) return;
   const el = document.createElement('button');
-  el.className = `toast${error ? ' err' : ''}`;
+  el.className = `toast${error ? ' err' : ''}${host ? ' host' : ''}`;
   el.innerHTML = `<b>${esc(page)}</b><span>${esc(text)}</span>`;
   const close = (): void => {
     el.classList.add('out');
@@ -2001,12 +2026,28 @@ const MIN_H = 220;
 const RESIZE_DIRS = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'];
 const resizeHandles = (): string => RESIZE_DIRS.map((d) => `<div class="rz ${d}${d === 'se' ? ' grip' : ''}" data-resize="${d}" aria-hidden="true"></div>`).join('');
 
+/** Dragging the splitter between a module page's commands and its terminal. */
+let split: { w: Win; term: HTMLElement; sy: number; h0: number; max: number } | null = null;
+const TERM_MIN_H = 100;
+const COMMANDS_MIN_H = 110; // .mod-top's min-height
+
 $('wins').addEventListener('pointerdown', (e) => {
   const target = e.target as HTMLElement;
   const el = target.closest<HTMLElement>('.win');
   const w = el && winById(Number(el.dataset.win));
   if (!el || !w) return;
   if (topWin() !== w) focusWin(w);
+  const bar = target.closest<HTMLElement>('[data-split]');
+  if (bar && e.button === 0) {
+    const term = el.querySelector<HTMLElement>('.wbody.mod > .term');
+    const top = el.querySelector<HTMLElement>('.wbody.mod > .mod-top');
+    if (!term || !top) return;
+    split = { w, term, sy: e.clientY, h0: term.offsetHeight, max: term.offsetHeight + top.offsetHeight - COMMANDS_MIN_H };
+    bar.setPointerCapture(e.pointerId);
+    el.classList.add('splitting');
+    e.preventDefault();
+    return;
+  }
   const handle = target.closest<HTMLElement>('[data-drag],[data-resize]');
   if (!handle || target.closest('button') || w.max || e.button !== 0) return;
   const dir = handle.dataset.resize ?? null;
@@ -2021,6 +2062,12 @@ $('wins').addEventListener('pointerdown', (e) => {
 });
 
 window.addEventListener('pointermove', (e) => {
+  if (split) {
+    const s = split;
+    s.w.termH = Math.round(clamp(s.h0 - (e.clientY - s.sy), TERM_MIN_H, Math.max(TERM_MIN_H, s.max)));
+    s.term.style.flex = `0 0 ${s.w.termH}px`;
+    return;
+  }
   if (!drag) return;
   const { w, dir, sx, sy, x, y, ww, wh } = drag;
   const { w: dw, h: dh } = deskSize();
@@ -2058,6 +2105,11 @@ window.addEventListener('pointermove', (e) => {
 });
 
 const endDrag = (): void => {
+  if (split) {
+    winEl(split.w)?.classList.remove('splitting');
+    split = null;
+    return;
+  }
   if (!drag) return;
   const { w, el, snap, ww, wh } = drag;
   el.classList.remove('dragging');
@@ -2090,6 +2142,14 @@ $('desk').addEventListener('scroll', () => {
 
 $('wins').addEventListener('dblclick', (e) => {
   const target = e.target as HTMLElement;
+  // Double-clicking the terminal's splitter gives it back its automatic height.
+  const splitter = target.closest<HTMLElement>('[data-split]');
+  const sw = splitter && winById(Number(splitter.dataset.split));
+  if (sw) {
+    delete sw.termH;
+    renderWin(sw);
+    return;
+  }
   const bar = target.closest<HTMLElement>('[data-drag]');
   const w = bar && winById(Number(bar.dataset.drag));
   if (!w || target.closest('button')) return;

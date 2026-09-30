@@ -136,6 +136,7 @@ export function settleTransaction(s: GameState, tx: Transaction, who: TxActor): 
   tx.fraud = fraud;
   moveMoney(s, from, account, tx.amount); // the stolen total follows the Target Ledger balances
   recordTx(s, tx, 'SETTLED', who, `${money(tx.amount)} from ${from} to ${account}`);
+  if (fraud) notify(s, 'HIDDEN_HOST', 'TARGET_LEDGER', `${money(tx.amount)} landed in ${account} (${tx.id}, a payment to ${tx.beneficiaryId})`);
   if (!tx.requestId) matchRequest(s, tx);
   if (creditsBank(s, tx)) s.totals.processed += tx.amount;
   return { ok: true, account, fraud };

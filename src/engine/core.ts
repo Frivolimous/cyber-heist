@@ -6,7 +6,7 @@ import { notify } from './notify';
 import type { ActionResult, Alert, Block, Customer, GameState, LogEntry, Player, Reroute, SystemId } from './types';
 
 /** A system's network address. The unregistered host's is random each game. */
-export const systemAddress = (s: GameState, id: SystemId): string => (id === 'BLACKHAT_DB' ? s.hiddenHost : (findSystem(id)?.address ?? ''));
+export const systemAddress = (s: GameState, id: SystemId): string => (id === 'HIDDEN_HOST' ? s.hiddenHost : (findSystem(id)?.address ?? ''));
 
 export const keyOf = (system: string, module: string): string => `${system}.${module}`;
 
@@ -61,7 +61,7 @@ export function note(p: Player, t: number, text: string): void {
 }
 
 export function targetLabel(system: string, module: string): string {
-  if (system === 'BLACKHAT_DB') return 'an unregistered host';
+  if (system === 'HIDDEN_HOST') return 'an unregistered host';
   return findModule(system, module)?.label ?? `${system}.${module}`;
 }
 
@@ -152,6 +152,7 @@ export function effectiveHost(s: GameState, t: number): string {
 /** Adds an entry to the hidden host's own log. */
 export function addHostLog(s: GameState, message: string, alert = false): void {
   s.hostLog.push({ id: nextId(s, 'host', 'H'), t: gameTime(s), message, alert });
+  if (alert) notify(s, 'HIDDEN_HOST', 'HOST_LOG', message); // the bank traced the host, or an alert points at it
 }
 
 // ---- Money --------------------------------------------------------------------

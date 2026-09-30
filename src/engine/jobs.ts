@@ -12,7 +12,7 @@ export interface JobDescription {
   tools: string[];
   dependsOn: string[];
   rules: string[];
-  /** Black Hats only: how to operate unseen. It lives on the workstation, so a White Hat who logs in can read it. */
+  /** Thieves only: how to operate unseen. Their own screen only: a visitor to their workstation never sees it. */
   operative?: string[];
 }
 
@@ -30,9 +30,9 @@ function commonRules(c: GameConfig): string[] {
   return [
     'Every log names the owner of the code that was used, not the person who typed it. Anyone holding your code can act as you.',
     `${c.lockoutAfterFails} wrong codes in a row lock your workstation for ${secs(c.lockoutSec)}.`,
-    'Your workstation has its own login code (W): it never changes and cannot be revoked. Anyone who has it can log in to your workstation and read everything on it, including your codes.',
+    'Your workstation has its own login code (W): it never changes and cannot be revoked. Anyone who has it can log in to your workstation and read it: your codes, your activity log and your messages (not your objective or which side you are on).',
     'Switch on the bell of a page you can write to and it tells you when someone else does something there.',
-    "Lose every credential, or have your IP revoked by the Firewall, and you are terminated: the bank's systems refuse you for the rest of the game. The bank wins at once if every Black Hat is terminated.",
+    "Lose every credential, or have your IP revoked by the Firewall, and you are terminated: the bank's systems refuse you for the rest of the game. The bank wins at once if every Thief is terminated.",
   ];
 }
 
@@ -51,7 +51,7 @@ const JOBS: Record<RoleId, (c: GameConfig, n: number) => Omit<JobDescription, 't
       'The Bank Manager, who can also verify account changes and settle payments.',
     ],
     rules: [
-      'You only see and change your own customers, and only read requests sent to you.',
+      'You change only your own customers, and only read requests sent to you. You can view every customer in Customer Records.',
       'A payment you create counts toward the bank\'s target only if it pays the payee and amount a customer asked for. Put the request id on it; a payment made exactly as asked is matched to the request anyway.',
       `Customers expect action within ${secs(c.requestDeadlineSec)} (${secs(c.urgentDeadlineSec)} when urgent). Halfway there they chase you in your messages, and an archived request comes back. When a deadline passes they complain to the Bank Manager, naming you; after ${c.strikesToSuspend} missed requests a customer stops doing business with the bank for the day.`,
       'Requests are written in words. Look up account numbers and customer tags (CU3) in Customer Records.',
@@ -66,7 +66,7 @@ const JOBS: Record<RoleId, (c: GameConfig, n: number) => Omit<JobDescription, 't
   ACCOUNTS_RECEIVABLES: (c) => ({
     summary: 'You move the money safely: you score the risk of every payment, settle approved ones, and check that account changes are genuine.',
     duties: [
-      'Score the risk of queued payments (LOW, MEDIUM or HIGH) in Risk Check. Every score needs a reason.',
+      'Score the risk of queued payments (LOW, MEDIUM or HIGH) in Risk Check, with a reason if it helps others.',
       'Settle approved payments in Settlement.',
       'Verify account changes in Verification. Use Investigate changes to check a customer or an account first.',
       'Reverse a settled payment that went somewhere it should not have.',
@@ -138,9 +138,9 @@ const JOBS: Record<RoleId, (c: GameConfig, n: number) => Omit<JobDescription, 't
 
 const OPERATIVE = (c: GameConfig): string[] => [
   'Your day job is your cover. Do it well enough that nobody looks twice.',
-  'Anything you do on the unregistered host leaves an "Unknown server activity" entry in the Master Log. Tracing it gives the bank a partial clue.',
+  'Anything you do on the unregistered host leaves an "Unknown server activity" entry in the Master Log. Tracing it gives the bank a partial clue, and tracing a Blacknet post or read also shows them a message: the one posted, or the newest on the board.',
   'Kit tools are marked noisy, loud or reckless. The louder the tool, the more a trace of its alert gives away: a partial clue, then your exact IP or the server\'s address, then your IP and your host code.',
-  'Your Host Log warns you when the bank gets an alert about you, and when someone traces one of your entries.',
+  'Your Host Log warns you when the bank gets an alert about you, and when someone traces one of your entries. Its bell and Blacknet\'s start on, so these pop up on your screen (in the host\'s dark red): mind who can see it, or switch them off.',
   'If you are terminated, the unregistered host still answers you: keep helping from there.',
   `Money counts while it sits in a Target Ledger account. A settled payment can be reversed for ${secs(c.reversalWindowSec)}, but only while the account it went to still holds the money: a mule account can pay it on first.`,
 ];

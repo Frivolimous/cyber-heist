@@ -4,6 +4,7 @@ import { DEFAULT_CONFIG, hackerCount, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYER
 import { addLog, HACKER_ALIASES, keyOf, money } from './core';
 import { createCredential, createWorkstationCredential } from './credentials';
 import { spawnNpc } from './bank';
+import { HOST_WATCH_DEFAULT, WATCHABLE } from './notify';
 import { assignBankers, assignContacts, scheduleRequest, schedulePhishing, spawnRequest } from './requests';
 import { pick, rand, randInt, shuffle } from './rng';
 import type { GameConfig, GameState, Player, RoleId, ScenarioKind, WealthTier } from './types';
@@ -86,7 +87,7 @@ export const PERSON_CUSTOMERS: ReadonlySet<string> = new Set([
 
 /**
  * The values that scale with the table, from the per-player settings in `base`:
- * - targets: whiteTargetPerPlayer x players, blackTargetPerHacker x Black Hats;
+ * - targets: whiteTargetPerPlayer x players, blackTargetPerHacker x Thieves;
  * - client requests: each Personal Banker gets one about every requestEverySecPerBanker seconds;
  * - automatic payments fill the rest, so that automatic payments plus requested payments add up to about
  *   volumePerPlayer x players over the game, but never more than MAX_AUTO_SHARE of the bank target. Manual
@@ -137,7 +138,7 @@ export function createGame(o: NewGameOptions): GameState {
   // Scaled values are derived from the per-player settings; anything the caller sets explicitly wins.
   // A scenario scales its economy as SCENARIO_SCALE players, with the bankers it really has.
   const base: GameConfig = { ...DEFAULT_CONFIG, ...o.config };
-  const blackCount = scenario === 'DUO' ? 0 : scenario === 'SOLO' ? 1 : Math.min(n - 1, Math.max(1, base.blackHatCount ?? hackerCount(n)));
+  const blackCount = scenario === 'DUO' ? 0 : scenario === 'SOLO' ? 1 : Math.min(n - 1, Math.max(1, base.thiefCount ?? hackerCount(n)));
   const counts = scenario === 'DUO' ? { BANK_MANAGER: 0, IT_SPECIALIST: 0, PERSONAL_BANKER: 1, ACCOUNTS_RECEIVABLES: 1 } : roleCounts(n);
   const scaled = scenario
     ? scaledConfig(base, SCENARIO_SCALE[scenario], scenario === 'SOLO' ? hackerCount(SCENARIO_SCALE.SOLO) : 0, counts.PERSONAL_BANKER)
@@ -207,11 +208,11 @@ export function createGame(o: NewGameOptions): GameState {
     for (const b of SOLO_BOTS) roleOf.set(b.id, b.role);
   } else shuffle(s, s.playerOrder).forEach((id, i) => roleOf.set(id, roleSeats[i]));
 
-  // Allegiances: hackerCount(n) Black Hats, unless the config fixes the number (blackCount, above), taken in a
-  // shuffled order. Every role but the Bank Manager keeps at least one White Hat: a player who would be their
-  // role's last White Hat is skipped. At SHARED_SECURITY_TABLE players the lone IT Specialist and the Bank
+  // Allegiances: hackerCount(n) Thieves, unless the config fixes the number (blackCount, above), taken in a
+  // shuffled order. Every role but the Bank Manager keeps at least one regular employee: a player who would be their
+  // role's last regular employee is skipped. At SHARED_SECURITY_TABLE players the lone IT Specialist and the Bank
   // Manager (who then shares the Firewall) count as one group: at least one of the two stays White.
-  // In SOLO the human is the only Black Hat.
+  // In SOLO the human is the only Thief.
   const groupOf = (role: RoleId): string => (n === SHARED_SECURITY_TABLE && (role === 'IT_SPECIALIST' || role === 'BANK_MANAGER') ? 'SECURITY' : role);
   const whitesLeft: Record<string, number> = {};
   for (const role of ROLE_ORDER) whitesLeft[groupOf(role)] = (whitesLeft[groupOf(role)] ?? 0) + counts[role];
@@ -267,7 +268,8 @@ export function createGame(o: NewGameOptions): GameState {
       lastActiveAt: null,
       monitoring: [],
       remoteAccess: [],
-      watching: [...ROLES[roleOf.get(id)!].watch], // the role's usual bells start on (switchable in play)
+      // The role's usual bells start on (switchable in play), and an operative's host bells.
+      watching: [...ROLES[roleOf.get(id)!].watch, ...(allegiance === 'BLACK' ? HOST_WATCH_DEFAULT : [])],
       notifications: [],
       terminated: null,
       ...(scenario === 'SOLO' && id !== o.players[0].id ? { bot: true } : {}),
@@ -276,7 +278,7 @@ export function createGame(o: NewGameOptions): GameState {
     p.objective =
       allegiance === 'WHITE'
         ? blackCount
-          ? `Keep the bank running: get ${money(config.whiteTarget)} of customer payments settled within ${mins} minutes, and stop anyone diverting ${money(config.blackTarget)}. Find the Black Hats.`
+          ? `Keep the bank running: get ${money(config.whiteTarget)} of customer payments settled within ${mins} minutes, and stop anyone diverting ${money(config.blackTarget)}. Find the Thieves.`
           : `Keep the bank running: get ${money(config.whiteTarget)} of customer payments settled within ${mins} minutes.`
         : `Divert ${money(config.blackTarget)} into your Target Ledger accounts within ${mins} minutes. Stay hidden: the logs name the credential, not the hand. ${blackCount === 1 ? 'You are the only operative.' : `There are ${blackCount} operatives in total.`} Coordinate on Blacknet at ${s.hiddenHost}.`;
     s.players[id] = p;
@@ -288,10 +290,10 @@ export function createGame(o: NewGameOptions): GameState {
     if (allegiance === 'BLACK') {
       // Every operative can use the host's shared modules; tool kits are dealt below.
       for (const module of HOST_SHARED_MODULES) {
-        const cred = createCredential(s, { owner: id, system: 'BLACKHAT_DB', module, permission: 'WRITE', issuedBy: null });
+        const cred = createCredential(s, { owner: id, system: 'HIDDEN_HOST', module, permission: 'WRITE', issuedBy: null });
         p.heldCredentialIds.push(cred.id);
       }
-      p.knownSystems.push('BLACKHAT_DB');
+      p.knownSystems.push('HIDDEN_HOST');
     }
   }
   dealKits(s);
@@ -366,8 +368,9 @@ function dealKits(s: GameState): void {
   if (!blacks.length) return;
   const kits = shuffle(s, HOST_KITS);
   const give = (owner: string, module: string): void => {
-    const cred = createCredential(s, { owner, system: 'BLACKHAT_DB', module, permission: 'WRITE', issuedBy: null });
+    const cred = createCredential(s, { owner, system: 'HIDDEN_HOST', module, permission: 'WRITE', issuedBy: null });
     s.players[owner].heldCredentialIds.push(cred.id);
+    if (WATCHABLE[`HIDDEN_HOST.${module}`]) s.players[owner].watching.push(`HIDDEN_HOST.${module}`); // a kit's bell starts on
   };
   blacks.forEach((owner, i) => give(owner, kits[i % kits.length]));
 }

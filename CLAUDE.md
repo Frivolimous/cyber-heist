@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 Cyber-Heist: a real-time browser social-deduction game (6-30 players over a video call, each on their own
-PC). Bank employees keep payments flowing; secret Black Hats divert money to mule accounts. Two racing
+PC). Bank employees keep payments flowing; secret Thieves divert money to mule accounts. Two racing
 progress bars decide it. The repo is a pure rules engine, the game screen with its sandbox, and online play
 over Firebase Realtime Database where the host's browser runs the engine.
 
@@ -52,8 +52,8 @@ diverts payments already in flight (the core heist). Settling into a Target Ledg
 stolen; otherwise it counts toward the bank target only if `countsForBank` (bank.ts) agrees: automatic
 payments always, manual ones only when they fulfil a linked payment request (same payee and amount).
 
-**Hidden host (`BLACKHAT_DB`, a random address per game: `s.hiddenHost`, read it via `systemAddress`).** Its use never names anyone: it writes an "Unknown server
-activity" `HIDDEN_ACCESS` log entry, and Trace returns only partial clues. Black Hat kit tools are
+**Hidden host (`HIDDEN_HOST`, a random address per game: `s.hiddenHost`, read it via `systemAddress`).** Its use never names anyone: it writes an "Unknown server
+activity" `HIDDEN_ACCESS` log entry, and Trace returns only partial clues. Thief kit tools are
 balanced by exposure, not cooldowns: `raiseExposure(c, tier)` tags the entry, and tier 2+ raises an
 alert that points at the entry without containing the leak; the trace reveals more the higher the tier.
 Adding a kit tool touches: catalog `fns`, a handler that calls `raiseExposure`, `HIDDEN_ACTIVITY` wording
@@ -85,8 +85,8 @@ release and never mentioned in player-facing text.
 - **Manual lookup and typing is gameplay.** No dropdowns, autocomplete or quick-fill for game data
   (customers, accounts, amounts, IPs, log ids). Selects are fine for the app's own structure (modules,
   roles, modes, durations).
-- Personal Bankers are scoped to their own customers and requests; every other role sees all
-  (`ownCustomersOnly` in handlers.ts).
+- Personal Bankers change only their own customers and read only their own requests (they can view every
+  customer); every other role sees all (`ownCustomersOnly` in handlers.ts).
 - Job descriptions (jobs.ts) derive their numbers from the config; keep them in sync when a rule
   changes.
 

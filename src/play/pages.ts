@@ -163,11 +163,17 @@ export async function route(q: URLSearchParams): Promise<void> {
   } catch (e) {
     return problem(`Could not connect to the game server: ${(e as Error).message}`);
   }
-  if (host) return sandboxHost(db, host);
-  if (test) return tester(db, normRoomCode(test));
-  if (run) return facilitator(db, run);
-  if (watch) return watcher(db, normRoomCode(watch), q.get('key') ?? '');
-  return player(db, normRoomCode(game!));
+  try {
+    if (host) return await sandboxHost(db, host);
+    if (test) return await tester(db, normRoomCode(test));
+    if (run) return await facilitator(db, run);
+    if (watch) return await watcher(db, normRoomCode(watch), q.get('key') ?? '');
+    return await player(db, normRoomCode(game!));
+  } catch (e) {
+    // A refused read or write (database rules) would otherwise leave the page on "Connecting..." for good.
+    console.error(e);
+    return problem(`The game server refused that: ${(e as Error).message}`);
+  }
 }
 
 // ---- Landing -----------------------------------------------------------------------------------

@@ -4,7 +4,7 @@ export type PlayerId = string;
 export type Allegiance = 'WHITE' | 'BLACK';
 export type Winner = Allegiance;
 /** WORKSTATION is not a system on the network: it scopes a workstation login credential (see Credential.fixed). */
-export type SystemId = 'SECURITY' | 'CLIENT_DATA' | 'TRANSACTIONS' | 'BLACKHAT_DB' | 'WORKSTATION';
+export type SystemId = 'SECURITY' | 'CLIENT_DATA' | 'TRANSACTIONS' | 'HIDDEN_HOST' | 'WORKSTATION';
 export type Permission = 'READ' | 'WRITE';
 export type RoleId = 'PERSONAL_BANKER' | 'ACCOUNTS_RECEIVABLES' | 'IT_SPECIALIST' | 'BANK_MANAGER';
 export type TxStatus =
@@ -23,13 +23,13 @@ export interface GameConfig {
   // Scaling with the table (see scaledConfig in setup.ts). The four derived values below are computed
   // from these at game creation unless the game's config sets them explicitly.
   whiteTargetPerPlayer: number; // bank target per player
-  blackTargetPerHacker: number; // Black Hat target per Black Hat
+  blackTargetPerHacker: number; // the Thieves' goal, per Thief
   volumePerPlayer: number; // legitimate payment volume offered over the game (automatic + requested), per player
   requestEverySecPerBanker: number; // each Personal Banker gets a client request about this often
   customersPerBanker: number;
-  whiteTarget: number; // derived: legitimate money that must be settled for a White Hat win
-  blackTarget: number; // derived: stolen money for a Black Hat win
-  blackHatCount: number | null; // null = hackerCount(n): floor(n / 3)
+  whiteTarget: number; // derived: legitimate money that must be settled for the bank to win
+  blackTarget: number; // derived: stolen money for the Thieves to win
+  thiefCount: number | null; // null = hackerCount(n): floor(n / 3)
   npcIntervalSec: number; // derived: one automatic payment every N seconds
   npcMinAmount: number; // automatic payments: between these (and what the paying account can afford)
   npcMaxAmount: number;
@@ -175,6 +175,8 @@ export interface LogEntry {
   server?: string;
   /** Hidden host entries only: exposure tier 1-4 of the action (default 1). A higher tier makes a Trace reveal more. */
   exposure?: number;
+  /** Hidden host entries only: what a Trace also reveals besides its clue (a Blacknet message posted or read). */
+  leak?: string;
   /** Wiped by Cleanup / Log wiper: hidden from the Master Log (leaving an id gap) but still traceable until it ages out. */
   deleted?: boolean;
 }
@@ -261,7 +263,7 @@ export interface ClientRequest {
   remindAt: number; // game seconds: halfway to the deadline, the customer chases it
   reminders: { t: number; text: string }[]; // follow-ups on the same request, oldest first
   outcome: 'MET' | 'MISSED' | null; // decided at the deadline
-  scam?: boolean; // ground truth: planted by a Black Hat (Social / Scam request); no real customer is waiting
+  scam?: boolean; // ground truth: planted by a Thief (Social / Scam request); no real customer is waiting
   phish?: boolean; // an obvious phishing message (fake customer tag, no real sender); customerId is then made up
   sender?: string; // who the request claims to be from, when that is not a customer (phishing)
   status: 'OPEN' | 'DONE' | 'ARCHIVED' | 'EXPIRED';
@@ -299,7 +301,7 @@ export interface Transaction {
   settledAt: number | null;
   settledTo: string | null; // account it was actually paid to
   debitedFrom: string | null; // originator account it was actually taken from (captured at settlement)
-  fraud: boolean; // ground truth: settled into a Black Hat target account
+  fraud: boolean; // ground truth: settled into a Thief target account
   history: TxEvent[]; // every step, oldest first
   requestId: string | null; // the client request this payment was made for, if any
 }
@@ -335,12 +337,12 @@ export interface Notice {
 export type TerminationReason = 'CREDENTIALS' | 'IP_REVOKED';
 
 /**
- * How the game ended. BLACK_TARGET: the Black Hats diverted their goal. WHITE_TARGET: the bank reached close of
- * business with its target met. BANK_SHORT: close of business with neither goal met (both lose). BLACK_HATS_TERMINATED:
- * every Black Hat was disabled. HOST_SHUT_DOWN: the unregistered host's access was revoked (White Hats win).
+ * How the game ended. BLACK_TARGET: the Thieves diverted their goal. WHITE_TARGET: the bank reached close of
+ * business with its target met. BANK_SHORT: close of business with neither goal met (both lose). THIEVES_TERMINATED:
+ * every Thief was disabled. HOST_SHUT_DOWN: the unregistered host's access was revoked (the bank wins).
  * SHUTDOWN: a bank system's access was revoked, and everybody loses.
  */
-export type EndKind = 'BLACK_TARGET' | 'WHITE_TARGET' | 'BANK_SHORT' | 'BLACK_HATS_TERMINATED' | 'HOST_SHUT_DOWN' | 'SHUTDOWN';
+export type EndKind = 'BLACK_TARGET' | 'WHITE_TARGET' | 'BANK_SHORT' | 'THIEVES_TERMINATED' | 'HOST_SHUT_DOWN' | 'SHUTDOWN';
 
 export interface ActivityEntry {
   t: number;
@@ -372,17 +374,17 @@ export interface Player {
   notifications: Notice[]; // the last few pop-ups, newest last
   /** Disabled for good: every bank credential revoked, or the workstation's IP revoked. Keeps the hidden host only. */
   terminated: { t: number; reason: TerminationReason } | null;
-  fake?: boolean; // planted by a Black Hat (Infiltration): a record in Employee Records, not a real seat
+  fake?: boolean; // planted by a Thief (Infiltration): a record in Employee Records, not a real seat
   bot?: boolean; // a scripted seat in a test scenario (autopilot.ts)
 }
 
 /**
  * Dev-only test scenarios (never offered in a real lobby):
- * - DUO: two seats, one Personal Banker and one Accounts & Receivables, no Black Hats; the economy is a
+ * - DUO: two seats, one Personal Banker and one Accounts & Receivables, no Thieves; the economy is a
  *   3-player game's (half of 6), to measure the manual workload.
- * - SOLO: one human Black Hat against five scripted White Hat seats (autopilot.ts) in a 6-player economy;
+ * - SOLO: one human Thief against five scripted regular employee seats (autopilot.ts) in a 6-player economy;
  *   a scripted IT traces every alert and hidden host entry as soon as its cooldown allows. A worst case for
- *   the Black Hat, not a model of real play.
+ *   the Thief, not a model of real play.
  */
 export type ScenarioKind = 'DUO' | 'SOLO';
 export interface ScenarioState {

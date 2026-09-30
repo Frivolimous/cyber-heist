@@ -176,7 +176,7 @@ H['SECURITY.FIREWALL.SET_SECURITY'] = (c, q) => {
   const tgt = moduleTarget(c, q);
   if (typeof tgt === 'string') return bad(tgt);
   if (tgt.system === 'SECURITY' && tgt.module === 'FIREWALL') return bad('The Firewall\'s own security cannot be switched off.');
-  if (tgt.system === 'BLACKHAT_DB') return bad('No control over that host.');
+  if (tgt.system === 'HIDDEN_HOST') return bad('No control over that host.');
   const on = str(q, 'security').toUpperCase() === 'ON';
   const m = c.s.modules[keyOf(tgt.system, tgt.module)];
   if (m.open === !on) return bad(`Security is already ${on ? 'on' : 'off'} for that module.`);
@@ -245,7 +245,7 @@ H['SECURITY.FIREWALL.SET_MODULE_STATUS'] = (c, q) => {
   const tgt = moduleTarget(c, q);
   if (typeof tgt === 'string') return bad(tgt);
   if (tgt.system === 'SECURITY' && tgt.module === 'FIREWALL') return bad('The Firewall cannot be taken offline.');
-  if (tgt.system === 'BLACKHAT_DB') return bad('No control over that host.');
+  if (tgt.system === 'HIDDEN_HOST') return bad('No control over that host.');
   const status = str(q, 'status');
   if (status !== 'ONLINE' && status !== 'OFFLINE') return bad('Status must be ONLINE or OFFLINE.');
   const m = c.s.modules[keyOf(tgt.system, tgt.module)];
@@ -385,7 +385,7 @@ H['SECURITY.MASTER_LOG.TRACE'] = (c, q) => {
   if (!e.sourceIp) return good(`Trace ${e.id}: system event, no workstation origin.`, undefined, `ran a trace on ${e.id}`);
   // Hidden host traffic is relayed. What a trace returns escalates with the action's exposure tier.
   if (e.kind === 'HIDDEN_ACCESS') {
-    const clue = exposureClue(c.s, e);
+    const clue = exposureClue(c.s, e) + (e.leak ? ` ${e.leak}` : '');
     // The host notices: operatives see who traced it and what the bank learned.
     addHostLog(c.s, `Relay entry ${e.id} was traced by ${c.owner.name}. The bank learned: ${clue}`, true);
     return good(`Trace ${e.id}: routed through a relay. ${clue}`, undefined, `ran a trace on ${e.id}`);
@@ -502,7 +502,7 @@ H['SECURITY.PERMISSIONS.VIEW_PERMISSIONS'] = (c, q) => {
   const rows = Object.values(c.s.credentials)
     // The unregistered host is not part of the bank: its credentials never appear here. Nor do workstation
     // logins: an unlocked one shows only as a gap in the C ids (and can still be revoked by id).
-    .filter((cr) => cr.system !== 'BLACKHAT_DB' && cr.system !== 'WORKSTATION')
+    .filter((cr) => cr.system !== 'HIDDEN_HOST' && cr.system !== 'WORKSTATION')
     .filter((cr) => all || cr.status === 'ACTIVE')
     .map((cr) => {
       const by = cr.issuedBy === null ? 'start of shift' : nameOf(c.s, cr.issuedBy);
@@ -615,6 +615,13 @@ function recordAccountChange(c: Ctx, x: Customer, action: AccountChange['action'
   const text = `${c.owner.name} ${what} ${x.id} (${change.id})`;
   notify(c.s, 'CLIENT_DATA', 'CUSTOMER_RECORDS', text, { owner: c.owner.id, bankerId: x.bankerId });
   notify(c.s, 'CLIENT_DATA', 'VERIFICATION', `${change.id} waiting: ${text}`, { owner: c.owner.id });
+  // Operatives watching the Target Ledger hear about any change to a mule account's place (not the one who did it).
+  const mule = (a: string): boolean => c.s.targets.some((tg) => tg.account === a);
+  const scope = { owner: c.actor.id };
+  if (mule(account)) notify(c.s, 'HIDDEN_HOST', 'TARGET_LEDGER', `${account} ${{ ADD_ACCOUNT: 'added to', SET_PRIMARY: 'made the primary of', REMOVE_ACCOUNT: 'removed from' }[action]} ${x.id} ${x.name} (by ${c.owner.name})`, scope);
+  if (action === 'SET_PRIMARY' && previousPrimary !== account && mule(previousPrimary)) {
+    notify(c.s, 'HIDDEN_HOST', 'TARGET_LEDGER', `${previousPrimary} is no longer the primary of ${x.id} ${x.name} (by ${c.owner.name})`, scope);
+  }
   return change;
 }
 
@@ -626,10 +633,12 @@ function makePrimary(c: Ctx, x: Customer, account: string): AccountChange {
 }
 
 H['CLIENT_DATA.CUSTOMER_RECORDS.VIEW_CUSTOMERS'] = (c, q) => {
-  // Staff without customers of their own (anyone but a Personal Banker) always see everyone.
-  const all = str(q, 'show') === 'ALL' || (seesAllCustomers(c) && c.owner.role !== 'PERSONAL_BANKER');
-  if (all && !seesAllCustomers(c)) return bad('Personal Bankers can only view their own customers.');
+  // Anyone can view every customer (changes stay scoped: see ownCustomer). "My customers" means the credential
+  // owner's; with no show picked, a Personal Banker sees their own and everyone else sees all.
+  const show = str(q, 'show').toUpperCase();
+  const all = show === 'ALL' || (show !== 'MINE' && c.owner.role !== 'PERSONAL_BANKER');
   const rows = c.s.customers.filter((x) => all || x.bankerId === c.owner.id);
+  if (!all && !rows.length) return good('You have no customers assigned to you.');
   const title = all ? 'Customer Records (all customers)' : `Customer Records: customers of ${c.owner.name}`;
   return good(`${title}: ${rows.length}.`, rows.length ? rows.flatMap((x) => customerLines(c, x)) : ['Nothing here.']);
 };
@@ -824,13 +833,12 @@ H['TRANSACTIONS.RISK_CHECK.RUN_RISK_CHECK'] = (c, q) => {
   if (tx.status !== 'QUEUED' && tx.status !== 'RISK_CHECKED') return bad(`${tx.id} is ${tx.status}; it cannot be risk checked.`);
   const score = str(q, 'score').toUpperCase();
   if (score !== 'LOW' && score !== 'MEDIUM' && score !== 'HIGH') return bad('Pick a risk score: LOW, MEDIUM or HIGH.');
-  const why = reasonOf(q);
-  if (!why) return bad('Type a reason for the score.');
+  const why = reasonOf(q); // optional
   tx.riskResult = score;
-  tx.riskReason = why;
+  tx.riskReason = why || null;
   tx.riskFlags = computeRisk(c.s, tx).flags; // hidden ground truth: what the system would have flagged
   tx.status = 'RISK_CHECKED';
-  recordTx(c.s, tx, 'RISK_CHECKED', who(c), `risk ${score}: ${why}`);
+  recordTx(c.s, tx, 'RISK_CHECKED', who(c), `risk ${score}${why ? `: ${why}` : ''}`);
   return good(`${tx.id}: scored ${score} risk.`, undefined, `scored ${tx.id} as ${score} risk`);
 };
 
@@ -1018,14 +1026,14 @@ H['TRANSACTIONS.SETTLEMENT.SET_AUTO_SETTLE'] = (c, q) => {
 };
 
 // ---- Hidden host: tool kits & exposure ----------------------------------------
-// Black Hat tools have no cooldowns or charges; they are balanced by exposure. Each tool tags its "Unknown
+// Thief tools have no cooldowns or charges; they are balanced by exposure. Each tool tags its "Unknown
 // server activity" entry with a tier: tier 2+ raises an alert pointing at the entry (never naming anyone),
 // and a trace of the entry reveals more the higher the tier, using the addresses as recorded (a reroute shows its proxy).
 type ExposureTier = 1 | 2 | 3 | 4;
 
 /** An active host credential code the operative owns, if any (the strongest exposure hands over a working one). */
 function ownHostCode(s: GameState, actor: Player): string | null {
-  const cr = Object.values(s.credentials).find((x) => x.owner === actor.id && x.system === 'BLACKHAT_DB' && x.status === 'ACTIVE');
+  const cr = Object.values(s.credentials).find((x) => x.owner === actor.id && x.system === 'HIDDEN_HOST' && x.status === 'ACTIVE');
   return cr?.code ?? null;
 }
 
@@ -1051,7 +1059,7 @@ function exposeEntry(s: GameState, entry: LogEntry, tier: ExposureTier, kind = '
 }
 
 /**
- * The cost of a Black Hat tool. Its "Unknown server activity" entry is tagged with the tier, so a trace of it
+ * The cost of a Thief tool. Its "Unknown server activity" entry is tagged with the tier, so a trace of it
  * reveals more the louder the tool; tier 2+ also raises an alert pointing at that entry.
  */
 function raiseExposure(c: Ctx, tier: ExposureTier): void {
@@ -1127,7 +1135,7 @@ function pickProxy(c: Ctx, q: Params, renewing?: string): string | { error: stri
   return why ? { error: `Proxy ${ip} is unavailable: ${why}.` } : ip;
 }
 
-H['BLACKHAT_DB.INFILTRATION.CREATE_PROXY'] = (c, q) => {
+H['HIDDEN_HOST.INFILTRATION.CREATE_PROXY'] = (c, q) => {
   const ip = str(q, 'ip');
   if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip) || ip.split('.').some((n) => Number(n) > 255)) return bad('Enter an IP address, e.g. 10.1.0.77.');
   if (addressInUse(c.s, ip)) return bad(`${ip} is already in use on the network. A proxy needs an unused address.`);
@@ -1136,7 +1144,7 @@ H['BLACKHAT_DB.INFILTRATION.CREATE_PROXY'] = (c, q) => {
   return good(`Proxy ${ip} is set up. Reroute IP and Create user can use it now.`);
 };
 
-H['BLACKHAT_DB.INFILTRATION.CREATE_USER'] = (c, q) => {
+H['HIDDEN_HOST.INFILTRATION.CREATE_USER'] = (c, q) => {
   const name = str(q, 'name').slice(0, 24);
   if (!name) return bad('Enter a name for the user.');
   const role = str(q, 'role').toUpperCase() as RoleId;
@@ -1185,16 +1193,21 @@ export function advanceCracks(s: GameState): void {
       if (complete) {
         k.done = true;
         if (!actor.heldCredentialIds.includes(cred.id)) actor.heldCredentialIds.push(cred.id);
-        note(actor, revealAt, `Code crack ${k.id} complete: ${cred.id} code is ${cred.code}.`);
+        const done = `Code crack ${k.id} complete: ${cred.id} code is ${cred.code}.`;
+        note(actor, revealAt, done);
+        notify(s, 'HIDDEN_HOST', 'ACCESS', done, { to: actor.id });
       }
     }
   }
 }
 
-H['BLACKHAT_DB.ACCESS.CRACK_CODE'] = (c, q) => {
+H['HIDDEN_HOST.ACCESS.CRACK_CODE'] = (c, q) => {
   const tgt = moduleTarget(c, q);
   if (typeof tgt === 'string') return bad(tgt);
-  if (tgt.system === 'BLACKHAT_DB') return bad('No codes to crack on that host.');
+  if (tgt.system === 'HIDDEN_HOST') return bad('No codes to crack on that host.');
+  // One code crack at a time, across the whole team.
+  const running = c.s.cracks.find((k) => !k.done);
+  if (running) return bad(`Code crack ${running.id} is still running (${running.revealed} of 4 digits). Only one can run at a time.`);
   const creds = Object.values(c.s.credentials).filter(
     (cr) => cr.status === 'ACTIVE' && cr.owner !== c.actor.id && cr.system === tgt.system && (cr.module === null || cr.module === tgt.module),
   );
@@ -1202,7 +1215,7 @@ H['BLACKHAT_DB.ACCESS.CRACK_CODE'] = (c, q) => {
   const cred = pick(c.s, creds);
   const crack: CodeCrack = { id: nextId(c.s, 'crack', 'K'), actorId: c.actor.id, credentialId: cred.id, revealed: 0, nextRevealAt: c.t + c.s.config.crackRevealSec, done: false };
   c.s.cracks.push(crack);
-  return good(`Code crack ${crack.id} started on ${cred.id} (${scopeLabel(cred)}). A digit about every ${c.s.config.crackRevealSec}s — watch your activity log.`);
+  return good(`Code crack ${crack.id} started on ${cred.id} (${scopeLabel(cred)}). A digit about every ${c.s.config.crackRevealSec}s — watch your activity log or notifications.`);
 };
 
 /**
@@ -1219,18 +1232,22 @@ export function advanceUnlocks(s: GameState): void {
     const blocked = [actor.ip, u.fromIp, target.ip].find((ip) => activeBlock(s, ip));
     if (blocked) {
       u.done = true;
-      note(actor, t, `Unlock ${u.id} on ${target.name}'s workstation stopped: ${blocked} was blocked.`);
+      const stopped = `Unlock ${u.id} on ${target.name}'s workstation stopped: ${blocked} was blocked.`;
+      note(actor, t, stopped);
+      notify(s, 'HIDDEN_HOST', 'ACCESS', stopped, { to: actor.id });
       continue;
     }
     if (u.doneAt > t) continue;
     u.done = true;
     const cred = createCredential(s, { owner: target.id, system: 'WORKSTATION', module: null, permission: 'WRITE', issuedBy: null });
     actor.heldCredentialIds.push(cred.id);
-    note(actor, u.doneAt, `Unlock ${u.id} complete: ${target.name}'s workstation (${target.ip}) opens with ${cred.id}, code ${cred.code}.`);
+    const done = `Unlock ${u.id} complete: ${target.name}'s workstation (${target.ip}) opens with ${cred.id}, code ${cred.code}.`;
+    note(actor, u.doneAt, done);
+    notify(s, 'HIDDEN_HOST', 'ACCESS', done, { to: actor.id });
   }
 }
 
-H['BLACKHAT_DB.ACCESS.UNLOCK_WORKSTATION'] = (c, q) => {
+H['HIDDEN_HOST.ACCESS.UNLOCK_WORKSTATION'] = (c, q) => {
   const ip = str(q, 'target');
   const target = Object.values(c.s.players).find((p) => p.ip === ip);
   if (!target) return bad('No workstation with that address.');
@@ -1241,10 +1258,10 @@ H['BLACKHAT_DB.ACCESS.UNLOCK_WORKSTATION'] = (c, q) => {
   const u: WorkstationUnlock = { id: nextId(c.s, 'unlock', 'U'), actorId: c.actor.id, targetId: target.id, fromIp: effectiveIp(c.s, c.actor, c.t), doneAt: c.t + sec, done: false };
   c.s.unlocks.push(u);
   exposeEntry(c.s, c.log(), 3, 'WORKSTATION_UNLOCK', `Workstation unlock in progress on ${ip} (${target.name}): a new login completes in ${sec}s`);
-  return good(`Unlock ${u.id} started on ${target.name}'s workstation. The new code arrives in ${sec}s, unless either end is blocked first — watch your activity log.`);
+  return good(`Unlock ${u.id} started on ${target.name}'s workstation. The new code arrives in ${sec}s, unless either end is blocked first — watch your activity log or notifications.`);
 };
 
-H['BLACKHAT_DB.ACCESS.LOCKOUT_BOMB'] = (c, q) => {
+H['HIDDEN_HOST.ACCESS.LOCKOUT_BOMB'] = (c, q) => {
   const ip = str(q, 'target');
   const target = Object.values(c.s.players).find((p) => p.ip === ip);
   if (!target) return bad('No workstation with that address.');
@@ -1265,7 +1282,7 @@ H['BLACKHAT_DB.ACCESS.LOCKOUT_BOMB'] = (c, q) => {
 };
 
 // ---- Cleanup ------------------------------------------------------------------
-H['BLACKHAT_DB.CLEANUP.LOG_WIPER'] = (c, q) => {
+H['HIDDEN_HOST.CLEANUP.LOG_WIPER'] = (c, q) => {
   const id = normLog(str(q, 'logId'));
   const e = c.s.logs.find((x) => x.id === id);
   if (!e) return bad(`No such log entry: ${id}.`);
@@ -1276,7 +1293,7 @@ H['BLACKHAT_DB.CLEANUP.LOG_WIPER'] = (c, q) => {
 };
 
 const ALERT_MUTE_SEC = 10;
-H['BLACKHAT_DB.CLEANUP.ALERT_MUTE'] = (c) => {
+H['HIDDEN_HOST.CLEANUP.ALERT_MUTE'] = (c) => {
   c.s.alertMuteUntil = Math.max(c.s.alertMuteUntil, c.t + ALERT_MUTE_SEC);
   raiseExposure(c, 3); // tier 3: this alert (and any tier 3-4) is never muted, so the mute cannot hide the loud stuff
   return good(`Alerts muted for ${ALERT_MUTE_SEC}s. Only weak alerts are hidden; strong exposures still get through.`);
@@ -1294,7 +1311,7 @@ const findCustomerByRef = (s: GameState, ref: string): Customer | undefined => {
   return n ? s.customers.find((x) => x.name.toLowerCase() === n) : undefined;
 };
 
-H['BLACKHAT_DB.SOCIAL.SPOOFED_MESSAGE'] = (c, q) => {
+H['HIDDEN_HOST.SOCIAL.SPOOFED_MESSAGE'] = (c, q) => {
   const recipient = findPlayerByName(c.s, str(q, 'to'));
   if (!recipient) return bad('No employee by that name to send to.');
   const fromName = str(q, 'from').trim().slice(0, 24);
@@ -1311,7 +1328,7 @@ H['BLACKHAT_DB.SOCIAL.SPOOFED_MESSAGE'] = (c, q) => {
   return good(`Delivered to ${recipient.name}, appearing to be from ${nameOf(c.s, from)}.`);
 };
 
-H['BLACKHAT_DB.SOCIAL.SCAM_REQUEST'] = (c, q) => {
+H['HIDDEN_HOST.SOCIAL.SCAM_REQUEST'] = (c, q) => {
   const cust = findCustomerByRef(c.s, str(q, 'customer'));
   if (!cust) return bad('No customer by that name or id.');
   const kind = str(q, 'kind').toUpperCase() as RequestKind;
@@ -1364,7 +1381,7 @@ H['BLACKHAT_DB.SOCIAL.SCAM_REQUEST'] = (c, q) => {
   return good(`Scam request ${req.id} planted, from ${cust.name} to ${to}.`, [`"${text}"`]);
 };
 
-H['BLACKHAT_DB.INFILTRATION.REROUTE_IP'] = (c, q) => {
+H['HIDDEN_HOST.INFILTRATION.REROUTE_IP'] = (c, q) => {
   // What to reroute: your own workstation (blank), any other workstation, or the unregistered host itself.
   const fromIp = str(q, 'source') || c.actor.ip;
   const host = fromIp === c.s.hiddenHost;
@@ -1383,14 +1400,14 @@ H['BLACKHAT_DB.INFILTRATION.REROUTE_IP'] = (c, q) => {
   return good(`For ${seconds}s ${what} appears as proxy ${toIp}.`);
 };
 
-// ---- Hidden host: Black Hat Database ------------------------------------------
-H['BLACKHAT_DB.BLACKNET.READ_MESSAGES'] = (c, q) => {
+// ---- Hidden host: the Thieves' own server ------------------------------------------
+H['HIDDEN_HOST.BLACKNET.READ_MESSAGES'] = (c, q) => {
   const limit = clampInt(q.limit, 30, 1, 100);
   const rows = c.s.blacknet.slice(-limit).map((m) => `[${fmtClock(m.t)}] ${m.alias}: ${m.text}`);
   return good(`Blacknet: ${rows.length} message${rows.length === 1 ? '' : 's'}.`, rows);
 };
 
-H['BLACKHAT_DB.BLACKNET.POST_MESSAGE'] = (c, q) => {
+H['HIDDEN_HOST.BLACKNET.POST_MESSAGE'] = (c, q) => {
   const text = str(q, 'text');
   if (!text) return bad('Write a message first.');
   c.s.blacknet.push({
@@ -1400,11 +1417,12 @@ H['BLACKHAT_DB.BLACKNET.POST_MESSAGE'] = (c, q) => {
     text: text.slice(0, 300),
     ownerId: c.owner.id,
   });
+  notify(c.s, 'HIDDEN_HOST', 'BLACKNET', `${c.owner.alias}: ${text.length > 80 ? text.slice(0, 80) + '...' : text}`, { owner: c.actor.id });
   return good('Posted.');
 };
 
 /** Each mule account: the customer it is on (and whether it is their primary) or floating, and its balance. */
-H['BLACKHAT_DB.TARGET_LEDGER.VIEW_TARGETS'] = (c) =>
+H['HIDDEN_HOST.TARGET_LEDGER.VIEW_TARGETS'] = (c) =>
   good(
     `Target accounts: ${money(c.s.totals.stolen)} of ${money(c.s.config.blackTarget)} diverted.`,
     c.s.targets.map((tg) => {
@@ -1415,7 +1433,7 @@ H['BLACKHAT_DB.TARGET_LEDGER.VIEW_TARGETS'] = (c) =>
   );
 
 /** ALL: everything on the host's own log; ALERTS: only the moments an operative was exposed. */
-H['BLACKHAT_DB.HOST_LOG.VIEW_HOST_LOG'] = (c, q) => {
+H['HIDDEN_HOST.HOST_LOG.VIEW_HOST_LOG'] = (c, q) => {
   const alertsOnly = str(q, 'show') === 'ALERTS';
   const rows = c.s.hostLog
     .filter((h) => !alertsOnly || h.alert)
@@ -1424,7 +1442,7 @@ H['BLACKHAT_DB.HOST_LOG.VIEW_HOST_LOG'] = (c, q) => {
   return good(`Host log (${alertsOnly ? 'alerts' : 'all'}): ${rows.length}.`, rows.length ? rows : ['Nothing here.']);
 };
 
-H['BLACKHAT_DB.CREDENTIAL_CACHE.VIEW_CACHE'] = (c) => {
+H['HIDDEN_HOST.CREDENTIAL_CACHE.VIEW_CACHE'] = (c) => {
   const seen = new Set<string>();
   const rows: string[] = [];
   for (const bp of Object.values(c.s.players)) {
