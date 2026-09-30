@@ -5,6 +5,9 @@ Move an item out of here when it ships. Firebase, the lobby and real multiplayer
 
 ## Loose ends in shipped features
 
+- **Remove the watcher link before any public release** (dev only: `?watch=`, host.ts `publishWatch`, the
+  `watch` database rule, the host screen's Dev tools link).
+
 - **Online play follow-ups.** Not built yet: a player cannot leave a running game; the host cannot also
   play; a player who closes the tab while waiting in the lobby stays listed. Rooms made before the
   automatic cleanup (a room index, 2026-09-29) have to be deleted by hand in the Firebase console.

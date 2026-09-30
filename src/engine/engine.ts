@@ -3,7 +3,8 @@
 
 import { CREDENTIAL_SHARING_ENABLED, findFn, findSystem, SYSTEMS } from './catalog';
 import { runAutomation, spawnNpc } from './bank';
-import { advanceRequests, spawnRequest } from './requests';
+import { runAutopilot } from './autopilot';
+import { advanceRequests, scheduleRequest, spawnRequest } from './requests';
 import {
   activeBlock,
   systemAddress,
@@ -53,7 +54,7 @@ export function advanceState(s: GameState, now: number): void {
   // of day (pacing.ts): slow mornings, a lunch rush, a busy end of day, nothing new at close of business.
   while (s.status === 'RUNNING') {
     const nextNpc = nextArrival(endT, s.lastNpcAt, s.config.npcIntervalSec);
-    const nextReq = nextArrival(endT, s.lastRequestAt, s.config.requestIntervalSec);
+    const nextReq = Number.isFinite(s.nextRequestAt) ? s.nextRequestAt : Infinity; // JSON turns Infinity into null
     const next = Math.min(nextNpc, nextReq);
     if (next > targetT) break;
     s.now = Math.max(s.now, s.startedAt + next * 1000);
@@ -63,7 +64,7 @@ export function advanceState(s: GameState, now: number): void {
       runAutomation(s);
       checkWin(s);
     } else {
-      s.lastRequestAt = nextReq;
+      scheduleRequest(s, nextReq);
       spawnRequest(s);
     }
   }
@@ -75,6 +76,7 @@ export function advanceState(s: GameState, now: number): void {
   advanceUnlocks(s);
   advanceRequests(s);
   runAutomation(s);
+  runAutopilot(s, execute);
   checkWin(s);
   if (s.status === 'RUNNING' && targetT >= endT) closeOfBusiness(s);
 }

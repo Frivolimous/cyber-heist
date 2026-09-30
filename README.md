@@ -35,6 +35,9 @@ does not play, and must keep their tab open until the end (a reload picks up whe
   sides are dealt at random. The host screen shows the clock, the bank's progress, who is connected, a
   Pause button (players see a notice and cannot act until it resumes), and the end screen. A player who
   reloads comes back to their seat. Rooms older than 12 hours are deleted when anyone opens a new one.
+- **How to play**: a button on the start page and in the waiting room opens a short introduction for new
+  players (the objectives, roles, codes, how money is stolen and how thieves are caught). Their job
+  description, on their workstation once the game starts, is the second step.
 - **Online sandbox**: the start page's "Online sandbox", or "Go online" in the offline sandbox's yellow
   bar. It is the sandbox (every seat, speed, ground truth) plus a room: "Open a tester screen" opens a
   screen that plays one seat through the network, with its own seat picker.
@@ -65,7 +68,8 @@ devices.
   Each player's profile has a job description with their tools and the rules that matter to them.
 - **Black Hats** (a third of the table) have normal jobs as cover, plus a hidden host (its address changes every game) with
   a message board (each posts under a random alias), a ledger of mule accounts and tool kits. Stronger
-  tools are easier for the bank to trace. Every role but the Bank Manager keeps at least one White Hat.
+  tools are easier for the bank to trace. Every role but the Bank Manager keeps at least one White Hat
+  (at 6 players the lone IT Specialist and the Bank Manager, who then shares the Firewall, count as one).
 - **Money:** every account has a balance. Customers are small, mid-sized or wealthy, and a payment the
   paying account cannot cover fails at settlement. Money moves at once, so a reversal only works while
   the account paid still holds it.
@@ -99,7 +103,7 @@ Full rules and tuning: [docs/RULES.md](docs/RULES.md).
 - The player screen is an employee sidebar plus a simulated desktop that starts with your workstation
   open and tints with the time of day. Click a system to open a window, then a module (each tile shows
   your access to it). Windows can be moved, resized from any edge or corner, snapped to half the screen
-  (drag to the left or right edge; the top edge maximizes), minimized, maximized and navigated with
+  (drag to the left or right edge), minimized, maximized and navigated with
   back/forward or the address bar (e.g. `10.0.0.30/settlement`).
 - A module page has three parts: **Credential** (pick one you hold, or "Manual code" to type any
   code: that is how guessing and using someone else's credential works), **Commands** (cards), and
@@ -121,6 +125,22 @@ Things worth trying first:
 - As a Black Hat, open the unregistered host and try a kit tool. Watch the Master Log's alerts, then
   trace the entry the alert points at.
 
+## Dev tools
+
+> **WARNING: the watcher link is DEV ONLY. Remove it before any public or shared release, and never mention
+> it anywhere players can see it.** A real game's host screen has a "Dev tools" section with a watcher link
+> (`?watch=CODE&key=...`): a read-only screen with full visibility of that game, invisible to every player.
+> It works because the host copies the whole game to the database under that secret key. Details in
+> [docs/RULES.md](docs/RULES.md#dev-test-scenarios).
+
+- **Custom settings** (sandbox yellow bar, host lobby): every tunable setting for the next game, remembered
+  in that browser.
+- **Download state** (sandbox yellow bar, host screen's Dev tools): the whole game, config included, as JSON.
+- **Test scenarios** (sandbox yellow bar, "table"; or `?sandbox&scenario=duo` / `solo`): a 2-player
+  workload test (one Personal Banker, one A&R, no Black Hats, a 3-player economy), and a solo Black Hat
+  test against scripted White Hats whose IT traces everything it can. For two people on two machines:
+  `?host=new&scenario=duo`, then each opens the tester link.
+
 ## Layout
 
 ```
@@ -136,10 +156,13 @@ src/engine/
   notify.ts       the page bells: who gets a pop-up notification about what
   pacing.ts       time of day and how fast new work arrives
   jobs.ts         job descriptions shown in each profile
+  autopilot.ts    dev test scenario: the scripted White Hat seats of the solo Black Hat test
   views.ts        getPlayerView: the only data a given player may see
   engine.test.ts  tests
 src/sandbox/
-  main.ts         the game screen (offline sandbox, online sandbox host, or one remote seat: see mode.ts)
+  main.ts         the game screen (offline sandbox, online sandbox host, one remote seat, or the watcher: see mode.ts)
+  dump.ts         Download state (dev)
+  settings.ts     the Custom settings form (sandbox and host lobby)
 src/net/
   db.ts           the database interface, and its local stand-in (tests, local mode)
   firebaseDb.ts   the same over Firebase Realtime Database (anonymous auth)

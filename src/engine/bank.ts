@@ -1,7 +1,7 @@
 // The bank's payment pipeline: NPC traffic, risk scoring, settlement and reversal.
 
 import { pick, rand, weightedPick } from './rng';
-import { accountVerified, addLog, balanceOf, gameTime, money, moveMoney, nameOf, nextId } from './core';
+import { accountVerified, addLog, balanceOf, gameTime, knownOf, money, moveMoney, nameOf, nextId } from './core';
 import { notify } from './notify';
 import type { ClientRequest, Customer, GameState, PlayerId, RiskResult, Transaction, TxEvent, TxStatus } from './types';
 
@@ -59,6 +59,12 @@ const DEAD: TxStatus[] = ['REJECTED', 'FAILED', 'REVERSED'];
 const madeAsAsked = (tx: Transaction, r: ClientRequest): boolean =>
   tx.origin === 'PLAYER' && tx.customerId === r.customerId && tx.beneficiaryId === r.payeeId && tx.amount === r.amount && tx.createdAt >= r.t;
 
+/**
+ * Does this payment give the customer what they asked for: their payee, their amount? (Which account it is paid
+ * from is not checked.) A payment linked to a request by id without this does not count as the request done.
+ */
+const answers = (tx: Transaction, r: ClientRequest): boolean => tx.beneficiaryId === r.payeeId && tx.amount === r.amount;
+
 /** Links a payment to the request it answers and marks the request done (credited to whoever created the payment). */
 function linkPayment(s: GameState, r: ClientRequest, tx: Transaction): void {
   tx.requestId = r.id;
@@ -70,14 +76,15 @@ function linkPayment(s: GameState, r: ClientRequest, tx: Transaction): void {
 }
 
 /**
- * The live payment answering a payment request, if any: the one linked to it, or else an unlinked payment made
- * exactly as asked, which gets linked now. So paying as requested counts even if the request was archived
- * instead of linked. Expired requests are answered by nothing.
+ * The live payment answering a payment request, if any: the one linked to it (if it pays the payee and amount
+ * asked), or else an unlinked payment made exactly as asked, which gets linked now. So paying as requested
+ * counts even if the request was archived instead of linked, and a payment linked to the wrong request does
+ * not silence the customer. Expired requests are answered by nothing.
  */
 export function paymentFor(s: GameState, r: ClientRequest): Transaction | null {
   if (r.kind !== 'PAYMENT' || r.outcome === 'MISSED') return null; // past its deadline with nothing done
   const linked = r.txId ? s.transactions.find((tx) => tx.id === r.txId) : undefined;
-  if (linked && !DEAD.includes(linked.status)) return linked;
+  if (linked && !DEAD.includes(linked.status) && answers(linked, r)) return linked;
   const tx = s.transactions.find((x) => !x.requestId && !DEAD.includes(x.status) && madeAsAsked(x, r));
   if (!tx) return null;
   linkPayment(s, r, tx);
@@ -164,11 +171,15 @@ export const MIN_PAYMENT = 10_000;
 /** Automatic payments and payment requests take at most this share of the paying account's balance. */
 export const MAX_BALANCE_SHARE = 0.4;
 
-export const customerMoney = (s: GameState, c: Customer): number => c.accounts.reduce((sum, a) => sum + balanceOf(s, a), 0);
+/** A customer's money as they see it: their own accounts (knownOf), not whatever the bank's file says. */
+export const customerMoney = (s: GameState, c: Customer): number => knownOf(c).accounts.reduce((sum, a) => sum + balanceOf(s, a), 0);
 /** Customers pay and get paid roughly in proportion to their wealth, so money does not just drain from rich to poor. */
 export const wealthWeight = (s: GameState, c: Customer): number => customerMoney(s, c) + 250_000;
-/** The account a customer pays from: the richer the account, the likelier. */
-export const payingAccount = (s: GameState, c: Customer): string => weightedPick(s, c.accounts, (a) => balanceOf(s, a) + 1);
+/**
+ * The account a customer pays from: one of the accounts they believe are theirs (knownOf), the richer the
+ * likelier. It may no longer be on the bank's file (removed unasked): the payment then comes from a floating account.
+ */
+export const payingAccount = (s: GameState, c: Customer): string => weightedPick(s, knownOf(c).accounts, (a) => balanceOf(s, a) + 1);
 
 /**
  * An amount between min and max (rounded to $1,000) that the account can afford right now, or null if it cannot

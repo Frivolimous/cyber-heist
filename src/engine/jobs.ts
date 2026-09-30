@@ -1,7 +1,7 @@
 // Job descriptions: what each role does, its tools, who it depends on, and the rules that matter for it.
 // Shown on the player's workstation (Profile). Numbers come from the game config so they stay true.
 
-import { findModule, ROLES } from './catalog';
+import { findModule, roleCreds, SHARED_SECURITY_TABLE } from './catalog';
 import { money } from './core';
 import type { Allegiance, GameConfig, RoleId } from './types';
 
@@ -18,8 +18,8 @@ export interface JobDescription {
 
 const secs = (n: number): string => (n % 60 === 0 && n >= 120 ? `${n / 60} minutes` : `${n}s`);
 
-function tools(role: RoleId): string[] {
-  return ROLES[role].creds.map((t) => {
+function tools(role: RoleId, n: number): string[] {
+  return roleCreds(role, n).map((t) => {
     const label = t.module ? (findModule(t.system, t.module)?.label ?? t.module) : t.system;
     return `${label} (${t.permission === 'WRITE' ? 'read & write' : 'read only'})`;
   });
@@ -36,7 +36,7 @@ function commonRules(c: GameConfig): string[] {
   ];
 }
 
-const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
+const JOBS: Record<RoleId, (c: GameConfig, n: number) => Omit<JobDescription, 'tools'>> = {
   PERSONAL_BANKER: (c) => ({
     summary: 'You look after your own customers: you read their requests, keep their accounts up to date, and start the payments they ask for.',
     duties: [
@@ -84,7 +84,7 @@ const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
       `The bank wins if ${money(c.whiteTarget)} of customer payments are settled by close of business. Every payment held, rejected or reversed slows the bank down. A payment settled into an employee's own account counts for nobody.`,
     ],
   }),
-  IT_SPECIALIST: (c) => ({
+  IT_SPECIALIST: (c, n) => ({
     summary: 'You keep the bank\'s systems secure: the firewall, the logs, staff records and everyone\'s credentials.',
     duties: [
       'Watch the Master Log and its alerts, and trace anything suspicious.',
@@ -93,7 +93,9 @@ const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
       'Reset lockouts in Employee Records.',
     ],
     dependsOn: [
-      'The Bank Manager, who also traces log entries and manages credentials, and can see the Firewall.',
+      n === SHARED_SECURITY_TABLE
+        ? 'The Bank Manager, who also traces log entries, manages credentials and, at a table this small, runs the Firewall with you.'
+        : 'The Bank Manager, who also traces log entries and manages credentials, and can see the Firewall.',
       'Everyone else to report what looks wrong: you see the logs, they see the money.',
     ],
     rules: [
@@ -107,7 +109,7 @@ const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
       `Revoking a Firewall or Permissions write credential takes ${secs(c.revokeCountdownSec)}. Its owner is told, and anyone with Permissions write can cancel it.`,
     ],
   }),
-  BANK_MANAGER: (c) => ({
+  BANK_MANAGER: (c, n) => ({
     summary: 'You oversee the whole bank: you can read every customer request and every payment, verify account changes, settle payments, and manage credentials.',
     duties: [
       'Read every banker\'s Client Requests and check that what gets done matches what customers asked for.',
@@ -115,11 +117,12 @@ const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
       'Settle approved payments in Settlement.',
       'Watch the Master Log and trace anything suspicious.',
       'Issue and revoke credentials in Permissions.',
+      ...(n === SHARED_SECURITY_TABLE ? ['At a table this small there is only one IT Specialist, so you run the Firewall too: block addresses, and revoke all access when you must.'] : []),
     ],
     dependsOn: [
       'Personal Bankers to act on requests and change accounts.',
       'Accounts & Receivables to score risk.',
-      'IT Specialists to act on the Firewall. You can see its status but not change it.',
+      n === SHARED_SECURITY_TABLE ? 'The IT Specialist, who shares the Firewall with you.' : 'IT Specialists to act on the Firewall. You can see its status but not change it.',
     ],
     rules: [
       'A payment is paid into the payee\'s primary account at the moment it settles. A primary changed just before settlement is the classic way money goes missing.',
@@ -142,11 +145,12 @@ const OPERATIVE = (c: GameConfig): string[] => [
   `Money counts while it sits in a Target Ledger account. A settled payment can be reversed for ${secs(c.reversalWindowSec)}, but only while the account it went to still holds the money: a mule account can pay it on first.`,
 ];
 
-export function jobDescription(role: RoleId, allegiance: Allegiance, c: GameConfig): JobDescription {
-  const job = JOBS[role](c);
+/** `n`: the table size (the 6-player table gives the Bank Manager Firewall write). */
+export function jobDescription(role: RoleId, allegiance: Allegiance, c: GameConfig, n: number): JobDescription {
+  const job = JOBS[role](c, n);
   return {
     ...job,
-    tools: tools(role),
+    tools: tools(role, n),
     rules: [...job.rules, ...commonRules(c)],
     ...(allegiance === 'BLACK' ? { operative: OPERATIVE(c) } : {}),
   };

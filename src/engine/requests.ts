@@ -2,9 +2,10 @@
 // own accounts. Requests are written in words (names, not codes), so acting on one means looking things up.
 
 import { activeCustomers, affordableAmount, MAX_BALANCE_SHARE, MIN_PAYMENT, payingAccount, paymentFor, wealthWeight } from './bank';
-import { addLog, balanceOf, gameTime, money, nextId, unusedAccountNumber } from './core';
+import { addLog, balanceOf, gameTime, knownOf, money, nextId, unusedAccountNumber } from './core';
 import { notify } from './notify';
 import { pick, rand, randInt, weightedPick } from './rng';
+import { nextArrival } from './pacing';
 import type { ClientRequest, Customer, GameState, Player, RequestKind } from './types';
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -146,11 +147,12 @@ function requestAmount(s: GameState, account: string): number | null {
  * A form the customer cannot pay from falls back to NUMBER. Null when no account can pay at all.
  */
 function paymentSource(s: GameState, cust: Customer): { origin: string; amount: number; from: string } | null {
-  const others = cust.accounts.filter((a) => a !== cust.primary);
+  const known = knownOf(cust); // the customer goes by the accounts they believe they have
+  const others = known.accounts.filter((a) => a !== known.primary);
   const form = pick(s, ['MAIN', 'NUMBER', 'OTHER'] as const);
   if (form === 'MAIN') {
-    const amount = requestAmount(s, cust.primary);
-    if (amount !== null) return { origin: cust.primary, amount, from: 'from our main account' };
+    const amount = requestAmount(s, known.primary);
+    if (amount !== null) return { origin: known.primary, amount, from: 'from our main account' };
   }
   if (form === 'OTHER') {
     const able = others.filter((a) => balanceOf(s, a) * MAX_BALANCE_SHARE >= MIN_PAYMENT);
@@ -166,12 +168,27 @@ function paymentSource(s: GameState, cust: Customer): { origin: string; amount: 
   return amount === null ? null : { origin, amount, from: `from our account ${origin.slice(4)}` };
 }
 
+/** Each gap between client requests is the average gap times 1 ± this (at random), so arrivals are uneven. */
+export const REQUEST_JITTER = 0.5;
+/** The first request after the start (two are waiting already) comes after this share of a normal gap. */
+export const FIRST_REQUEST_SHARE = 0.5;
+
+/**
+ * Schedules the next client request after one at `after`: a jittered gap around requestIntervalSec, then bent
+ * by the time of day (nextArrival). The jitter averages out, so the game-wide total stays about the same.
+ */
+export function scheduleRequest(s: GameState, after: number, first = false): void {
+  const gap = s.config.requestIntervalSec * (1 + (rand(s) * 2 - 1) * REQUEST_JITTER) * (first ? FIRST_REQUEST_SHARE : 1);
+  s.nextRequestAt = nextArrival(s.config.durationSec, after, gap);
+}
+
 /** Spawns a request from a customer still doing business with the bank (null if there is none). */
 export function spawnRequest(s: GameState): ClientRequest | null {
   const active = activeCustomers(s);
   if (active.length < 2) return null;
   const cust = pick(s, active);
-  const others = cust.accounts.filter((a) => a !== cust.primary); // accounts that can be made primary or removed
+  const known = knownOf(cust);
+  const others = known.accounts.filter((a) => a !== known.primary); // accounts they could make primary or remove
   let kind: RequestKind = 'PAYMENT';
   if (rand(s) < s.config.requestChangeShare) {
     kind = pick(s, others.length ? (['ADD_ACCOUNT', 'ADD_AND_PRIMARY', 'SET_PRIMARY', 'REMOVE_ACCOUNT'] as const) : (['ADD_ACCOUNT', 'ADD_AND_PRIMARY'] as const));
@@ -219,8 +236,21 @@ export function spawnRequest(s: GameState): ClientRequest | null {
     archiveReason: null,
   };
   s.requests.push(req);
+  learnRequest(cust, req);
   requestReceived(s, req);
   return req;
+}
+
+/**
+ * The customer now believes the change they asked for is in place, whether or not the bank ever makes it.
+ * (Scam and phishing requests never come here: no real customer asked.)
+ */
+function learnRequest(cust: Customer, r: ClientRequest): void {
+  if (r.kind === 'PAYMENT' || !r.account) return;
+  const known = (cust.known = { ...knownOf(cust), accounts: [...knownOf(cust).accounts] });
+  if ((r.kind === 'ADD_ACCOUNT' || r.kind === 'ADD_AND_PRIMARY') && !known.accounts.includes(r.account)) known.accounts.push(r.account);
+  if (r.kind === 'ADD_AND_PRIMARY' || r.kind === 'SET_PRIMARY') known.primary = r.account;
+  if (r.kind === 'REMOVE_ACCOUNT') known.accounts = known.accounts.filter((a) => a !== r.account);
 }
 
 /** Logs a new request and notifies its banker. Real, scam and phishing requests all arrive the same way. */

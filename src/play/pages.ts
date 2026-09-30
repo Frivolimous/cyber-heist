@@ -9,7 +9,9 @@ import { ClientSession } from '../net/client';
 import { firebaseConfig, loadFirebaseConfig, openDb, useLocalNet } from '../net/config';
 import type { Db } from '../net/db';
 import { HostSession, loadSnapshot, startTicker } from '../net/host';
-import { normRoomCode, roomPath } from '../net/protocol';
+import { newWatchKey, normRoomCode, roomPath } from '../net/protocol';
+import { downloadState } from '../sandbox/dump';
+import { mountSettings } from '../sandbox/settings';
 import type { LobbyEntry } from '../net/protocol';
 import { createRoom, joinLobby, leaveLobby, lobbyOrder, roomMeta, startRoom } from '../net/room';
 
@@ -48,12 +50,112 @@ async function startScreen(): Promise<void> {
   await import('../sandbox/main');
 }
 
+// ---- How to play ------------------------------------------------------------------------------
+// A new player's first introduction: the few ideas that make the game make sense. Their job description (on
+// their workstation, once the game starts) is the second.
+
+const HOW_TO_PLAY = (): string => {
+  return `<h2>How to play</h2>
+  <p>
+    You work at a bank, along with your fellow employees. A few of you, however, are also secret
+    THIEVES planning to steal a whole bunch of money!
+  </p>
+
+  <h3>Competing Objectives</h3>
+  <ul>
+    <li>
+      The bank wins if it settles enough legitimate customer payments by close of business, or all
+      the thieves have been locked out of the system. If you're a regular employee, you want to make
+      sure the bank wins.
+    </li>
+    <li>The Thieves win the moment their secret accounts hold enough stolen money.</li>
+    <li>Careless use of the Firewall can shut the whole bank down instead. If that happens, everybody loses!</li>
+  </ul>
+
+  <h3>Your job</h3>
+  <p>
+    Everyone, even the thieves, has a legitimate job in the bank: Personal Bankers look after
+    customers and process their payments, Accounts &amp; Receivables check and pay them out, IT
+    Specialists run security, and the Bank Manager oversees it all. The bank only works if each part
+    does its job.
+  </p>
+  <p>
+    The thieves have jobs too: it is their cover. They will still need to do their legit work or
+    other players might get suspicious!
+  </p>
+  <p>
+    When the game starts, open My workstation and read your job description to learn more about your
+    responsibilities.
+  </p>
+
+  <h3>Codes are everything</h3>
+  <p>
+    Every action needs a 4-digit code. The logs record whose code was used, not who typed it: anyone
+    who learns your code can act as you, and the blame lands on you.
+  </p>
+
+  <h3>How money gets stolen</h3>
+  <p>
+    A payment lands in the customer's main (primary) account at the moment it is paid out. The
+    thieves will try to quietly swap a customer's primary for a mule account so all the incoming
+    money goes to them. Thieves also have hidden tools to cover their tracks and mislead the bank,
+    and they can coordinate them on a secret host living in the bank's network.
+  </p>
+
+  <h3>How thieves get caught</h3>
+  <p>
+    A trace on a log entry reveals which workstation really did it. Activity on the secret host might
+    also leave evidence in the logs.
+  </p>
+  <p>
+    Suss out the thieves by examining suspicious activity, suspicious behavior, or by tracing
+    suspicious logs. Revoke all of their codes, or use the Firewall to shut down their workstation for
+    good, and they are out of the game!
+  </p>
+
+  <h3>Talk</h3>
+  <p>
+    You play on a video call. Say what you see, ask what others did, accuse, defend. Send private
+    messages through your workstation if needed.
+  </p>
+  <p>
+    The thieves can also communicate privately through their secret host on the network. Be ready for
+    coordinated attacks!
+  </p>
+  <p class="how-tip">You look things up and type them yourself (names, account numbers, codes): nothing is filled in for you.
+  That is part of the game.</p>
+  <form method="dialog"><button class="btn">Got it</button></form>`;
+};
+
+/** Adds a "How to play" button that opens the introduction. */
+function howToPlayButton(): string {
+  return '<button type="button" class="btn alt how-btn" data-how>How to play</button>';
+}
+function wireHowToPlay(): void {
+  const btn = app.querySelector<HTMLButtonElement>('[data-how]');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    let dlg = document.querySelector<HTMLDialogElement>('dialog.how');
+    if (!dlg) {
+      dlg = document.createElement('dialog');
+      dlg.className = 'how play';
+      dlg.innerHTML = HOW_TO_PLAY();
+      dlg.addEventListener('click', (e) => {
+        if (e.target === dlg) dlg!.close(); // a click on the backdrop closes it
+      });
+      document.body.append(dlg);
+    }
+    dlg.showModal();
+    dlg.scrollTop = 0; // showModal focuses "Got it" at the bottom; start at the top
+  });
+}
+
 // ---- Routing -----------------------------------------------------------------------------------
 
 export async function route(q: URLSearchParams): Promise<void> {
   await loadFirebaseConfig();
-  const [host, test, run, game] = ['host', 'test', 'run', 'game'].map((k) => q.get(k));
-  if (!host && !test && !run && !game) return landing();
+  const [host, test, run, game, watch] = ['host', 'test', 'run', 'game', 'watch'].map((k) => q.get(k));
+  if (!host && !test && !run && !game && !watch) return landing();
   page('<p class="play-wait">Connecting...</p>');
   let db: Db;
   try {
@@ -64,6 +166,7 @@ export async function route(q: URLSearchParams): Promise<void> {
   if (host) return sandboxHost(db, host);
   if (test) return tester(db, normRoomCode(test));
   if (run) return facilitator(db, run);
+  if (watch) return watcher(db, normRoomCode(watch), q.get('key') ?? '');
   return player(db, normRoomCode(game!));
 }
 
@@ -72,6 +175,7 @@ export async function route(q: URLSearchParams): Promise<void> {
 function landing(): void {
   page(
     `<p class="play-lede">A social deduction heist for 6 to 30 players on a video call, each on their own computer.</p>
+    ${howToPlayButton()}
     <form class="play-form" data-form="join">
       <h2>Join a game</h2>
       <label>Game code <input name="code" maxlength="4" autocomplete="off" placeholder="ABCD" required></label>
@@ -87,6 +191,7 @@ function landing(): void {
     ${netNote()}`,
     true,
   );
+  wireHowToPlay();
   app.querySelector('[data-form="join"]')!.addEventListener('submit', (e) => {
     e.preventDefault();
     const code = normRoomCode(new FormData(e.target as HTMLFormElement).get('code') as string);
@@ -100,7 +205,8 @@ async function sandboxHost(db: Db, raw: string): Promise<void> {
   let code = normRoomCode(raw);
   if (raw === 'new') {
     code = await createRoom(db, true);
-    setAddress({ host: code });
+    const scenario = new URLSearchParams(location.search).get('scenario'); // a dev test scenario for the first game
+    setAddress({ host: code, ...(scenario ? { scenario } : {}) });
   } else {
     const meta = await roomMeta(db, code);
     if (!meta?.dev) return problem(`There is no online sandbox with the code ${code}.`);
@@ -131,6 +237,19 @@ const untilView = (session: ClientSession): Promise<void> =>
       resolve();
     });
   });
+
+// ---- DEV ONLY: the watcher link (remove before any public release; see README.md) --------------------
+// ?watch=CODE&key=K: a read-only copy of a running game, from the key its host screen shows. It writes
+// nothing to the game, so it appears nowhere a player could see it.
+
+async function watcher(db: Db, code: string, key: string): Promise<void> {
+  if (!/^[0-9a-f]{32}$/.test(key)) return problem('That watcher link is incomplete.');
+  page('<p class="play-wait">Waiting for the host...</p>');
+  const first = await db.get(roomPath(code, `watch/${key}`)).catch(() => null);
+  if (typeof first !== 'string') return problem(`Nothing to watch for game ${code} with that key (the host publishes it a few seconds after the start).`);
+  boot.current = { kind: 'watch', db, code, key };
+  await startScreen();
+}
 
 // ---- Player --------------------------------------------------------------------------------------
 
@@ -172,8 +291,10 @@ function waitingRoom(db: Db, code: string): void {
         <p>You are in. The game starts when the host starts it.</p>
         <ul class="play-list">${lobby.map(([uid, e]) => `<li>${esc(e.name)}${uid === db.uid ? ' <small>(you)</small>' : ''}</li>`).join('')}</ul>
         <p class="play-hint">${lobby.length} joined; at least ${MIN_PLAYERS} are needed.</p>
+        ${howToPlayButton()}
         <button class="btn alt" data-leave>Leave</button>`,
       );
+      wireHowToPlay();
       app.querySelector('[data-leave]')!.addEventListener('click', async () => {
         leave();
         await leaveLobby(db, code);
@@ -211,41 +332,49 @@ async function facilitator(db: Db, raw: string): Promise<void> {
   if (meta.status === 'LOBBY') return hostLobby(db, code);
   const snap = await loadSnapshot(db, code);
   if (!snap) return problem(`Game ${code} was started, but its saved state is missing.`);
-  runGame(db, code, snap.state, snap.vNow, snap.speed);
+  runGame(db, code, snap.state, snap.vNow, snap.speed, snap.watchKey);
 }
 
 function hostLobby(db: Db, code: string): void {
   const joinUrl = link({ game: code });
+  // The page is drawn once; only the player list redraws as people join, so the settings form keeps its state.
+  page(
+    `<h2>Game <span class="code">${esc(code)}</span></h2>
+    <p>Players open <a href="${esc(joinUrl)}" target="_blank" rel="noopener">${esc(joinUrl)}</a>, or go to the start page and type the code.</p>
+    <div data-lobby></div>
+    <div data-settings></div>
+    <button class="btn" data-start disabled>Start the game</button>
+    <p class="play-error" data-err hidden></p>
+    <p class="play-hint">You run the game from this tab: keep it open until the end.</p>
+    ${netNote()}`,
+    true,
+  );
+  const settings = mountSettings(app.querySelector<HTMLElement>('[data-settings]')!);
+  const start = app.querySelector<HTMLButtonElement>('[data-start]')!;
+  const err = app.querySelector<HTMLElement>('[data-err]')!;
   const off = db.onValue(roomPath(code, 'lobby'), (v) => {
     const lobby = lobbyOrder(v as Record<string, LobbyEntry> | null);
-    page(
-      `<h2>Game <span class="code">${esc(code)}</span></h2>
-      <p>Players open <a href="${esc(joinUrl)}" target="_blank" rel="noopener">${esc(joinUrl)}</a>, or go to the start page and type the code.</p>
-      <ul class="play-list">${lobby.map(([, e]) => `<li>${esc(e.name)}</li>`).join('') || '<li class="empty">Nobody yet.</li>'}</ul>
-      <p class="play-hint">${lobby.length} joined; ${MIN_PLAYERS} to 30 players. Roles and sides are dealt at random when you start.</p>
-      <button class="btn" data-start ${lobby.length < MIN_PLAYERS ? 'disabled' : ''}>Start the game</button>
-      <p class="play-error" data-err hidden></p>
-      <p class="play-hint">You run the game from this tab: keep it open until the end.</p>
-      ${netNote()}`,
-      true,
-    );
-    app.querySelector('[data-start]')!.addEventListener('click', async () => {
-      const vNow = Date.now();
-      const started = await startRoom(db, code, vNow);
-      if (typeof started === 'string') {
-        const el = app.querySelector<HTMLElement>('[data-err]')!;
-        el.hidden = false;
-        el.textContent = started;
-        return;
-      }
-      off();
-      runGame(db, code, started, vNow, 1);
-    });
+    app.querySelector('[data-lobby]')!.innerHTML = `<ul class="play-list">${lobby.map(([, e]) => `<li>${esc(e.name)}</li>`).join('') || '<li class="empty">Nobody yet.</li>'}</ul>
+      <p class="play-hint">${lobby.length} joined; ${MIN_PLAYERS} to 30 players. Roles and sides are dealt at random when you start.</p>`;
+    start.disabled = lobby.length < MIN_PLAYERS;
+  });
+  start.addEventListener('click', async () => {
+    const custom = settings();
+    const problem = custom.errors.length ? `Fix the custom settings first: ${custom.errors.join(' ')}` : null;
+    const vNow = Date.now();
+    const started = problem ?? (await startRoom(db, code, vNow, custom.config));
+    if (typeof started === 'string') {
+      err.hidden = false;
+      err.textContent = started;
+      return;
+    }
+    off();
+    runGame(db, code, started, vNow, 1);
   });
 }
 
 /** The facilitator's screen while the game runs: this tab is the game's engine for every player. */
-function runGame(db: Db, code: string, first: GameState, startVNow: number, startSpeed: number): void {
+function runGame(db: Db, code: string, first: GameState, startVNow: number, startSpeed: number, startWatchKey?: string): void {
   let s = first;
   let vNow = startVNow;
   let speed = startSpeed;
@@ -260,7 +389,12 @@ function runGame(db: Db, code: string, first: GameState, startVNow: number, star
     },
     state: () => s,
   }, false);
-  const save = (): Promise<void> => host.saveSnapshot({ state: s, vNow, speed });
+  // DEV ONLY: the watcher link's secret key, kept with the saved game so a reloaded host keeps the same link.
+  const watchKey = startWatchKey ?? newWatchKey();
+  const watchUrl = link({ watch: code, key: watchKey });
+  const save = (): Promise<void> => host.saveSnapshot({ state: s, vNow, speed, watchKey });
+  const publishWatch = (): Promise<void> => host.publishWatch(watchKey, { state: s, vNow });
+  void publishWatch();
   void save();
   host.start(() => render());
   void host.setPaused(speed === 0);
@@ -274,6 +408,7 @@ function runGame(db: Db, code: string, first: GameState, startVNow: number, star
       host.publish();
       render();
     }
+    if (ticks % 12 === 0 && (s.status === 'RUNNING' || !ended)) void publishWatch();
     if (ticks % 40 === 0 || (s.status !== 'RUNNING' && ticks % 4 === 0 && !ended)) {
       void save();
       if (s.status !== 'RUNNING') ended = true;
@@ -283,6 +418,7 @@ function runGame(db: Db, code: string, first: GameState, startVNow: number, star
     if (s.status === 'RUNNING') e.preventDefault(); // closing this tab stops the game for everyone
   });
 
+  let devOpen = false;
   function render(): void {
     const t = Math.max(0, (s.now - s.startedAt) / 1000);
     const phase = dayPhaseAt(s.config.durationSec, t);
@@ -308,9 +444,16 @@ function runGame(db: Db, code: string, first: GameState, startVNow: number, star
       <ul class="play-list">${people
         .map((id) => `<li class="${host.isOnline(id) ? 'on' : 'off'}"><i class="dot" aria-hidden="true"></i>${esc(s.players[id].name)}${host.isOnline(id) ? '' : ' <small>not connected</small>'}${s.players[id].terminated ? ' <small>terminated</small>' : ''}</li>`)
         .join('')}</ul>
-      <p class="play-hint">This tab runs the game for everyone: keep it open${end ? '' : ' until the end'}. Players rejoin with ${esc(link({ game: code }))}</p>`,
+      <p class="play-hint">This tab runs the game for everyone: keep it open${end ? '' : ' until the end'}. Players rejoin with ${esc(link({ game: code }))}</p>
+      <details class="fac-dev"${devOpen ? ' open' : ''}><summary>Dev tools</summary>
+        <button class="btn alt" data-dump>Download state</button>
+        <p class="play-hint">Watcher link (read only, full view; keep it to yourself): <a href="${esc(watchUrl)}" target="_blank" rel="noopener">${esc(watchUrl)}</a></p>
+      </details>`,
       true,
     );
+    const dev = app.querySelector<HTMLDetailsElement>('.fac-dev')!;
+    dev.addEventListener('toggle', () => (devOpen = dev.open));
+    app.querySelector('[data-dump]')!.addEventListener('click', () => downloadState(s, code));
     app.querySelector('[data-pause]')?.addEventListener('click', () => {
       speed = speed ? 0 : 1;
       void host.setPaused(speed === 0);

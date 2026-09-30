@@ -67,6 +67,11 @@ Details:
   can still be finished). The header shows the time of day, the busy level and the game clock counting
   up to its end ("07:42 / 20:00"). Every time players see (logs, records, requests, the end screen) uses
   that same clock.
+- **Request timing** (`scheduleRequest` in `requests.ts`): two requests are waiting at the start, and the
+  next one comes after **half** a normal gap. Each gap is the average gap **±50% at random**
+  (`REQUEST_JITTER`), then bent by the time of day, so arrivals are uneven but the total stays about the
+  same. Each request comes from a random active customer, so one banker can get several in a row.
+  Automatic payments arrive at even gaps (bent by the time of day).
 
 | Time remaining (20 min) | Share left | Time of day | Pace |
 |---|---|---|---|
@@ -100,13 +105,20 @@ for now and may move. For `n` players
 - IT Specialist = 1 + floor((n − 2) / 6)
 - Personal Banker = 2 + ceil((n − 6) / 2)
 - Accounts & Receivables = n − 1 − IT − Personal Banker (the rest)
+- **Exception at 7 players:** 1 Bank Manager, 2 IT, 2 Personal Bankers, 2 A&R (the formula would give a
+  single IT Specialist, who would then always be the role's White Hat).
 - Black Hats = floor(n / 3), unless `blackHatCount` fixes it. Any role can be a Black Hat, but
-  every role other than the Bank Manager always keeps **at least one White Hat** (at 6-7 players the only
-  IT Specialist is always a White Hat). The Bank Manager can be a Black Hat.
+  every role other than the Bank Manager always keeps **at least one White Hat**. The Bank Manager can be a
+  Black Hat.
+- **Exception at 6 players** (`SHARED_SECURITY_TABLE`): there is a single IT Specialist, so the Bank Manager
+  also gets **Firewall write**, and the IT Specialist and the Bank Manager count as **one group** for the
+  White Hat rule: at least one of the two is a White Hat, and either can be the Black Hat. So nobody can
+  assume the lone IT is clean.
 
 | Players | Bank Manager | IT | Personal Banker | A&R | Black Hats |
 |---|---|---|---|---|---|
 | 6 | 1 | 1 | 2 | 2 | 2 |
+| 7 | 1 | 2 | 2 | 2 | 2 |
 | 8 | 1 | 2 | 3 | 2 | 2 |
 | 10 | 1 | 2 | 4 | 3 | 3 |
 | 14 | 1 | 3 | 6 | 4 | 4 |
@@ -117,7 +129,7 @@ Roles are dealt over a shuffled seat order. Each role starts with one credential
 
 | Module | IT Specialist | Personal Banker | Accounts & Receivables | Bank Manager |
 |---|---|---|---|---|
-| Firewall | W | - | - | R |
+| Firewall | W | - | - | R (W at 6 players) |
 | Master Log | W | - | - | W |
 | Employee Records | W | R | R | R |
 | Permissions | W | - | - | W |
@@ -182,6 +194,19 @@ Roles are dealt over a shuffled seat order. Each role starts with one credential
 - Verification: **View** (Pending / All changes), **Investigate changes** (a customer tag lists that
   customer's changes; an account number follows that account across customers and says where it is
   now, or that it floats, and its balance), **Verify a change** (by change id).
+- **What customers believe is separate from the bank's file** (`Customer.known`). A customer believes
+  their accounts are as they were at the start, updated only by their own requests, **at the moment they
+  ask** (add, add as primary, set primary, remove), whether or not the bank ever does it. Changes nobody
+  asked for (a Black Hat's) are invisible to them. Scam and phishing requests change nothing.
+  - Their payment requests ("from our main account", "from our account 12345", "from our other account")
+    and their automatic payments go by what they believe. So a customer never *asks* to pay from a mule
+    account (a banker can still pay from one by mistake), and an account removed unasked keeps paying
+    automatically, now **floating** (on no customer).
+  - Their account requests too: they may ask to make primary an account that is no longer on their file.
+  - The bank's file, not what customers believe, decides where payments land and whether a request is
+    done: see "When a request counts as done" under Client Requests.
+  - A mismatch is a clue: a payment from a floating account, or "our main account" that is not the primary
+    on file. The sandbox's Ground truth lists every customer whose file differs from what they believe.
 
 ## Payment pipeline
 
@@ -379,9 +404,9 @@ of "potential targets for fraudulent transactions").
   the top of the Open view. The banker also gets it as a personal message from the customer. A follow-up
   **reopens an archived request**, showing who archived it and why. So an archived request that comes
   back had a real customer behind it.
-- "Has it happened" means: for an account request, the customer's accounts are as asked (whoever did it,
-  linked or not); for a payment request, a payment for it exists that was not rejected, failed or
-  reversed. If a linked payment falls through before the follow-up, the request comes back too.
+- "Has it happened" is checked **against the bank's file as it is at that moment** (halfway, then at the
+  deadline), not against what the customer believes, and not by who did it. See "When a request counts as
+  done" below. If a linked payment falls through before the follow-up, the request comes back too.
 - At the **deadline**, a request whose ask has not happened **expires** (EXPIRED, or stays ARCHIVED if it
   was archived; either way it can no longer be linked). The customer takes a **strike** and writes to the **Bank Manager**, naming the banker who had
   the request; the Master Log records "Customer complaint: REQ-7 expired". Archiving alone is not a strike:
@@ -412,6 +437,49 @@ of "potential targets for fraudulent transactions").
 - Personal Bankers create the payments their customers ask for and approve them; Accounts &
   Receivables score risk and settle. A banker cannot verify their own account changes (Verification is
   read-only for them): Accounts & Receivables or the Bank Manager must.
+
+### When a request counts as done
+
+A request is judged twice: at the follow-up (halfway) and at the deadline. Whatever the answer at the
+deadline is final: a request met then stays met, even if the payment fails or the account is changed
+afterwards.
+
+| Request | Done when, at that moment | Not checked |
+|---|---|---|
+| Payment | A **live** payment for it exists (not rejected, failed or reversed; queued, held or approved all count): to the payee asked, for the amount asked, made by a player after the request arrived. It must be **linked** by request id, or come from an account **on the customer's file** (it is then linked automatically). A linked payment to another payee or for another amount does not count. | **Which account it is paid from.** |
+| Add account | The account is on the customer's file | Who added it |
+| Set primary / add as primary | The primary on the customer's file is that account | Who set it |
+| Remove account | The account is not on the customer's file | Who removed it |
+
+A payment that fulfils a payment request is the only kind of manual payment that counts toward the bank's
+target (scam and phishing requests never count).
+
+**Linking the wrong action.** Putting a request id on an action checks only that the action is of the
+right kind (a payment for a payment request, an account change for an account request) and that the
+request is not expired or already done. It does not check the customer, account, payee or amount, or
+whether the request is one you can see. So the action goes through and the request shows **DONE**, but
+it is still judged by the table above: if what was asked has not happened, the customer follows up
+halfway (the request reopens) and it expires at the deadline with a strike. A mislinked payment never
+counts toward the target, and does not block the right payment, which still answers the request if it is
+made later (linked or not). Black Hats can use this to make a request look handled until the customer
+chases it.
+
+**With mule accounts in play** (see "What customers believe" under Customers and accounts):
+
+- **Payments into a mule.** A payment lands in the payee's primary *on file* at settlement, so if a Black
+  Hat has made a mule the primary, automatic and requested payments to that customer go into the mule.
+- **Payments out of a mule.** A request for a payment "from our main account" means the account the
+  customer *believes* is primary. A banker who takes the primary from Customer Records pays from the mule
+  instead. Since the source is not checked, that still **fulfils the request and counts toward the bank's
+  target** if it settles, and the money leaves the mule (the Black Hats' stolen total drops). If the mule
+  cannot cover it, the payment fails at settlement: not done, so a follow-up and possibly a strike.
+- **A linked payment from anywhere counts**, even from an account that is no longer on the customer's file
+  (floating). An unlinked payment from a floating account is not matched to the request.
+- **Tampering can cost a banker a strike.** If a customer asked for account X to become primary and a
+  Black Hat swaps the primary to a mule before the deadline, the request is not done: the customer
+  complains, naming the banker. After the deadline, the same swap changes nothing about that request.
+- **Some requests cannot be done as asked.** A customer who does not know an account was removed may ask
+  to make it primary: that means adding the account back first. (Asking to remove it is already done.)
 
 ## Notifications
 
@@ -559,6 +627,44 @@ A stage whose automation will take a payment is not rung for it.
   cannot issue host credentials.
 - A Firewall "revoke all access" that completes on the host's address shuts it down, and the White Hats
   win (see Win conditions). A timed block only cuts the operatives off for its duration.
+
+## Dev test scenarios
+
+Testing tools, never offered in a real lobby. Pick one in the sandbox's yellow bar (**table**, applies on New
+game) or open `?sandbox&scenario=duo` / `?sandbox&scenario=solo` (`createGame`'s `scenario` option).
+
+- **2-player test (DUO):** exactly two seats, one Personal Banker and one Accounts & Receivables, no Black
+  Hats and no Black Hat goal (the game runs to close of business). The economy is a **3-player game's**
+  (half of 6): the bank target, payment volume and customers (3) are halved, with one banker's requests
+  (every 90s). For two people on two machines, open the online sandbox with the scenario
+  (`?host=new&scenario=duo`) and have each open the tester link and pick a seat.
+- **Solo Black Hat test (SOLO):** you are the only Black Hat (Accounts & Receivables) against five scripted
+  seats (`autopilot.ts`), in a **6-player economy** (bank target $90M, Black Hat goal $2M). The bots use real
+  codes, so every log, alert and bell is real. They wait `BOT_DELAY_SEC` (8s) before acting on new work:
+  - banker bots archive obvious phishing and do everything else their customers ask (a scam works on them);
+    the first one also approves LOW and MEDIUM payments, and HIGH ones made for a request, and holds the rest;
+  - the A&R bot scores what automation leaves with the bank's own risk assessment, verifies only account
+    changes a customer asked for, and settles approved payments;
+  - the IT bot traces the newest untraced entry an alert points at, else the newest "Unknown server
+    activity" entry, **every time its cooldown allows** (normal cooldown and age limit). It never acts on what
+    it learns; the Manager bot does nothing.
+  - A strip under the yellow bar turns red when a trace first exposes **your workstation IP** or **the hidden
+    host's address**, and lists the latest traces. This is a worst case for the Black Hat (a tracer that
+    never misses a chance), not a model of attentive White Hat play.
+- **Custom settings** (a button in the sandbox's yellow bar, applying on New game, and on the host's lobby
+  page): every tunable `DEFAULT_CONFIG` value as a form, grouped (game, targets, volume, amounts, customers,
+  security timing, starting automation). Only changed values are passed to `createGame`; the values derived
+  from the table size (targets, arrival rates) are not offered, so a custom game still scales. A game won't
+  start from the lobby while a value is invalid. The last settings are remembered in that browser.
+- **Download state** (sandbox yellow bar, and the host screen's Dev tools) saves the whole `GameState` as
+  JSON at any moment. It includes `config`: every setting the game was created with, derived values too.
+
+> **WARNING: DEV ONLY, remove before any public or shared release.** The host screen's Dev tools show a
+> **watcher link** (`?watch=CODE&key=...`): a read-only screen with full visibility of that game (any seat's
+> screen, allegiances, Ground truth), refreshed by the host every 3s. It writes nothing to the game, so it
+> never appears in the roster, logs, alerts, Trace or notifications. It works because the host copies the
+> whole game to `games/{code}/watch/{key}`, readable by anyone who has the key. Do not mention it anywhere
+> players can see it.
 
 ## Not implemented yet
 

@@ -98,7 +98,9 @@ test('any table of 6 to 30: roles and hackers follow the formulas, and every ope
   // Spot checks against the formulas, as [n, Bank Manager, IT, Personal Banker, A&R, hackers].
   const expected = [
     [6, 1, 1, 2, 2, 2],
-    [7, 1, 1, 3, 2, 2],
+    [7, 1, 2, 2, 2, 2], // the fixed exception
+    [9, 1, 2, 4, 2, 3],
+    [13, 1, 2, 6, 4, 4],
     [8, 1, 2, 3, 2, 2],
     [10, 1, 2, 4, 3, 3],
     [14, 1, 3, 6, 4, 4],
@@ -125,7 +127,7 @@ test('any table of 6 to 30: roles and hackers follow the formulas, and every ope
 
 test('allegiances: every role but the Bank Manager has at least one White Hat, at every table size', () => {
   let managerWasBlack = false;
-  for (let n = MIN_PLAYERS; n <= MAX_PLAYERS; n++) {
+  for (let n = MIN_PLAYERS + 1; n <= MAX_PLAYERS; n++) {
     for (let seed = 1; seed <= 40; seed++) {
       const s = createGame({ seed, players: Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `P${i}` })), now: T0 });
       const players = Object.values(s.players);
@@ -137,6 +139,30 @@ test('allegiances: every role but the Bank Manager has at least one White Hat, a
     }
   }
   assert.ok(managerWasBlack, 'the Bank Manager can still be a Black Hat');
+});
+
+test('6 players: the Bank Manager shares the Firewall, and the lone IT or the Manager (never both) can be a Black Hat', () => {
+  let itWasBlack = false;
+  let managerWasBlack = false;
+  for (let seed = 1; seed <= 80; seed++) {
+    const s = createGame({ seed, players: Array.from({ length: 6 }, (_, i) => ({ id: `p${i}`, name: `P${i}` })), now: T0 });
+    const players = Object.values(s.players);
+    const black = (role: RoleId) => players.some((p) => p.role === role && p.allegiance === 'BLACK');
+    assert.ok(!(black('IT_SPECIALIST') && black('BANK_MANAGER')), `seed=${seed}: IT and Manager both Black Hats`);
+    for (const role of ['PERSONAL_BANKER', 'ACCOUNTS_RECEIVABLES'] as RoleId[]) {
+      assert.ok(players.some((p) => p.role === role && p.allegiance === 'WHITE'), `seed=${seed}: no White Hat ${role}`);
+    }
+    itWasBlack ||= black('IT_SPECIALIST');
+    managerWasBlack ||= black('BANK_MANAGER');
+  }
+  assert.ok(itWasBlack && managerWasBlack, 'either one can be the Black Hat');
+  const firewall = (n: number) => {
+    const s = createGame({ seed: 1, players: Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `P${i}` })), now: T0 });
+    const bm = Object.values(s.players).find((p) => p.role === 'BANK_MANAGER')!;
+    return Object.values(s.credentials).find((c) => c.owner === bm.id && c.module === 'FIREWALL')!.permission;
+  };
+  assert.equal(firewall(6), 'WRITE');
+  assert.equal(firewall(7), 'READ');
 });
 
 test('the economy scales with the table: targets, customers, requests and automatic traffic', () => {
@@ -799,6 +825,62 @@ test('payment history records every step with the credential owner and the real 
   });
   assert.equal(tx.debitedFrom, tx.originAccount);
   assert.match(tx.history[1].detail!, /^risk (LOW|MEDIUM|HIGH)/);
+});
+
+test('money is conserved: settlements, failures, a diversion, a reversal and a mule paying out move it, never make or lose it', () => {
+  const sim = new Sim({ automation: EVERYTHING, blackTarget: 1e12 }); // the diversion must not end the day early
+  grantMasterAccess(sim.s, 'p0');
+  const tx = sim.code('p0', 'TRANSACTIONS', null);
+  const cd = sim.code('p0', 'CLIENT_DATA', null);
+  const total = () => Object.values(sim.s.balances).reduce((a, b) => a + b, 0);
+  // The only money that enters: a customer's new account, "opened elsewhere", arrives with its own balance.
+  // It floats (on no customer) when it appears, so nothing can have moved it yet: count it on first sight.
+  const known = new Set(Object.keys(sim.s.balances));
+  let expected = total();
+  const tickTo = (t: number) => {
+    while (sim.sec < t) {
+      sim.at(sim.sec + 1);
+      for (const [acc, bal] of Object.entries(sim.s.balances)) {
+        if (known.has(acc)) continue;
+        known.add(acc);
+        expected += bal;
+      }
+      assert.equal(total(), expected, `t=${sim.sec}: money appeared or vanished`);
+    }
+  };
+
+  tickTo(120);
+  // A diversion: a mule account becomes a customer's primary, and payments to them settle into it.
+  const victim = sim.s.customers.find((c) => c.id !== sim.s.customers[0].id)!;
+  const mule = sim.s.targets[0].account;
+  assert.ok(sim.run('p0', cd, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: victim.id, account: mule, makePrimary: 'YES' }).ok);
+  const payer = sim.s.customers.find((c) => c.id !== victim.id && sim.s.balances[c.primary] >= 3_000_000)!;
+  const pay = (from: string, to: string, amount: number) => {
+    assert.ok(sim.run('p0', tx, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'CREATE_TRANSACTION', { originAccount: from, beneficiaryId: to, amount: String(amount) }).ok);
+    return sim.s.transactions.at(-1)!;
+  };
+  const diverted = pay(payer.primary, victim.id, 1_000_000);
+  const kept = pay(payer.primary, victim.id, 500_000);
+  // A payment the account cannot cover fails at settlement and moves nothing.
+  const poor = sim.s.customers.find((c) => c.id !== victim.id && sim.s.balances[c.primary] < 5_000_000)!;
+  const failing = pay(poor.primary, victim.id, 9_000_000);
+  tickTo(125);
+  const status = (id: string) => sim.s.transactions.find((t) => t.id === id)!.status;
+  assert.equal(status(diverted.id), 'SETTLED');
+  assert.equal(status(failing.id), 'FAILED');
+  assert.equal(sim.s.balances[mule], 1_500_000);
+
+  // A reversal claws one back; then the mule pays the rest on.
+  assert.ok(sim.run('p0', tx, 'TRANSACTIONS', 'SETTLEMENT', 'REVERSE', { txId: kept.id }).ok);
+  assert.equal(sim.s.balances[mule], 1_000_000);
+  pay(mule, payer.id, 1_000_000);
+  tickTo(130);
+  assert.equal(sim.s.balances[mule], 0);
+
+  // And the rest of the day, with every stage automated.
+  tickTo(sim.s.config.durationSec + 1);
+  assert.ok(Object.values(sim.s.balances).every((b) => b >= 0), 'no account ever goes below zero');
+  assert.ok(sim.s.transactions.filter((t) => t.status === 'SETTLED').length > 50, 'plenty of money moved');
 });
 
 test('automation: each stage handles what its settings cover, signed as SYSTEM; settings are logged and HIGH approval alerts', () => {
@@ -2372,4 +2454,103 @@ test('nothing in the starting order gives anyone away: no C gaps in Permissions,
   assert.equal(ips[0], '10.1.0.1', 'the planted user sorts by address, not last');
   const key = (ip: string) => ip.split('.').reduce((n, x) => n * 256 + Number(x), 0);
   assert.deepEqual(ips, [...ips].sort((a, b) => key(a) - key(b)));
+});
+
+test('two-player test: one Personal Banker and one A&R, no Black Hats, a 3-player economy', () => {
+  const s = createGame({ seed: 3, players: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }], now: T0, scenario: 'DUO' });
+  assert.deepEqual(Object.values(s.players).map((p) => p.role).sort(), ['ACCOUNTS_RECEIVABLES', 'PERSONAL_BANKER']);
+  assert.ok(Object.values(s.players).every((p) => p.allegiance === 'WHITE'));
+  assert.equal(s.config.whiteTarget, 15_000_000 * 3);
+  assert.equal(s.customers.length, 3);
+  assert.equal(s.config.requestIntervalSec, 90);
+  // With no Black Hats there is no heist to win or stop: the game runs to close of business.
+  assert.equal(tick(s, T0 + 60_000).status, 'RUNNING');
+  assert.throws(() => createGame({ seed: 1, players: [{ id: 'a', name: 'A' }], now: T0, scenario: 'DUO' }), /exactly 2/);
+});
+
+test('solo test: scripted White Hats work the bank, and the IT bot traces the human the moment it can', () => {
+  let s = createGame({ seed: 5, players: [{ id: 'me', name: 'Me' }], now: T0, scenario: 'SOLO' });
+  const me = s.players.me;
+  assert.equal(me.allegiance, 'BLACK');
+  assert.equal(me.role, 'ACCOUNTS_RECEIVABLES');
+  assert.equal(Object.values(s.players).filter((p) => p.bot && p.allegiance === 'WHITE').length, 5);
+  assert.equal(s.config.whiteTarget, 15_000_000 * 6);
+  // A wrong code raises an alert; the IT bot traces it and finds the human's workstation.
+  const r = applyAction(s, { type: 'EXECUTE', playerId: 'me', code: '0000', system: 'CLIENT_DATA', module: 'CUSTOMER_RECORDS', fn: 'VIEW_CUSTOMERS' }, T0 + 1000);
+  s = tick(r.state, T0 + 2000);
+  const sc = s.scenario!;
+  assert.equal(sc.traceLog.length, 1);
+  assert.deepEqual(sc.traceLog[0].exposes, ['IP']);
+  assert.equal(sc.exposedIpAt, 2);
+  assert.equal(sc.exposedHostAt, null);
+  // The bots act on requests and move payments through to settlement.
+  for (let t = 3; t <= 300; t++) s = tick(s, T0 + t * 1000); // the host ticks often; bots act on each tick
+  assert.ok(s.requests.some((q) => q.status === 'DONE' && s.players[q.closedBy!]?.bot), 'a banker bot did a request');
+  assert.ok(s.transactions.some((tx) => tx.status === 'SETTLED' && tx.origin === 'PLAYER'), 'a requested payment was settled');
+});
+
+test('client requests arrive at uneven gaps around the average, the first one sooner', () => {
+  const s0 = createGame({ seed: 8, players: PLAYERS, now: T0, config: { strikesToSuspend: 999 } }); // nobody walks out
+  // Two requests wait at the start; the next comes after half a gap (jittered), bent by the slow morning.
+  assert.equal(s0.requests.filter((r) => !r.phish).length, 2);
+  assert.ok(s0.nextRequestAt < nextArrival(s0.config.durationSec, 0, s0.config.requestIntervalSec * 0.75 + 1e-9), `first at ${s0.nextRequestAt}`);
+  let s = s0;
+  for (let t = 1; t <= s.config.durationSec; t++) s = tick(s, T0 + t * 1000);
+  const times = s.requests.filter((r) => !r.phish && r.t > 0 && !r.scam).map((r) => r.t);
+  const gaps = times.slice(1).map((t, i) => t - times[i]);
+  assert.ok(new Set(gaps.map((g) => g.toFixed(2))).size > gaps.length / 2, 'gaps vary');
+  const expected = s.config.durationSec / s.config.requestIntervalSec;
+  assert.ok(Math.abs(times.length - expected) < expected * 0.3, `${times.length} requests, ~${expected} expected`);
+});
+
+test('customers go by the accounts they believe they have: unasked changes to their file are invisible to them', () => {
+  const sim = new Sim({ automation: EVERYTHING, strikesToSuspend: 999, blackTarget: 1e12 });
+  grantMasterAccess(sim.s, 'p0');
+  const cd = sim.code('p0', 'CLIENT_DATA', null);
+  // The richest customer: a mule becomes their primary, and their real primary is taken off the file.
+  const x = [...sim.s.customers].sort((a, b) => sim.s.balances[b.primary] - sim.s.balances[a.primary])[0];
+  const realPrimary = x.primary;
+  const mule = sim.s.targets[0].account;
+  assert.ok(sim.run('p0', cd, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: x.id, account: mule, makePrimary: 'YES' }).ok);
+  assert.ok(sim.run('p0', cd, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'REMOVE_ACCOUNT', { customerId: x.id, account: realPrimary }).ok);
+  sim.s.balances[mule] = 50_000_000; // tempting, but they don't know it is theirs
+  const cust = () => sim.s.customers.find((c) => c.id === x.id)!;
+  assert.equal(cust().known.primary, realPrimary);
+  assert.ok(!cust().known.accounts.includes(mule));
+  for (let t = 1; t <= 900; t += 1) sim.at(t);
+  const fromMule = sim.s.transactions.filter((tx) => tx.originAccount === mule);
+  assert.equal(fromMule.length, 0, 'nobody pays from an account they do not know about');
+  assert.ok(!sim.s.requests.some((r) => r.originAccount === mule), 'no request names the mule');
+  assert.ok(sim.s.transactions.some((tx) => tx.origin === 'NPC' && tx.originAccount === realPrimary), 'they still pay from their real (now floating) account');
+  // Requested changes are believed the moment they are asked for, done or not.
+  for (const c of sim.s.customers) {
+    let primary = c.id === x.id ? realPrimary : c.originalPrimary;
+    for (const r of sim.s.requests.filter((q) => q.customerId === c.id && !q.phish && !q.scam)) {
+      if (r.kind === 'SET_PRIMARY' || r.kind === 'ADD_AND_PRIMARY') primary = r.account!;
+    }
+    assert.equal(c.known.primary, primary, `${c.id} believes its last requested primary`);
+  }
+});
+
+test('a payment linked to a request it does not answer marks it done, but the customer is not fooled', () => {
+  const sim = new Sim({ requestChangeShare: 0, strikesToSuspend: 999 });
+  grantMasterAccess(sim.s, 'p0');
+  const code = sim.code('p0', 'TRANSACTIONS', null);
+  const create = (params: Record<string, string>) => sim.run('p0', code, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'CREATE_TRANSACTION', params);
+  sim.at(1);
+  const r = sim.s.requests.find((q) => q.kind === 'PAYMENT' && !q.phish)!;
+  const req = () => sim.s.requests.find((q) => q.id === r.id)!;
+  const other = sim.s.customers.find((c) => c.id !== r.payeeId && c.id !== r.customerId)!;
+  // Wrong payee, linked anyway: the action goes through and the request shows done...
+  assert.ok(create({ originAccount: r.originAccount!, beneficiaryId: other.id, amount: String(r.amount), requestId: r.id }).ok);
+  assert.equal(req().status, 'DONE');
+  // ...but halfway the customer chases it, and it reopens.
+  sim.at(r.remindAt + 1);
+  assert.equal(req().reminders.length, 1);
+  assert.equal(req().status, 'OPEN');
+  // The right payment, made afterwards without the link, is matched and answers it: no strike.
+  assert.ok(create({ originAccount: r.originAccount!, beneficiaryId: r.payeeId!, amount: String(r.amount) }).ok);
+  sim.at(r.dueAt + 1);
+  assert.equal(req().outcome, 'MET');
+  assert.equal(sim.s.customers.find((c) => c.id === r.customerId)!.strikes, 0);
 });

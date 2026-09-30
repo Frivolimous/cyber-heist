@@ -75,6 +75,11 @@ tabs). The game screen (main.ts) runs in one of three modes set by app.ts in mod
 sandbox host, or remote seat; on a remote seat there is no `GameState`, so screen code reads only
 `view()` and plays actions through `act()`. Anything the screen needs must be in `PlayerView`.
 
+**Dev tooling that must not leak to players.** Test scenarios (`scenario` in `createGame`, bots in
+`autopilot.ts`), Download state, and the watcher link (`?watch=CODE&key=K`, host.ts `publishWatch`,
+`games/{code}/watch/{key}`) are for the designer only; the watcher must be removed before any public
+release and never mentioned in player-facing text.
+
 ## Design rules to respect
 
 - **Manual lookup and typing is gameplay.** No dropdowns, autocomplete or quick-fill for game data

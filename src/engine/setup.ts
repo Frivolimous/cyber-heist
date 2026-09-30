@@ -1,12 +1,12 @@
 // Builds a fresh game: roles, allegiances, credentials and bank data.
 
-import { DEFAULT_CONFIG, hackerCount, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, ROLES, ROLE_ORDER, SYSTEMS } from './catalog';
+import { DEFAULT_CONFIG, hackerCount, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, roleCreds, ROLES, ROLE_ORDER, SHARED_SECURITY_TABLE, SYSTEMS } from './catalog';
 import { addLog, HACKER_ALIASES, keyOf, money } from './core';
 import { createCredential, createWorkstationCredential } from './credentials';
 import { spawnNpc } from './bank';
-import { assignBankers, assignContacts, schedulePhishing, spawnRequest } from './requests';
+import { assignBankers, assignContacts, scheduleRequest, schedulePhishing, spawnRequest } from './requests';
 import { pick, rand, randInt, shuffle } from './rng';
-import type { GameConfig, GameState, Player, RoleId, WealthTier } from './types';
+import type { GameConfig, GameState, Player, RoleId, ScenarioKind, WealthTier } from './types';
 
 export interface NewGameOptions {
   id?: string;
@@ -14,7 +14,20 @@ export interface NewGameOptions {
   players: { id: string; name: string }[];
   now: number;
   config?: Partial<GameConfig>;
+  /** A dev test scenario (see ScenarioKind). DUO takes exactly 2 players; SOLO exactly 1, and adds 5 bots. */
+  scenario?: ScenarioKind;
 }
+
+/** SOLO's scripted seats, with the roles left after the human's (Accounts & Receivables). */
+export const SOLO_BOTS: { id: string; name: string; role: RoleId }[] = [
+  { id: 'bot1', name: 'BankerBot1', role: 'PERSONAL_BANKER' },
+  { id: 'bot2', name: 'BankerBot2', role: 'PERSONAL_BANKER' },
+  { id: 'bot3', name: 'ARBot', role: 'ACCOUNTS_RECEIVABLES' },
+  { id: 'bot4', name: 'ITBot', role: 'IT_SPECIALIST' },
+  { id: 'bot5', name: 'ManagerBot', role: 'BANK_MANAGER' },
+];
+/** The table size each scenario's economy (targets, volume, customers) is scaled as. */
+export const SCENARIO_SCALE: Record<ScenarioKind, number> = { DUO: 3, SOLO: 6 };
 
 /**
  * Everyone the bank might deal with, companies and people alike. Each game picks customersPerBanker per
@@ -85,8 +98,7 @@ export const PERSON_CUSTOMERS: ReadonlySet<string> = new Set([
 export const NPC_AMOUNT_FACTOR = 0.94; // average automatic payment / middle of npcMinAmount..npcMaxAmount
 export const REQUEST_AMOUNT_FACTOR = 0.39; // average requested payment / (requestAmountFactor x middle of requestMinAmount..requestMaxAmount)
 const MAX_AUTO_SHARE = 0.8; // automatic volume is capped at this share of the bank target
-export function scaledConfig(base: GameConfig, n: number, hackers: number): Pick<GameConfig, 'whiteTarget' | 'blackTarget' | 'npcIntervalSec' | 'requestIntervalSec'> {
-  const bankers = roleCounts(n).PERSONAL_BANKER;
+export function scaledConfig(base: GameConfig, n: number, hackers: number, bankers = roleCounts(n).PERSONAL_BANKER): Pick<GameConfig, 'whiteTarget' | 'blackTarget' | 'npcIntervalSec' | 'requestIntervalSec'> {
   const requestIntervalSec = base.requestEverySecPerBanker / bankers;
   const requests = base.durationSec / requestIntervalSec;
   const avgRequested = (REQUEST_AMOUNT_FACTOR * base.requestAmountFactor * (base.requestMinAmount + base.requestMaxAmount)) / 2;
@@ -115,13 +127,22 @@ const BLACK_MOTIVATIONS = [
 ];
 
 export function createGame(o: NewGameOptions): GameState {
-  const n = o.players.length;
-  if (n < MIN_PLAYERS) throw new Error(`Cyber-Heist needs at least ${MIN_PLAYERS} players (got ${n}).`);
+  const scenario = o.scenario ?? null;
+  if (scenario === 'DUO' && o.players.length !== 2) throw new Error(`The two-player test needs exactly 2 players (got ${o.players.length}).`);
+  if (scenario === 'SOLO' && o.players.length !== 1) throw new Error(`The solo test takes exactly 1 player (got ${o.players.length}).`);
+  const seats = scenario === 'SOLO' ? [...o.players, ...SOLO_BOTS.map(({ id, name }) => ({ id, name }))] : o.players;
+  const n = seats.length;
+  if (!scenario && n < MIN_PLAYERS) throw new Error(`Cyber-Heist needs at least ${MIN_PLAYERS} players (got ${n}).`);
   if (n > MAX_PLAYERS) throw new Error(`Cyber-Heist allows at most ${MAX_PLAYERS} players (got ${n}).`);
   // Scaled values are derived from the per-player settings; anything the caller sets explicitly wins.
+  // A scenario scales its economy as SCENARIO_SCALE players, with the bankers it really has.
   const base: GameConfig = { ...DEFAULT_CONFIG, ...o.config };
-  const blackCount = Math.min(n - 1, Math.max(1, base.blackHatCount ?? hackerCount(n)));
-  const config: GameConfig = { ...base, ...scaledConfig(base, n, blackCount), ...o.config };
+  const blackCount = scenario === 'DUO' ? 0 : scenario === 'SOLO' ? 1 : Math.min(n - 1, Math.max(1, base.blackHatCount ?? hackerCount(n)));
+  const counts = scenario === 'DUO' ? { BANK_MANAGER: 0, IT_SPECIALIST: 0, PERSONAL_BANKER: 1, ACCOUNTS_RECEIVABLES: 1 } : roleCounts(n);
+  const scaled = scenario
+    ? scaledConfig(base, SCENARIO_SCALE[scenario], scenario === 'SOLO' ? hackerCount(SCENARIO_SCALE.SOLO) : 0, counts.PERSONAL_BANKER)
+    : scaledConfig(base, n, blackCount);
+  const config: GameConfig = { ...base, ...scaled, ...o.config };
   const s: GameState = {
     id: o.id ?? `game-${o.seed}`,
     seed: o.seed,
@@ -136,7 +157,7 @@ export function createGame(o: NewGameOptions): GameState {
     now: o.now,
     lastNpcAt: 0,
     players: {},
-    playerOrder: o.players.map((p) => p.id),
+    playerOrder: seats.map((p) => p.id),
     credentials: {},
     modules: {},
     logs: [],
@@ -152,7 +173,7 @@ export function createGame(o: NewGameOptions): GameState {
     automation: { ...config.automation },
     hostLog: [],
     revocations: [],
-    lastRequestAt: 0,
+    nextRequestAt: 0, // scheduled below
     phishSchedule: [],
     transactions: [],
     balances: {},
@@ -160,6 +181,7 @@ export function createGame(o: NewGameOptions): GameState {
     blacknet: [],
     totals: { processed: 0, stolen: 0 },
     hiddenHost: '', // set below
+    scenario: scenario && { kind: scenario, exposedIpAt: null, exposedHostAt: null, traced: [], handled: [], traceLog: [] },
     counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, req: 0, change: 0, revoke: 0, host: 0, player: 0, crack: 0, notice: 0, wcred: 0, xcred: 0, unlock: 0 },
   };
 
@@ -176,23 +198,30 @@ export function createGame(o: NewGameOptions): GameState {
     }
   };
 
-  // Roles: the counts come from the player count (roleCounts), dealt over a shuffled seat order.
-  const counts = roleCounts(n);
+  // Roles: the counts come from the player count (roleCounts), dealt over a shuffled seat order. In SOLO the
+  // human is Accounts & Receivables and the bots take the other seats.
   const roleSeats = ROLE_ORDER.flatMap((role) => Array.from({ length: counts[role] }, () => role));
   const roleOf = new Map<string, RoleId>();
-  shuffle(s, s.playerOrder).forEach((id, i) => roleOf.set(id, roleSeats[i]));
+  if (scenario === 'SOLO') {
+    roleOf.set(o.players[0].id, 'ACCOUNTS_RECEIVABLES');
+    for (const b of SOLO_BOTS) roleOf.set(b.id, b.role);
+  } else shuffle(s, s.playerOrder).forEach((id, i) => roleOf.set(id, roleSeats[i]));
 
   // Allegiances: hackerCount(n) Black Hats, unless the config fixes the number (blackCount, above), taken in a
   // shuffled order. Every role but the Bank Manager keeps at least one White Hat: a player who would be their
-  // role's last White Hat is skipped.
-  const whitesLeft = { ...counts };
-  const blackIds = new Set<string>();
-  for (const id of shuffle(s, s.playerOrder)) {
+  // role's last White Hat is skipped. At SHARED_SECURITY_TABLE players the lone IT Specialist and the Bank
+  // Manager (who then shares the Firewall) count as one group: at least one of the two stays White.
+  // In SOLO the human is the only Black Hat.
+  const groupOf = (role: RoleId): string => (n === SHARED_SECURITY_TABLE && (role === 'IT_SPECIALIST' || role === 'BANK_MANAGER') ? 'SECURITY' : role);
+  const whitesLeft: Record<string, number> = {};
+  for (const role of ROLE_ORDER) whitesLeft[groupOf(role)] = (whitesLeft[groupOf(role)] ?? 0) + counts[role];
+  const blackIds = new Set<string>(scenario === 'SOLO' ? [o.players[0].id] : []);
+  for (const id of scenario ? [] : shuffle(s, s.playerOrder)) {
     if (blackIds.size >= blackCount) break;
-    const role = roleOf.get(id)!;
-    if (role !== 'BANK_MANAGER' && whitesLeft[role] <= 1) continue;
+    const group = groupOf(roleOf.get(id)!);
+    if (group !== 'BANK_MANAGER' && whitesLeft[group] <= 1) continue;
     blackIds.add(id);
-    whitesLeft[role]--;
+    whitesLeft[group]--;
   }
 
   // Bank data.
@@ -201,7 +230,7 @@ export function createGame(o: NewGameOptions): GameState {
   const customerCount = Math.min(CUSTOMER_NAMES.length, counts.PERSONAL_BANKER * config.customersPerBanker);
   s.customers = shuffle(s, CUSTOMER_NAMES).slice(0, customerCount).map((name, i) => {
     const accounts = Array.from({ length: randInt(s, 1, 3) }, () => newAccount());
-    return { id: `CU${i + 1}`, name, bankerId: null, accounts, primary: accounts[0], originalPrimary: accounts[0], lastModifiedAt: null, history: [], wealth: 'SMALL' as WealthTier, person: false, contact: '', strikes: 0, suspended: false };
+    return { id: `CU${i + 1}`, name, bankerId: null, accounts, primary: accounts[0], originalPrimary: accounts[0], lastModifiedAt: null, history: [], known: { accounts: [...accounts], primary: accounts[0] }, wealth: 'SMALL' as WealthTier, person: false, contact: '', strikes: 0, suspended: false };
   });
   s.targets = Array.from({ length: 3 }, () => ({ account: newAccount() }));
 
@@ -215,7 +244,7 @@ export function createGame(o: NewGameOptions): GameState {
 
   // Players.
   for (let i = 0; i < n; i++) {
-    const { id, name } = o.players[i];
+    const { id, name } = seats[i];
     const allegiance = blackIds.has(id) ? 'BLACK' : 'WHITE';
     const p: Player = {
       id,
@@ -241,15 +270,18 @@ export function createGame(o: NewGameOptions): GameState {
       watching: [...ROLES[roleOf.get(id)!].watch], // the role's usual bells start on (switchable in play)
       notifications: [],
       terminated: null,
+      ...(scenario === 'SOLO' && id !== o.players[0].id ? { bot: true } : {}),
     };
     const mins = Math.round(config.durationSec / 60);
     p.objective =
       allegiance === 'WHITE'
-        ? `Keep the bank running: get ${money(config.whiteTarget)} of customer payments settled within ${mins} minutes, and stop anyone diverting ${money(config.blackTarget)}. Find the Black Hats.`
-        : `Divert ${money(config.blackTarget)} into your Target Ledger accounts within ${mins} minutes. Stay hidden: the logs name the credential, not the hand. There are ${blackCount} operatives in total. Coordinate on Blacknet at ${s.hiddenHost}.`;
+        ? blackCount
+          ? `Keep the bank running: get ${money(config.whiteTarget)} of customer payments settled within ${mins} minutes, and stop anyone diverting ${money(config.blackTarget)}. Find the Black Hats.`
+          : `Keep the bank running: get ${money(config.whiteTarget)} of customer payments settled within ${mins} minutes.`
+        : `Divert ${money(config.blackTarget)} into your Target Ledger accounts within ${mins} minutes. Stay hidden: the logs name the credential, not the hand. ${blackCount === 1 ? 'You are the only operative.' : `There are ${blackCount} operatives in total.`} Coordinate on Blacknet at ${s.hiddenHost}.`;
     s.players[id] = p;
 
-    for (const t of ROLES[p.role].creds) {
+    for (const t of roleCreds(p.role, n)) {
       const cred = createCredential(s, { owner: id, system: t.system, module: t.module, permission: t.permission, issuedBy: null });
       p.heldCredentialIds.push(cred.id);
     }
@@ -275,6 +307,7 @@ export function createGame(o: NewGameOptions): GameState {
   // Every workstation's own login, drawn from a side stream so the game's main random sequence is unchanged.
   const side = { rngState: (s.rngState ^ 0x2545f491) | 0 };
   for (const id of s.playerOrder) s.players[id].heldCredentialIds.unshift(createWorkstationCredential(s, id, side).id);
+  scheduleRequest(s, 0, true);
   return s;
 }
 

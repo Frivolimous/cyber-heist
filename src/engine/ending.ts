@@ -58,7 +58,7 @@ export function checkEnd(s: GameState): void {
   checkTerminations(s);
   const { stolen, processed } = s.totals;
   const { blackTarget, whiteTarget } = s.config;
-  if (stolen >= blackTarget) {
+  if (blackTarget > 0 && stolen >= blackTarget) {
     endGame(s, 'BLACK_TARGET', 'BLACK', `The Black Hats diverted ${money(stolen)} into their Target Ledger accounts, reaching their ${money(blackTarget)} goal. The bank had settled ${money(processed)} of its ${money(whiteTarget)} target.`);
     return;
   }

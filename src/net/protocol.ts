@@ -11,6 +11,7 @@
 //   views/{pid}/{part} PlayerView, in parts  all that player may see (JSON text per part)
 //   presence/{uid}    true                   while that player's screen is connected
 //   hostState         the full game, so a reloaded host can carry on (JSON text; host only)
+//   watch/{key}       DEV ONLY: the full game for the watcher link; readable only by whoever knows the key
 //
 // Values are stored as JSON text wherever the shape is the engine's: the database drops empty arrays and
 // nulls, which would change what the engine and the screen receive.
@@ -38,6 +39,12 @@ export interface LobbyEntry {
 }
 
 export const roomPath = (code: string, sub = ''): string => `games/${code}${sub ? '/' + sub : ''}`;
+
+/** DEV ONLY: a watcher key, long and random enough that it cannot be guessed. */
+export function newWatchKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 /** Room codes: four letters, none that are easy to confuse (no I, O). */
 export function newRoomCode(random: () => number = Math.random): string {

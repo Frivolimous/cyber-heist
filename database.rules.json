@@ -54,6 +54,12 @@
             ".read": "auth != null && (root.child('games/' + $code + '/seats/' + auth.uid).val() === $pid || root.child('games/' + $code + '/meta/hostUid').val() === auth.uid)"
           }
         },
+        "watch": {
+          ".write": "root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          "$key": {
+            ".read": "auth != null"
+          }
+        },
         "hostState": {
           ".read": "root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
           ".write": "root.child('games/' + $code + '/meta/hostUid').val() === auth.uid"

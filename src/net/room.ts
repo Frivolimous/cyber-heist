@@ -1,7 +1,7 @@
 // Making, joining and starting rooms.
 
 import { createGame, MAX_PLAYERS, MIN_PLAYERS } from '../engine';
-import type { GameState } from '../engine';
+import type { GameConfig, GameState } from '../engine';
 import type { Db } from './db';
 import { cleanName, newRoomCode, ROOM_TTL_MS, roomPath } from './protocol';
 import type { LobbyEntry, RoomMeta } from './protocol';
@@ -59,13 +59,14 @@ export const lobbyOrder = (lobby: Record<string, LobbyEntry> | null): [string, L
 
 /**
  * Host: deals seats to everyone in the lobby and starts the game. Returns the new game, or why it cannot
- * start. Player ids are p1, p2... in joining order; the engine deals roles and sides at random.
+ * start. Player ids are p1, p2... in joining order; the engine deals roles and sides at random. `config`: the
+ * host's custom settings (saved with the game's state).
  */
-export async function startRoom(db: Db, code: string, now: number): Promise<GameState | string> {
+export async function startRoom(db: Db, code: string, now: number, config: Partial<GameConfig> = {}): Promise<GameState | string> {
   const lobby = lobbyOrder((await db.get(roomPath(code, 'lobby'))) as Record<string, LobbyEntry> | null);
   if (lobby.length < MIN_PLAYERS) return `You need at least ${MIN_PLAYERS} players (${lobby.length} joined).`;
   const players = lobby.map(([, e], i) => ({ id: `p${i + 1}`, name: e.name }));
-  const state = createGame({ seed: Math.floor(Math.random() * 1e9), players, now, id: `game-${code}` });
+  const state = createGame({ seed: Math.floor(Math.random() * 1e9), players, now, id: `game-${code}`, config });
   const seats = Object.fromEntries(lobby.map(([uid], i) => [uid, `p${i + 1}`]));
   await db.update(roomPath(code), { seats, 'meta/status': 'RUNNING' });
   return state;

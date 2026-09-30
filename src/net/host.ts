@@ -20,6 +20,14 @@ export interface HostSnapshot {
   state: GameState;
   vNow: number;
   speed: number;
+  /** DEV ONLY: the secret key of this game's watcher copy (see publishWatch). */
+  watchKey?: string;
+}
+
+/** DEV ONLY: what the watcher link reads: the whole game and the host's clock. */
+export interface WatchCopy {
+  state: GameState;
+  vNow: number;
 }
 
 export class HostSession {
@@ -163,6 +171,14 @@ export class HostSession {
   /** Saves the whole game for a reload. Host-only data: players never read it. */
   saveSnapshot(snap: HostSnapshot): Promise<void> {
     return this.db.set(roomPath(this.code, 'hostState'), JSON.stringify(snap));
+  }
+
+  /**
+   * DEV ONLY (remove before any public release): writes the whole game where the watcher link reads it,
+   * under a secret key nobody can list. See the warning in README.md.
+   */
+  publishWatch(key: string, copy: WatchCopy): Promise<void> {
+    return this.db.set(roomPath(this.code, `watch/${key}`), JSON.stringify(copy));
   }
 }
 

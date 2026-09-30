@@ -2,7 +2,7 @@
 
 import { ROLES, SYSTEMS } from './catalog';
 import type { SystemDef } from './catalog';
-import { accountExists, balanceOf, fmtClock, gameTime, nameOf, systemAddress } from './core';
+import { accountExists, balanceOf, fmtClock, gameTime, nameOf, systemAddress, tableSize } from './core';
 import { credScopeText, proxyUnavailable } from './handlers';
 import { jobDescription } from './jobs';
 import { endSummary } from './ending';
@@ -99,7 +99,7 @@ function workstationView(s: GameState, p: Player): WorkstationView {
     bankBalance: accountExists(s, p.bankAccount) ? balanceOf(s, p.bankAccount) : null,
     lockedForSec: Math.max(0, Math.ceil(p.lockedUntil - t)),
     terminated: !!p.terminated,
-    job: jobDescription(p.role, p.allegiance, s.config),
+    job: jobDescription(p.role, p.allegiance, s.config, tableSize(s)),
     knownSystems: p.knownSystems,
     credentials: p.heldCredentialIds.map((id) => {
       const cr = s.credentials[id];

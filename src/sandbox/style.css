@@ -49,6 +49,15 @@ button:disabled { cursor: default; opacity: 0.4; }
 .dev button.on { background: var(--dev-text); color: var(--dev-bg); border-color: var(--dev-text); font-weight: 600; }
 #dev select, #dev input[type=number] { background: #fff; border: 1px solid var(--dev-line); border-radius: 3px; padding: 1px 4px; }
 #dev input[type=number] { width: 90px; }
+.scenario { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; padding: 5px 14px; border-bottom: 3px dashed var(--dev-line); }
+.scenario ul { flex-basis: 100%; margin: 0; padding: 0; list-style: none; font: 11px/1.4 var(--mono); }
+.scenario li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scenario li.hit { color: #b00020; font-weight: 700; }
+.scenario .sc-note { font-style: italic; opacity: 0.75; }
+.sc-flag { padding: 1px 8px; border-radius: 3px; font-weight: 700; }
+.sc-flag.safe { background: #d8f0d8; color: #1c5e20; }
+.sc-flag.hit { background: #b00020; color: #fff; }
+.scenario.exposed { background: #ffd6d6; border-bottom-color: #b00020; }
 .truth { position: fixed; top: 44px; right: 0; bottom: 0; width: min(760px, 100vw); z-index: 100000; overflow: auto; padding: 10px 14px; border-left: 3px dashed var(--dev-line); box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35); }
 .truth-head { display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
 .truth h4 { margin: 12px 0 4px; }

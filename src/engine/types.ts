@@ -225,6 +225,13 @@ export interface Customer {
   originalPrimary: string;
   lastModifiedAt: number | null;
   history: AccountChange[];
+  /**
+   * What the customer believes their accounts are (the bank's records are `accounts` / `primary`). It starts
+   * as the records do and changes only when the customer asks for a change (at the moment they ask), never when
+   * someone changes the records unasked. Their requests and automatic payments go by this, so a tampered file
+   * shows up as payments from accounts the bank no longer has on file, or requests that no longer fit.
+   */
+  known: { accounts: string[]; primary: string };
   wealth: WealthTier; // ground truth: how much money they started with (balances live in GameState.balances)
   person: boolean; // a private person rather than a company (changes how they sign their messages)
   contact: string; // who writes for them: a made-up first name for a company, the person's own name otherwise
@@ -366,6 +373,29 @@ export interface Player {
   /** Disabled for good: every bank credential revoked, or the workstation's IP revoked. Keeps the hidden host only. */
   terminated: { t: number; reason: TerminationReason } | null;
   fake?: boolean; // planted by a Black Hat (Infiltration): a record in Employee Records, not a real seat
+  bot?: boolean; // a scripted seat in a test scenario (autopilot.ts)
+}
+
+/**
+ * Dev-only test scenarios (never offered in a real lobby):
+ * - DUO: two seats, one Personal Banker and one Accounts & Receivables, no Black Hats; the economy is a
+ *   3-player game's (half of 6), to measure the manual workload.
+ * - SOLO: one human Black Hat against five scripted White Hat seats (autopilot.ts) in a 6-player economy;
+ *   a scripted IT traces every alert and hidden host entry as soon as its cooldown allows. A worst case for
+ *   the Black Hat, not a model of real play.
+ */
+export type ScenarioKind = 'DUO' | 'SOLO';
+export interface ScenarioState {
+  kind: ScenarioKind;
+  /** SOLO: game seconds when a trace first revealed the human's workstation IP, or the hidden host's address. */
+  exposedIpAt: number | null;
+  exposedHostAt: number | null;
+  /** SOLO: log entries the scripted IT has traced. */
+  traced: string[];
+  /** SOLO: work the bots have already tried (so a refused action is not retried every tick). */
+  handled: string[];
+  /** SOLO: every trace result, oldest first, and what it gave away. */
+  traceLog: { t: number; logId: string; text: string; exposes: ('IP' | 'HOST')[] }[];
 }
 
 export interface GameState {
@@ -398,7 +428,7 @@ export interface GameState {
   automation: Automation; // the payment stages' current automation (starts as config.automation)
   hostLog: HostLogEntry[];
   revocations: Revocation[];
-  lastRequestAt: number; // game seconds
+  nextRequestAt: number; // game seconds: when the next client request arrives (scheduleRequest in requests.ts)
   phishSchedule: { at: number; bankerId: PlayerId }[]; // phishing messages still to arrive, soonest first
   transactions: Transaction[];
   /**
@@ -415,6 +445,7 @@ export interface GameState {
    */
   totals: { processed: number; stolen: number };
   hiddenHost: string;
+  scenario: ScenarioState | null; // a dev test scenario, or null in a real game
   counters: { log: number; alert: number; cred: number; tx: number; msg: number; req: number; change: number; revoke: number; host: number; player: number; crack: number; notice: number; wcred: number; xcred: number; unlock: number };
 }
 

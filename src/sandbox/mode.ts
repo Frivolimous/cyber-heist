@@ -10,6 +10,8 @@ export type Boot =
   /** Online sandbox host: as offline, but the game is also played from other tabs and devices. */
   | { kind: 'host'; db: Db; code: string; snapshot: HostSnapshot | null }
   /** A remote screen: one seat, driven by the host. `dev`: a tester in an online sandbox (can switch seats). */
-  | { kind: 'client'; session: ClientSession; dev: boolean };
+  | { kind: 'client'; session: ClientSession; dev: boolean }
+  /** DEV ONLY: the watcher link. A read-only copy of a real game, refreshed by its host; never writes anything. */
+  | { kind: 'watch'; db: Db; code: string; key: string };
 
 export const boot: { current: Boot } = { current: { kind: 'offline' } };

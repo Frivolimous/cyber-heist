@@ -68,6 +68,9 @@ export function targetLabel(system: string, module: string): string {
 /** Who is recorded when a module's security is off and nobody entered a code. */
 export const ANONYMOUS = 'ANONYMOUS';
 
+/** How many real seats the game has (planted users are records, not seats). */
+export const tableSize = (s: GameState): number => s.playerOrder.filter((id) => !s.players[id].fake).length;
+
 export function nameOf(s: GameState, actor: string): string {
   if (actor === 'SYSTEM' || actor === 'UNKNOWN') return actor;
   if (actor === ANONYMOUS) return 'Anonymous';
@@ -112,6 +115,9 @@ export const normAccount = (v: string): string | null => {
 export function accountOwner(s: GameState, account: string): Customer | undefined {
   return s.customers.find((c) => c.accounts.includes(account));
 }
+
+/** What the customer believes their accounts are (older saved games: the bank's records). */
+export const knownOf = (c: Customer): Customer['known'] => c.known ?? { accounts: c.accounts, primary: c.primary };
 
 /** An account is verified when no change that added it or made it primary is still waiting for verification. */
 export function accountVerified(c: Customer, account: string): boolean {

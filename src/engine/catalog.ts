@@ -516,12 +516,27 @@ export const MAX_PLAYERS = 30;
 
 /**
  * How many of each role a game of `n` players gets. Always exactly one Bank Manager; IT and Personal
- * Bankers grow with the table; Accounts & Receivables take the rest.
+ * Bankers grow with the table; Accounts & Receivables take the rest. Seven players is a fixed exception (two
+ * of everything but the Manager), so the lone IT seat of the formula never has to be a guaranteed White Hat.
  */
 export function roleCounts(n: number): Record<RoleId, number> {
+  if (n === 7) return { BANK_MANAGER: 1, IT_SPECIALIST: 2, PERSONAL_BANKER: 2, ACCOUNTS_RECEIVABLES: 2 };
   const it = 1 + Math.floor((n - 2) / 6);
   const pb = 2 + Math.ceil((n - 6) / 2);
   return { BANK_MANAGER: 1, IT_SPECIALIST: it, PERSONAL_BANKER: pb, ACCOUNTS_RECEIVABLES: n - 1 - it - pb };
+}
+
+/**
+ * At exactly this many players there is a single IT Specialist, so the Bank Manager also gets Firewall write,
+ * and the two count as one group for the "every role keeps a White Hat" rule (see setup.ts).
+ */
+export const SHARED_SECURITY_TABLE = 6;
+
+/** The credentials a role starts with at a table of `n` players. */
+export function roleCreds(role: RoleId, n: number): CredTemplate[] {
+  const creds = ROLES[role].creds;
+  if (role !== 'BANK_MANAGER' || n !== SHARED_SECURITY_TABLE) return creds;
+  return creds.map((t) => (t.system === 'SECURITY' && t.module === 'FIREWALL' ? { ...t, permission: 'WRITE' } : t));
 }
 
 /** How many Black Hats a game of `n` players gets (unless the config fixes it). */

@@ -25,10 +25,12 @@ import {
   TERMINATED_TEXT,
   WATCHABLE,
 } from '../engine';
-import type { Action, ActionResult, EndMember, EndTeam, GameState, Pace, PlayerId, PlayerView, SystemId, WorkstationView } from '../engine';
+import type { Action, ActionResult, EndMember, EndTeam, GameState, Pace, PlayerId, PlayerView, ScenarioKind, SystemId, WorkstationView } from '../engine';
+import { downloadState } from './dump';
+import { mountSettings } from './settings';
 import { boot } from './mode';
 import { HostSession, startTicker } from '../net/host';
-import type { HostSnapshot } from '../net/host';
+import type { HostSnapshot, WatchCopy } from '../net/host';
 import { createRoom } from '../net/room';
 
 const NAMES = ['Jeremy', 'Sarah', 'Mike', 'David', 'Lisa', 'Anna', 'Omar', 'Priya', 'Chen', 'Rosa', 'Tariq', 'Mei', 'Hugo', 'Zara', 'Ivan', 'Nina', 'Kofi', 'Elena', 'Raj', 'Sofia'];
@@ -36,6 +38,13 @@ const NAMES = ['Jeremy', 'Sarah', 'Mike', 'David', 'Lisa', 'Anna', 'Omar', 'Priy
 const rosterOf = (n: number): { id: string; name: string }[] =>
   Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: NAMES[i] ?? `Player ${i + 1}` }));
 let playerCount = 10;
+/** A dev test scenario for the next New game (?scenario=duo or ?scenario=solo), or null for a normal table. */
+const urlScenario = new URLSearchParams(location.search).get('scenario')?.toUpperCase();
+let scenario: ScenarioKind | null = urlScenario === 'DUO' || urlScenario === 'SOLO' ? urlScenario : null;
+const SCENARIO_LABEL: Record<ScenarioKind, string> = { DUO: '2-player test', SOLO: 'solo Black Hat test' };
+/** Custom settings for New game: kept in one element that renderDev re-attaches, so it survives redraws. */
+const settingsEl = document.createElement('span');
+const customSettings = mountSettings(settingsEl);
 const MASTER_SEAT = 'p0'; // this seat gets whole-system credentials for every system
 const TICK_MS = 250;
 const TASKBAR_H = 44;
@@ -76,6 +85,11 @@ interface Win {
 const MODE = boot.current;
 /** A remote screen: everything comes from the host. */
 const client = MODE.kind === 'client' ? MODE.session : null;
+/**
+ * DEV ONLY (remove before any public release): the watcher link. This tab holds a read-only copy of a real
+ * game that its host refreshes every few seconds; it writes nothing, so no player can see that it exists.
+ */
+const watcher = MODE.kind === 'watch' ? MODE : null;
 /** Online sandbox: this tab runs the game for the other tabs and devices too. */
 let hostSession: HostSession | null = null;
 let lastView: PlayerView | null = null;
@@ -99,6 +113,7 @@ const app = document.getElementById('app') as HTMLElement;
 app.innerHTML = `
   <div class="shell">
     <section id="dev" class="dev" aria-label="Sandbox controls"></section>
+    <section id="scenario" class="dev scenario" aria-label="Test scenario" hidden></section>
     <section class="screen" aria-label="Player screen">
       <header id="status" class="status"></header>
       <div class="screen-body">
@@ -152,6 +167,11 @@ async function act(action: Action): Promise<ActionResult> {
       if (b) b.disabled = false;
     }
   }
+  if (watcher) {
+    // Reading is allowed on the local copy, and the result is thrown away; nothing reaches the real game.
+    const reads = action.type === 'CONNECT' || (action.type === 'EXECUTE' && findFn(action.system, action.module, action.fn)?.permission === 'READ');
+    return reads ? applyAction(game, action, vNow).result : { ok: false, message: 'Watching: read-only.' };
+  }
   const r = applyAction(game, action, vNow);
   game = r.state;
   hostSession?.publish();
@@ -171,15 +191,16 @@ const icon = (id: SystemId, size = 48): string =>
 // ---- Game lifecycle ----------------------------------------------------------------
 function newGame(seed: number): void {
   vNow = Date.now();
-  const roster = rosterOf(playerCount);
-  game = createGame({ seed, players: roster, now: vNow });
-  grantMasterAccess(game, MASTER_SEAT);
+  const roster = rosterOf(scenario === 'SOLO' ? 1 : scenario === 'DUO' ? 2 : playerCount);
+  // Custom settings with a problem are left out (the panel lists them); the rest apply.
+  game = createGame({ seed, players: roster, now: vNow, config: customSettings().config, ...(scenario ? { scenario } : {}) });
+  if (!scenario) grantMasterAccess(game, MASTER_SEAT); // the test scenarios are played with real access only
   desks = {};
   deskShown.clear();
   endHidden = false;
-  for (const p of roster) {
-    seenMessages[p.id] = 0;
-    seenNotices[p.id] = 0;
+  for (const id of game.playerOrder) {
+    seenMessages[id] = 0;
+    seenNotices[id] = 0;
   }
   if (!game.players[selected]) selected = MASTER_SEAT;
   tab = 'profile';
@@ -192,7 +213,8 @@ function resumeGame(snap: HostSnapshot): void {
   game = snap.state;
   vNow = snap.vNow;
   speed = snap.speed;
-  playerCount = game.playerOrder.filter((id) => !game.players[id].fake).length;
+  scenario = game.scenario?.kind ?? null;
+  if (!scenario) playerCount = game.playerOrder.filter((id) => !game.players[id].fake).length;
   for (const id of game.playerOrder) seenNotices[id] = Number.MAX_SAFE_INTEGER; // no backlog of pop-ups
   renderAll();
 }
@@ -238,6 +260,7 @@ function testerLink(): string {
 // ---- Sandbox controls (not part of the game) ----------------------------------------
 function renderDev(): void {
   if (client) return renderTesterBar();
+  if (watcher) return renderWatchBar();
   const online = hostSession?.remoteSeats() ?? {};
   const btn = (act: string, label: string, on: boolean): string =>
     `<button data-act="${act}" class="${on ? 'on' : ''}">${label}</button>`;
@@ -245,18 +268,38 @@ function renderDev(): void {
     <span class="dev-tag">Sandbox</span>
     <label>Viewing as <select data-f="seat">${game.playerOrder
       .filter((id) => !game.players[id].fake) // planted users are records, not seats you can control
-      .map((id) => `<option value="${id}" ${id === selected ? 'selected' : ''}>${esc(game.players[id].name)}${id === MASTER_SEAT ? ' (master access)' : ''}${online[id] ? ` · ${online[id]} online` : ''}</option>`)
+      .map((id) => `<option value="${id}" ${id === selected ? 'selected' : ''}>${esc(game.players[id].name)}${game.players[id].bot ? ' (bot)' : id === MASTER_SEAT && !game.scenario ? ' (master access)' : ''}${online[id] ? ` · ${online[id]} online` : ''}</option>`)
       .join('')}</select></label>
     <span class="grp">${btn('speed:0', 'Pause', speed === 0)}${btn('speed:1', '1x', speed === 1)}${btn('speed:5', '5x', speed === 5)}${btn('speed:20', '20x', speed === 20)}<button data-act="skip:30">+30s</button></span>
     <label><input type="checkbox" data-f="god" ${god ? 'checked' : ''}> show allegiances</label>
-    <label>players <input type="number" data-f="count" min="${MIN_PLAYERS}" max="${MAX_PLAYERS}" value="${playerCount}" title="Applies on New game"></label>
+    <label>table <select data-f="scenario" title="Applies on New game">${[['', 'normal'], ['DUO', SCENARIO_LABEL.DUO], ['SOLO', SCENARIO_LABEL.SOLO]]
+      .map(([v, l]) => `<option value="${v}" ${(scenario ?? '') === v ? 'selected' : ''}>${l}</option>`)
+      .join('')}</select></label>
+    <label>players <input type="number" data-f="count" min="${MIN_PLAYERS}" max="${MAX_PLAYERS}" value="${playerCount}" title="Applies on New game" ${scenario ? 'disabled' : ''}></label>
     <label>seed <input type="number" data-f="seed" value="${game.seed >>> 0}"></label>
     <button data-act="newgame">New game</button>
     <button data-act="truth" class="${truthOpen ? 'on' : ''}">Ground truth</button>
+    <button data-act="dump" title="Save the whole game state, config included, as JSON">Download state</button>
     ${hostSession
       ? `<span class="grp online">Online: room <b>${esc(hostSession.code)}</b>${hostSession.db.kind === 'local' ? ' (this browser only)' : ''} <a href="${esc(testerLink())}" target="_blank" rel="noopener">Open a tester screen</a></span>`
       : '<button data-act="online" title="Let other tabs and devices play seats of this game">Go online</button>'}
     <span class="dev-note">Everything below this bar is the game.</span>`;
+  $('dev').querySelector('[data-act="newgame"]')!.after(settingsEl);
+}
+
+/** DEV ONLY: the watcher's bar. Any seat's screen (read only), allegiances, ground truth, the state file. */
+function renderWatchBar(): void {
+  $('dev').innerHTML = `
+    <span class="dev-tag">Watching</span>
+    <label>Viewing as <select data-f="seat">${game.playerOrder
+      .filter((id) => !game.players[id].fake)
+      .map((id) => `<option value="${id}" ${id === selected ? 'selected' : ''}>${esc(game.players[id].name)}${game.players[id].bot ? ' (bot)' : ''}</option>`)
+      .join('')}</select></label>
+    <label><input type="checkbox" data-f="god" ${god ? 'checked' : ''}> show allegiances</label>
+    <button data-act="truth" class="${truthOpen ? 'on' : ''}">Ground truth</button>
+    <button data-act="dump" title="Save the whole game state, config included, as JSON">Download state</button>
+    <span>Game <b>${esc(watcher!.code)}</b>: read only, refreshed by the host every few seconds. Players cannot see you.</span>
+    <span class="dev-note">Everything below this bar is that seat's screen.</span>`;
 }
 
 /** A remote screen's bar: testers pick a seat; real players get no bar at all. */
@@ -274,6 +317,30 @@ function renderTesterBar(): void {
       .join('')}</select></label>
     <span>Room <b>${esc(client!.code)}</b>: the host's tab runs the clock${client!.db.kind === 'local' ? ' (this browser only)' : ''}.</span>
     <span class="dev-note">Everything below this bar is the game.</span>`;
+}
+
+/**
+ * The test scenario strip under the dev bar. SOLO: whether the scripted IT's traces have exposed your
+ * workstation IP or the hidden host's address yet (red once they have), and its latest traces.
+ */
+function renderScenario(): void {
+  const el = $('scenario');
+  const sc = client ? null : game.scenario;
+  el.hidden = !sc;
+  if (!sc) return;
+  if (sc.kind === 'DUO') {
+    el.className = 'dev scenario';
+    el.innerHTML = `<b>${SCENARIO_LABEL.DUO}</b> <span>One Personal Banker and one Accounts &amp; Receivables, no Black Hats. The economy is a 3-player game's.</span>`;
+    return;
+  }
+  const exposed = sc.exposedIpAt !== null || sc.exposedHostAt !== null;
+  const flag = (label: string, at: number | null): string =>
+    `<span class="sc-flag ${at === null ? 'safe' : 'hit'}">${label}: ${at === null ? 'hidden' : `EXPOSED at ${fmtClock(at)}`}</span>`;
+  const recent = sc.traceLog.slice(-3).reverse();
+  el.className = `dev scenario ${exposed ? 'exposed' : ''}`;
+  el.innerHTML = `<b>${SCENARIO_LABEL.SOLO}</b> ${flag('Your workstation IP', sc.exposedIpAt)} ${flag('Hidden host address', sc.exposedHostAt)}
+    <span class="sc-note">ITBot traces every alert and host entry as soon as its cooldown allows: a worst case, not real play. ${sc.traceLog.length} traces so far.</span>
+    ${recent.length ? `<ul>${recent.map((x) => `<li class="${x.exposes.length ? 'hit' : ''}">[${fmtClock(x.t)}] ${esc(x.logId)}: ${esc(x.text)}</li>`).join('')}</ul>` : ''}`;
 }
 
 function renderTruth(): void {
@@ -298,6 +365,10 @@ function renderTruth(): void {
     .map((x) => `${x.id} ${money(x.amount).padStart(11)} ${x.status.padEnd(12)} ${x.origin.padEnd(6)} from ${x.customerId ?? 'UNKNOWN'} ${x.originAccount} to ${x.beneficiaryId} ${x.settledTo ?? ''} ${x.fraud ? 'FRAUD' : ''}`)
     .join('\n');
   const who = (id: string | null): string => (id === null || id === 'SYSTEM' ? 'SYSTEM' : (s.players[id]?.name ?? id));
+  const beliefs = s.customers
+    .filter((c) => c.known && (c.known.primary !== c.primary || [...c.known.accounts].sort().join() !== [...c.accounts].sort().join()))
+    .map((c) => `${c.id.padEnd(5)} file: ${c.primary}* ${c.accounts.filter((a) => a !== c.primary).join(' ')}\n      believes: ${c.known.primary}* ${c.known.accounts.filter((a) => a !== c.known.primary).join(' ')}`)
+    .join('\n');
   const history = s.transactions
     .slice(-8)
     .map((x) => [`${x.id}`, ...x.history.map((e) => `  [${t(e.t)}] ${e.action.padEnd(12)} records: ${who(e.by).padEnd(8)} truth: ${who(e.actualPlayerId).padEnd(8)} ${e.detail ?? ''}`)].join('\n'))
@@ -309,6 +380,7 @@ function renderTruth(): void {
     <div class="totals"><span>settled: ${money(s.totals.processed)}</span><span>stolen: ${money(s.totals.stolen)} / ${money(s.config.blackTarget)}</span><span>targets: ${esc(targets)}</span></div>
     <h4>People</h4><pre>${esc(people)}</pre>
     <h4>Player activity: what the log says vs who did it</h4><pre>${esc(logs || 'No player activity yet.')}</pre>
+    <h4>Customer files vs what customers believe</h4><pre>${esc(beliefs || 'Every file matches what its customer believes.')}</pre>
     <h4>Payments</h4><pre>${esc(txs)}</pre>
     <h4>Payment history (last 8)</h4><pre>${esc(history)}</pre>
     <h4>Blacknet</h4><pre>${esc(bn || 'No Blacknet posts.')}</pre>`;
@@ -1692,6 +1764,7 @@ function renderTaskbar(): void {
 // ---- Render orchestration -------------------------------------------------------------------
 function renderAll(): void {
   renderDev();
+  renderScenario();
   renderStatus();
   renderRail();
   renderIcons();
@@ -1708,6 +1781,7 @@ function refresh(): void {
   renderIcons();
   renderTaskbar();
   renderTruth();
+  renderScenario();
   renderPersonal();
 }
 
@@ -1735,7 +1809,12 @@ app.addEventListener('click', (e) => {
       advanceState(game, vNow);
       refresh();
       break;
+    case 'dump':
+      downloadState(game, hostSession?.code ?? watcher?.code ?? `seed${game.seed >>> 0}`);
+      break;
     case 'newgame': {
+      const table = (app.querySelector('[data-f="scenario"]') as HTMLSelectElement | null)?.value;
+      scenario = table === 'DUO' || table === 'SOLO' ? table : null;
       const count = Math.floor(Number((app.querySelector('[data-f="count"]') as HTMLInputElement | null)?.value));
       playerCount = Number.isFinite(count) ? clamp(count, MIN_PLAYERS, MAX_PLAYERS) : playerCount;
       const raw = (app.querySelector('[data-f="seed"]') as HTMLInputElement | null)?.value;
@@ -1891,24 +1970,21 @@ app.addEventListener('input', (e) => {
 let drag: { w: Win; el: HTMLElement; dir: string | null; sx: number; sy: number; x: number; y: number; ww: number; wh: number; snap: Snap } | null = null;
 /**
  * Snapping, as on a desktop OS: drag a window's title bar to the left or right edge of the desk to fill that
- * half, or to the top edge to maximize it. A preview shows where it will land.
+ * half. A preview shows where it will land.
  */
-type Snap = 'left' | 'right' | 'max' | null;
+type Snap = 'left' | 'right' | null;
 const SNAP_EDGE = 8;
-function snapAt(clientX: number, clientY: number): Snap {
+function snapAt(clientX: number): Snap {
   const r = $('desk').getBoundingClientRect();
-  if (clientY <= r.top + SNAP_EDGE) return 'max';
   if (clientX <= r.left + SNAP_EDGE) return 'left';
   if (clientX >= r.right - SNAP_EDGE) return 'right';
   return null;
 }
 /** Where a snap puts a window, in desk coordinates. */
-function snapRect(snap: 'left' | 'right' | 'max'): { x: number; y: number; w: number; h: number } {
+function snapRect(snap: 'left' | 'right'): { x: number; y: number; w: number; h: number } {
   const { w: dw, h: dh } = deskSize();
   const half = Math.floor(dw / 2);
-  if (snap === 'left') return { x: 0, y: 0, w: half, h: dh };
-  if (snap === 'right') return { x: half, y: 0, w: dw - half, h: dh };
-  return { x: 0, y: 0, w: dw, h: dh };
+  return snap === 'left' ? { x: 0, y: 0, w: half, h: dh } : { x: half, y: 0, w: dw - half, h: dh };
 }
 function showSnapPreview(snap: Snap, under?: Win): void {
   const el = $('snap');
@@ -1963,7 +2039,7 @@ window.addEventListener('pointermove', (e) => {
     }
     w.x = clamp(drag.x + dx, 80 - w.w, dw - 80);
     w.y = clamp(y + dy, 0, dh - 34);
-    drag.snap = snapAt(e.clientX, e.clientY);
+    drag.snap = snapAt(e.clientX);
     showSnapPreview(drag.snap, w);
   } else {
     // East and south stretch the far edge; west and north move the near edge and keep the far one still.
@@ -1983,16 +2059,11 @@ window.addEventListener('pointermove', (e) => {
 
 const endDrag = (): void => {
   if (!drag) return;
-  const { w, el, snap, x, y, ww, wh } = drag;
+  const { w, el, snap, ww, wh } = drag;
   el.classList.remove('dragging');
   drag = null;
   showSnapPreview(null);
-  if (snap === 'max') {
-    // Maximizing restores to where the window was before this drag.
-    w.x = x;
-    w.y = y;
-    toggleMax(w);
-  } else if (snap) {
+  if (snap) {
     const r = snapRect(snap);
     slideWin(
       w,
@@ -2041,7 +2112,10 @@ function tickClock(): void {
   }
   updateClock();
   pollNotices();
-  if (tickCount % 8 === 0) renderTruth();
+  if (tickCount % 8 === 0) {
+    renderTruth();
+    renderScenario();
+  }
 }
 
 /** Remote screens: every update from the host. Only the clock ticking? Then only the clock is redrawn. */
@@ -2069,7 +2143,25 @@ function onRemoteView(): void {
 // Handy in the browser console: cyberHeist.state
 Object.defineProperty(window, 'cyberHeist', { get: () => ({ state: game, now: vNow, view: view() }) });
 
-if (client) {
+if (watcher) {
+  let first = true;
+  watcher.db.onValue(`games/${watcher.code}/watch/${watcher.key}`, (text) => {
+    if (typeof text !== 'string') return;
+    const copy = JSON.parse(text) as WatchCopy;
+    game = copy.state;
+    vNow = copy.vNow;
+    if (first) {
+      first = false;
+      selected = game.playerOrder[0];
+      for (const id of game.playerOrder) seenNotices[id] = Number.MAX_SAFE_INTEGER; // no backlog of pop-ups
+      renderAll();
+    } else {
+      if (!game.players[selected]) selected = game.playerOrder[0];
+      refresh();
+      updateClock();
+    }
+  });
+} else if (client) {
   client.onChange(onRemoteView);
   onRemoteView();
 } else {
