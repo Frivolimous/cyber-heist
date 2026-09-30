@@ -29,7 +29,7 @@ import {
 import { findCredentialByCode } from './credentials';
 import { advanceCracks, advanceUnlocks, credScopeText, HANDLERS } from './handlers';
 import { canWriteModule, notify, WATCHABLE } from './notify';
-import { checkEnd, closeOfBusiness, endGame, TERMINATED_TEXT } from './ending';
+import { bankShutDown, checkEnd, closeOfBusiness, hostShutDown, TERMINATED_TEXT } from './ending';
 import { nextArrival } from './pacing';
 import type { Ctx } from './handlers';
 import type {
@@ -53,13 +53,14 @@ export function advanceState(s: GameState, now: number): void {
   // Scheduled arrivals (NPC payments, client requests), handled in time order. Their rate follows the time
   // of day (pacing.ts): slow mornings, a lunch rush, a busy end of day, nothing new at close of business.
   while (s.status === 'RUNNING') {
-    const nextNpc = nextArrival(endT, s.lastNpcAt, s.config.npcIntervalSec);
+    const nextNpc = Number.isFinite(s.nextNpcAt) ? s.nextNpcAt : nextArrival(endT, s.lastNpcAt, s.config.npcIntervalSec); // older saves have none
     const nextReq = Number.isFinite(s.nextRequestAt) ? s.nextRequestAt : Infinity; // JSON turns Infinity into null
     const next = Math.min(nextNpc, nextReq);
     if (next > targetT) break;
     s.now = Math.max(s.now, s.startedAt + next * 1000);
     if (next === nextNpc) {
       s.lastNpcAt = nextNpc;
+      s.nextNpcAt = nextArrival(endT, nextNpc, s.config.npcIntervalSec);
       spawnNpc(s);
       runAutomation(s);
       checkWin(s);
@@ -469,13 +470,11 @@ function runDueRevocations(s: GameState): void {
     const entry = addLog(s, { actor: 'SYSTEM', kind: 'REVOKED_ALL', message, sourceIp: null, actualPlayerId: null });
     addAlert(s, 'SECURITY_FATAL', `Fatal security activity: ${message}`, entry.id, 3);
     notify(s, 'SECURITY', 'FIREWALL', message);
-    // The nuclear option: cutting off one of the bank's own systems shuts the bank down, and everybody loses.
+    // The nuclear option: cutting off one of the bank's own systems shuts the bank down (nobody wins, unless the
+    // Thieves' goal is met right now). Cutting off the unregistered host ends the heist (the bank wins, same caveat).
     const bankSystem = SYSTEMS.find((sys) => !sys.hidden && sys.address === r.address);
-    if (bankSystem) endGame(s, 'SHUTDOWN', null, `All access to ${bankSystem.label} was revoked and the bank shut down. Nobody wins.`);
-    // Cutting off the unregistered host ends the heist: the bank wins.
-    else if (r.address === s.hiddenHost) {
-      endGame(s, 'HOST_SHUT_DOWN', 'WHITE', `The Firewall revoked all access to the unregistered host at ${s.hiddenHost} and shut it down. Without it the heist is over. The Thieves had diverted ${money(s.totals.stolen)} of their ${money(s.config.blackTarget)} goal.`);
-    }
+    if (bankSystem) bankShutDown(s);
+    else if (r.address === s.hiddenHost) hostShutDown(s);
   }
 }
 

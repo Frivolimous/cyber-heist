@@ -212,6 +212,7 @@ export interface AccountChange {
   verified: boolean; // every change waits in the Verification queue until someone verifies it
   verifiedBy: PlayerId | null; // credential owner
   verifiedAt: number | null;
+  requestId?: string | null; // the client request it was made for (linked by id when it was made), if any
 }
 
 /**
@@ -337,12 +338,12 @@ export interface Notice {
 export type TerminationReason = 'CREDENTIALS' | 'IP_REVOKED';
 
 /**
- * How the game ended. BLACK_TARGET: the Thieves diverted their goal. WHITE_TARGET: the bank reached close of
- * business with its target met. BANK_SHORT: close of business with neither goal met (both lose). THIEVES_TERMINATED:
- * every Thief was disabled. HOST_SHUT_DOWN: the unregistered host's access was revoked (the bank wins).
- * SHUTDOWN: a bank system's access was revoked, and everybody loses.
+ * What ended the game (the winner is kept separately). CLOSE_OF_BUSINESS: the clock ran out. THIEVES_TERMINATED:
+ * every Thief was disabled. HOST_SHUT_DOWN: the unregistered host's access was revoked. SHUTDOWN: a bank
+ * system's access was revoked. Whatever the trigger, the Thieves win if their goal is met at that instant
+ * (ending.ts: thiefTargetMet); otherwise the bank (target met, Thieves terminated, host shut down) or nobody.
  */
-export type EndKind = 'BLACK_TARGET' | 'WHITE_TARGET' | 'BANK_SHORT' | 'THIEVES_TERMINATED' | 'HOST_SHUT_DOWN' | 'SHUTDOWN';
+export type EndKind = 'CLOSE_OF_BUSINESS' | 'THIEVES_TERMINATED' | 'HOST_SHUT_DOWN' | 'SHUTDOWN';
 
 export interface ActivityEntry {
   t: number;
@@ -410,9 +411,12 @@ export interface GameState {
   endKind: EndKind | null;
   endReason: string | null;
   endedAt: number | null; // game seconds
+  /** The Thieves' goal was met when last checked: only to tell them when it changes (endings check it live). */
+  heistSecured?: boolean;
   startedAt: number; // ms
   now: number; // ms, last time the state was advanced to
   lastNpcAt: number; // game seconds
+  nextNpcAt: number; // game seconds: when the next automatic payment arrives (the first one at FIRST_PAYMENT_SEC)
   players: Record<PlayerId, Player>;
   playerOrder: PlayerId[];
   credentials: Record<string, Credential>;

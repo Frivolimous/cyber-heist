@@ -2,8 +2,9 @@
 
 Browser social-deduction game for 6 to 30 players on a video call, each on their own PC. Everyone works
 at a bank; a few are secret Thieves diverting money to mule accounts. Credentials are shared 4-digit
-codes, and the logs name the credential's owner rather than the person who typed it. Two racing progress
-bars decide the game: the bank's settled payments against the Thieves' stolen money.
+codes, and the logs name the credential's owner rather than the person who typed it. The bank must keep
+payments settling until close of business, never sure how much of what settled really counts; the Thieves must get their goal
+into mule accounts and keep it there.
 
 This repo contains:
 
@@ -32,7 +33,7 @@ does not play, and must keep their tab open until the end (a reload picks up whe
 
 - **Host a game**: the start page's "Open a room" gives a four-letter code. Players open the start page,
   type the code and their name, and wait in the lobby. The host starts once 6 or more are in; roles and
-  sides are dealt at random. The host screen shows the clock, the bank's progress, who is connected, a
+  sides are dealt at random. The host screen shows the clock, the total settled so far, who is connected, a
   Pause button (players see a notice and cannot act until it resumes), and the end screen. A player who
   reloads comes back to their seat. Rooms older than 12 hours are deleted when anyone opens a new one.
 - **How to play**: a button on the start page and in the waiting room opens a short introduction for new
@@ -83,10 +84,11 @@ devices.
   mule account a customer's primary diverts every payment to them.
 - **Time:** 20 minutes, running through a working day (slow morning, lunch rush, busy end of day, close
   of business). New work arrives faster or slower accordingly.
-- **Winning:** the Thieves win the moment they divert their goal. The bank wins at close of business if
-  it met its target, or at once if every Thief is terminated (all their credentials revoked, or their
-  IP revoked) or the unregistered host is shut down. If time runs out with neither goal met, or one of
-  the bank's own systems is shut down, everybody loses. The end screen shows both teams, what they made,
+- **Winning:** the game ends at close of business, when every Thief is terminated (all their credentials
+  revoked, or their IP revoked), or when the Firewall shuts down the unregistered host or one of the bank's
+  own systems. Whichever it is, the Thieves win if their mule accounts hold their goal at that moment.
+  Otherwise the bank wins (its hidden target met at close of business, the Thieves terminated, or the host
+  shut down) or, if time runs out short or a bank system is shut down, everybody loses. The end screen shows both teams, what they made,
   and anyone who embezzled.
 
 Full rules and tuning: [docs/RULES.md](docs/RULES.md).
@@ -99,7 +101,7 @@ Full rules and tuning: [docs/RULES.md](docs/RULES.md).
 - Set the table size with **players** (6-30) and start a **New game**; the seed makes a game
   repeatable.
 - The header shows the time of day, how busy it is, the game clock ("07:42 / 20:00", the same time the
-  logs use) and the bank's progress.
+  logs use) and the total of every payment settled so far (diverted and embezzled ones included, so the bank's real progress stays hidden).
 - The player screen is an employee sidebar plus a simulated desktop that starts with your workstation
   open and tints with the time of day. Click a system to open a window, then a module (each tile shows
   your access to it). Windows can be moved, resized from any edge or corner, snapped to half the screen

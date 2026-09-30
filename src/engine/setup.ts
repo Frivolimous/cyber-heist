@@ -3,9 +3,9 @@
 import { DEFAULT_CONFIG, thiefCountFor, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, roleCreds, ROLES, ROLE_ORDER, SHARED_SECURITY_TABLE, SYSTEMS } from './catalog';
 import { addLog, BLACKNET_ALIASES, keyOf, money } from './core';
 import { createCredential, createWorkstationCredential } from './credentials';
-import { spawnNpc } from './bank';
+import { FIRST_PAYMENT_SEC } from './bank';
 import { HOST_WATCH_DEFAULT, WATCHABLE } from './notify';
-import { assignBankers, assignContacts, scheduleRequest, schedulePhishing, spawnRequest } from './requests';
+import { assignBankers, assignContacts, FIRST_REQUEST_SEC, schedulePhishing } from './requests';
 import { pick, rand, randInt, shuffle } from './rng';
 import type { GameConfig, GameState, Player, RoleId, ScenarioKind, WealthTier } from './types';
 
@@ -157,6 +157,7 @@ export function createGame(o: NewGameOptions): GameState {
     startedAt: o.now,
     now: o.now,
     lastNpcAt: 0,
+    nextNpcAt: FIRST_PAYMENT_SEC, // the day starts quiet: nothing is waiting at the start
     players: {},
     playerOrder: seats.map((p) => p.id),
     credentials: {},
@@ -278,9 +279,9 @@ export function createGame(o: NewGameOptions): GameState {
     p.objective =
       allegiance === 'WHITE'
         ? blackCount
-          ? `Keep the bank running: get ${money(config.whiteTarget)} of customer payments settled within ${mins} minutes, and stop anyone diverting ${money(config.blackTarget)}. Find the Thieves.`
-          : `Keep the bank running: get ${money(config.whiteTarget)} of customer payments settled within ${mins} minutes.`
-        : `Divert ${money(config.blackTarget)} into your Target Ledger accounts within ${mins} minutes. Stay hidden: the logs name the credential, not the hand. ${blackCount === 1 ? 'You are the only operative.' : `There are ${blackCount} operatives in total.`} Coordinate on Blacknet at ${s.hiddenHost}.`;
+          ? `Keep the bank running: get ${money(config.whiteTarget)} of customer payments settled by close of business (${mins} minutes), and stop anyone diverting ${money(config.blackTarget)}. Find the Thieves.`
+          : `Keep the bank running: get ${money(config.whiteTarget)} of customer payments settled by close of business (${mins} minutes).`
+        : `Get ${money(config.blackTarget)} into your Target Ledger accounts and keep it there until the day ends (${mins} minutes). Stay hidden: the logs name the credential, not the hand. ${blackCount === 1 ? 'You are the only operative.' : `There are ${blackCount} operatives in total.`} Coordinate on Blacknet at ${s.hiddenHost}.`;
     s.players[id] = p;
 
     for (const t of roleCreds(p.role, n)) {
@@ -302,14 +303,12 @@ export function createGame(o: NewGameOptions): GameState {
   fundAccounts(s);
 
   addLog(s, { actor: 'SYSTEM', kind: 'BOOT', message: 'Bank network online. Shift started.', sourceIp: null, actualPlayerId: null });
-  for (let i = 0; i < 3; i++) spawnNpc(s);
-  for (let i = 0; i < 2; i++) spawnRequest(s);
   assignContacts(s, PERSON_CUSTOMERS);
   schedulePhishing(s);
   // Every workstation's own login, drawn from a side stream so the game's main random sequence is unchanged.
   const side = { rngState: (s.rngState ^ 0x2545f491) | 0 };
   for (const id of s.playerOrder) s.players[id].heldCredentialIds.unshift(createWorkstationCredential(s, id, side).id);
-  scheduleRequest(s, 0, true);
+  s.nextRequestAt = FIRST_REQUEST_SEC;
   return s;
 }
 

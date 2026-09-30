@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 Cyber-Heist: a real-time browser social-deduction game (6-30 players over a video call, each on their own
-PC). Bank employees keep payments flowing; secret Thieves divert money to mule accounts. Two racing
-progress bars decide it. The repo is a pure rules engine, the game screen with its sandbox, and online play
+PC). Bank employees keep payments flowing; secret Thieves divert money to mule accounts and must hold their goal
+until the game ends. The repo is a pure rules engine, the game screen with its sandbox, and online play
 over Firebase Realtime Database where the host's browser runs the engine.
 
 ## Commands
@@ -51,6 +51,12 @@ game's config overrides the derivation. Arrival times are then bent by time-of-d
 diverts payments already in flight (the core heist). Settling into a Target Ledger account counts as
 stolen; otherwise it counts toward the bank target only if `countsForBank` (bank.ts) agrees: automatic
 payments always, manual ones only when they fulfil a linked payment request (same payee and amount).
+
+**Endings (ending.ts).** Four triggers (close of business, every Thief terminated, host shut down, bank
+system shut down); each checks `thiefTargetMet(s)` live when it fires, and the Thieves win if it holds.
+Meeting the goal never ends the game by itself. Players know the bank's target but must not learn its real progress:
+`PlayerView.settled` is the raw total of every settled payment, and `processed` never goes into a view
+before the end.
 
 **Hidden host (`HIDDEN_HOST`, a random address per game: `s.hiddenHost`, read it via `systemAddress`).** Its use never names anyone: it writes an "Unknown server
 activity" `HIDDEN_ACCESS` log entry, and Trace returns only partial clues. Thief kit tools are

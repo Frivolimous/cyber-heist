@@ -1,7 +1,7 @@
 // How a game ends: terminated (disabled) players, the end conditions, and the end-screen summary.
 
 import { ROLES } from './catalog';
-import { activeBlock, addLog, fmtClock, gameTime, money, note } from './core';
+import { activeBlock, addLog, fmtClock, gameTime, money, nextId, note } from './core';
 import type { Allegiance, EndKind, GameState, Player, TerminationReason, Winner } from './types';
 
 /** What a terminated player sees on any bank system. */
@@ -52,32 +52,69 @@ export function endGame(s: GameState, kind: EndKind, winner: Winner | null, reas
 /** The real people on a side (planted users are records, not players). */
 const team = (s: GameState, side: Allegiance): Player[] => s.playerOrder.map((id) => s.players[id]).filter((p) => !p.fake && p.allegiance === side);
 
-/** Mutating: the instant end conditions. The Thieves' goal first, then every Thief terminated. */
-export function checkEnd(s: GameState): void {
-  if (s.status !== 'RUNNING') return;
-  checkTerminations(s);
-  const { stolen, processed } = s.totals;
-  const { blackTarget, whiteTarget } = s.config;
-  if (blackTarget > 0 && stolen >= blackTarget) {
-    endGame(s, 'BLACK_TARGET', 'BLACK', `The Thieves diverted ${money(stolen)} into their Target Ledger accounts, reaching their ${money(blackTarget)} goal. The bank had settled ${money(processed)} of its ${money(whiteTarget)} target.`);
-    return;
-  }
-  const blacks = team(s, 'BLACK');
-  if (blacks.length > 0 && blacks.every((p) => p.terminated)) {
-    const names = blacks.map((p) => p.name).join(', ');
-    endGame(s, 'THIEVES_TERMINATED', 'WHITE', `Every Thief was terminated (${names}). With nobody left on the inside, the heist is over. They had diverted ${money(stolen)} of their ${money(blackTarget)} goal.`);
+/**
+ * Whether the money sitting in the Target Ledger right now meets the Thieves' goal. Every ending checks this
+ * first, at the instant it fires: while it holds, however the day ends, the Thieves win.
+ */
+export function thiefTargetMet(s: GameState): boolean {
+  return s.config.blackTarget > 0 && s.totals.stolen >= s.config.blackTarget;
+}
+
+export const HEIST_SECURED_TEXT = (s: GameState): string =>
+  `Heist secured: the Target Ledger holds ${money(s.totals.stolen)}, meeting your ${money(s.config.blackTarget)} goal. Hold it until close of business, or shut the bank down to escape with your prize.`;
+export const HEIST_LOST_TEXT = (s: GameState): string =>
+  `Heist no longer secured: the Target Ledger dropped to ${money(s.totals.stolen)}, under your ${money(s.config.blackTarget)} goal. Get it back over the goal before close of business.`;
+
+/** Mutating: tells every Thief when their goal becomes met, or stops being met (a reversal). */
+function checkHeistSecured(s: GameState): void {
+  const met = thiefTargetMet(s);
+  if (met === !!s.heistSecured) return;
+  s.heistSecured = met;
+  const t = gameTime(s);
+  const text = met ? HEIST_SECURED_TEXT(s) : HEIST_LOST_TEXT(s);
+  for (const p of team(s, 'BLACK')) {
+    note(p, t, text);
+    p.notifications.push({ id: nextId(s, 'notice', 'N'), t, page: 'Target Ledger', text });
   }
 }
 
-/** Mutating: the clock ran out. The bank wins only if it met its target; otherwise neither side made its goal, and both lose. */
-export function closeOfBusiness(s: GameState): void {
-  const { stolen, processed } = s.totals;
-  const { blackTarget, whiteTarget } = s.config;
-  if (processed >= whiteTarget) {
-    endGame(s, 'WHITE_TARGET', 'WHITE', `The bank reached close of business with ${money(processed)} of legitimate payments settled, clearing its ${money(whiteTarget)} target. The Thieves diverted only ${money(stolen)} of their ${money(blackTarget)} goal.`);
-  } else {
-    endGame(s, 'BANK_SHORT', null, `Close of business, and neither side made its goal: the bank settled only ${money(processed)} of its ${money(whiteTarget)} target, and the Thieves diverted ${money(stolen)} of their ${money(blackTarget)}. Both sides lose.`);
+/** Mutating: the instant end condition (every Thief terminated), after telling the Thieves if their goal changed. */
+export function checkEnd(s: GameState): void {
+  if (s.status !== 'RUNNING') return;
+  checkTerminations(s);
+  checkHeistSecured(s);
+  const blacks = team(s, 'BLACK');
+  if (blacks.length > 0 && blacks.every((p) => p.terminated)) {
+    if (thiefTargetMet(s)) endGame(s, 'THIEVES_TERMINATED', 'BLACK', 'They thought they caught the thieves, but this was their plan all along...');
+    else endGame(s, 'THIEVES_TERMINATED', 'WHITE', 'Security walked them out one by one, broke and empty handed.');
   }
+}
+
+/** Mutating: the clock ran out. The Thieves win if their goal is met; else the bank if it met its target; else both lose. */
+export function closeOfBusiness(s: GameState): void {
+  if (thiefTargetMet(s)) {
+    if (s.totals.processed >= s.config.whiteTarget) {
+      endGame(s, 'CLOSE_OF_BUSINESS', 'BLACK', 'They thought it was a good day, everything was in the green! But there was still some green missing.');
+    } else {
+      endGame(s, 'CLOSE_OF_BUSINESS', 'BLACK', 'The day ended like any other, until they checked the books.');
+    }
+  } else if (s.totals.processed >= s.config.whiteTarget) {
+    endGame(s, 'CLOSE_OF_BUSINESS', 'WHITE', 'Every payment out on time, every account where it belongs.');
+  } else {
+    endGame(s, 'CLOSE_OF_BUSINESS', null, 'Close of business, and the books balance for nobody. The bank limps home; the Thieves go home empty-handed.');
+  }
+}
+
+/** Mutating: a Firewall "revoke all access" completed on one of the bank's own systems: the bank shuts down. */
+export function bankShutDown(s: GameState): void {
+  if (thiefTargetMet(s)) endGame(s, 'SHUTDOWN', 'BLACK', 'Money safely out, they switched the bank off behind them. Nobody left to count what was missing.');
+  else endGame(s, 'SHUTDOWN', null, 'Someone pulled the plug on the bank itself. Nobody gets paid today.');
+}
+
+/** Mutating: a Firewall "revoke all access" completed on the unregistered host: the heist is over, unless it already paid. */
+export function hostShutDown(s: GameState): void {
+  if (thiefTargetMet(s)) endGame(s, 'HOST_SHUT_DOWN', 'BLACK', 'The bank found the secret server, but it was just a diversion. The money had already left the building.');
+  else endGame(s, 'HOST_SHUT_DOWN', 'WHITE', 'The bank found the secret server and pulled the plug. The heist died with it.');
 }
 
 // ---- End screen -------------------------------------------------------------------
@@ -103,7 +140,7 @@ export interface EndSummary {
   kind: EndKind;
   winner: Winner | null;
   headline: string; // "The Bank wins"
-  text: string; // who won and how
+  text: string; // one line on how it ended, per trigger and winner
   clock: string; // the in-game time it ended
   teams: EndTeam[];
 }

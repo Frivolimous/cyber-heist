@@ -68,7 +68,7 @@ const HOW_TO_PLAY = (): string => {
       the thieves have been locked out of the system. If you're a regular employee, you want to make
       sure the bank wins.
     </li>
-    <li>The Thieves win the moment their secret accounts hold enough stolen money.</li>
+    <li>The Thieves win if their secret accounts hold enough stolen money whenever the game ends.</li>
     <li>Careless use of the Firewall can shut the whole bank down instead. If that happens, everybody loses!</li>
   </ul>
 
@@ -442,8 +442,7 @@ function runGame(db: Db, code: string, first: GameState, startVNow: number, star
                   <ul>${team.members.map((m) => `<li>${esc(m.name)}, ${esc(m.roleLabel)}${m.terminated ? ' (terminated)' : ''}${m.embezzled ? `, embezzled ${money(m.embezzled)}` : ''}</li>`).join('')}</ul></div>`,
               )
               .join('')}</div></section>`
-        : `<div class="fac-bar"><i style="width:${Math.min(100, (s.totals.processed / s.config.whiteTarget) * 100)}%"></i></div>
-          <p class="play-hint">${money(s.totals.processed)} of ${money(s.config.whiteTarget)} legitimate payments settled.</p>
+        : `<p class="play-hint">Settled today: ${money(s.transactions.reduce((sum, tx) => (tx.status === 'SETTLED' ? sum + tx.amount : sum), 0))} of the bank's ${money(s.config.whiteTarget)} target (players see this total too, which includes diverted and embezzled payments; the bank's real progress stays hidden until the end).</p>
           ${speed ? '' : '<p class="fac-paused">Paused: the clock is stopped and players cannot act.</p>'}
           <button class="btn ${speed ? 'alt' : ''}" data-pause>${speed ? 'Pause the game' : 'Resume the game'}</button>`}
       <h3>Players <small class="play-hint">${connected} of ${people.length} connected</small></h3>

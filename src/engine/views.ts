@@ -64,8 +64,8 @@ export interface PlayerView {
   endReason: string | null;
   /** The end screen: both teams, who was on them and what they made. Null while the game runs. */
   end: EndSummary | null;
-  processed: number; // legitimate money settled toward the bank target
-  whiteTarget: number;
+  /** Every payment settled today, however it counts (legitimate, diverted or embezzled): the bank's real progress stays hidden. */
+  settled: number;
   me: WorkstationView;
   /** Other workstations this player is logged in to (only while the credential used is still active). */
   remote: Record<PlayerId, WorkstationView>;
@@ -157,8 +157,7 @@ export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
     winner: s.winner,
     endReason: s.endReason,
     end: endSummary(s),
-    processed: s.totals.processed,
-    whiteTarget: s.config.whiteTarget,
+    settled: s.transactions.reduce((sum, tx) => (tx.status === 'SETTLED' ? sum + tx.amount : sum), 0),
     me: workstationView(s, p),
     remote,
     players: s.playerOrder.map((id) => ({ id, name: s.players[id].name, roleLabel: ROLES[s.players[id].role].label })),

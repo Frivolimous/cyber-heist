@@ -170,15 +170,15 @@ function paymentSource(s: GameState, cust: Customer): { origin: string; amount: 
 
 /** Each gap between client requests is the average gap times 1 ± this (at random), so arrivals are uneven. */
 export const REQUEST_JITTER = 0.5;
-/** The first request after the start (two are waiting already) comes after this share of a normal gap. */
-export const FIRST_REQUEST_SHARE = 0.5;
+/** The game starts with no requests waiting: the first arrives this many seconds in. */
+export const FIRST_REQUEST_SEC = 20;
 
 /**
  * Schedules the next client request after one at `after`: a jittered gap around requestIntervalSec, then bent
  * by the time of day (nextArrival). The jitter averages out, so the game-wide total stays about the same.
  */
-export function scheduleRequest(s: GameState, after: number, first = false): void {
-  const gap = s.config.requestIntervalSec * (1 + (rand(s) * 2 - 1) * REQUEST_JITTER) * (first ? FIRST_REQUEST_SHARE : 1);
+export function scheduleRequest(s: GameState, after: number): void {
+  const gap = s.config.requestIntervalSec * (1 + (rand(s) * 2 - 1) * REQUEST_JITTER);
   s.nextRequestAt = nextArrival(s.config.durationSec, after, gap);
 }
 

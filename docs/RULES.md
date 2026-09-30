@@ -5,38 +5,64 @@ Decisions marked **assumed** were not in the design brief. Change them in `catal
 
 ## Win conditions
 
-Every way the game ends (`EndKind`, ending.ts and engine.ts):
+Four things end the game (`EndKind`, ending.ts). Whichever fires, the **Thieves' goal is checked first, at
+that instant** (`thiefTargetMet`, never a stored flag): if the mule accounts hold it right then, the Thieves
+win. Otherwise the ending's own outcome applies.
 
-| Ending | Winner | When |
+| Trigger | Thief goal met at that instant? | Winner |
 |---|---|---|
-| Thief target | Thieves | at once, when the money sitting in the mule accounts reaches $1M per Thief |
-| Bank target | the bank | at close of business (timer runs out), if $15M per player of legitimate payments settled |
-| Bank short | nobody (both lose) | at close of business, with neither target met |
-| Thieves terminated | the bank | at once, when every Thief is terminated |
-| Host shut down | the bank | at once, when a Firewall "revoke all access" completes on the unregistered host |
-| Bank shut down | nobody | at once, when a Firewall "revoke all access" completes on one of the bank's own systems |
+| Close of business (timer runs out) | yes, bank target met too | Thieves |
+| Close of business | yes, bank target not met | Thieves |
+| Close of business | no, bank target met | the bank |
+| Close of business | no, bank target not met | nobody (both lose) |
+| Every Thief terminated | yes | Thieves |
+| Every Thief terminated | no | the bank |
+| Firewall "revoke all access" completes on the unregistered host | yes | Thieves |
+| Same | no | the bank |
+| Firewall "revoke all access" completes on a bank system (Security, Client Data, Transaction Processing) | yes | Thieves |
+| Same | no | nobody |
 
 Details:
 
-- **Thieves** win **at once** when stolen money reaches **$1M per Thief** ($3M at 10 players).
-  Stolen money is whatever sits in the Target Ledger (mule) accounts, which start empty: it arrives when a
-  payment SETTLES into one of them, and leaves again on a successful reversal or when a mule account pays out.
+- **The Thieves' goal** is **$1M per Thief** ($3M at 10 players) sitting in the Target Ledger (mule)
+  accounts, which start empty: money arrives when a payment SETTLES into one of them, and leaves again on a
+  successful reversal or when a mule account pays out. **Meeting it does not end the game**: it secures the
+  win for as long as it holds. A reversal that drops the ledger back under the goal un-secures it, and a
+  later ending then falls through to its own outcome (a reversal seconds before the clock runs out counts).
+- **Heist secured**: when the ledger first meets the goal, every Thief gets an activity entry and a pop-up
+  (page "Target Ledger", whether or not its bell is on): "Heist secured: the Target Ledger holds $X, meeting
+  your $Y goal. Hold it until close of business, or shut the bank down to escape with your prize." When a
+  reversal takes it back under: "Heist no longer secured: the Target Ledger dropped to $X, under your $Y
+  goal. Get it back over the goal before close of business." Each crossing tells them again. While it
+  holds, View targets adds "Heist secured: Hold funds until close of business, or shut the bank down to
+  escape with your prize." Only Thieves ever see any of this.
 - **The bank** (the regular employees) wins **at close of business** (when the timer runs out) if **$15M per player** ($150M at
-  10 players) of legitimate payments have been SETTLED by then. Meeting the target early does not end the
+  10 players) of legitimate payments have been SETTLED by then, and the Thieves' goal is not met. Meeting the target early does not end the
   game: the bank has to survive the whole day. Legitimate = every automatic payment, plus manual payments that **fulfil a payment request**
   (linked to it by request id, to the payee and for the amount the customer asked). Other manual
   payments never count, so players cannot invent payments to win. Rejected, held, failed and reversed
   payments do not count, so defence has a throughput cost. Payments settled into an employee's own
   account (**embezzled**) count for nobody.
-- **Timer:** 20 minutes. If it runs out with the bank short of its target (and the Thieves short of
-  theirs, or they would already have won), **both sides lose**.
+- **The bank's progress is hidden** until the end; its target is not (objectives and job descriptions
+  state it). There is no progress bar: the status bar shows only **"Settled today: $X"**, every payment
+  settled so far (legitimate, diverted or embezzled alike, less reversals), the same number for everyone.
+  Because part of it may not be legitimate, nobody can tell from it whether the target is met, or whether
+  a particular payment counted, and the bank cannot stop working because a bar is full. The host's
+  facilitator screen shows the same total next to the target. The Thieves still see their own goal and
+  stolen total in the Target Ledger.
+- **Timer:** 20 minutes. If it runs out with the bank short of its target and the Thieves short of
+  theirs, **both sides lose**.
 - **The bank** also wins **at once** when **every Thief is terminated** (see Termination), or when a
   Firewall "revoke all access" completes on the **unregistered host**: it is shut down and
-  the heist is over.
-- **Everybody loses** if a Firewall "revoke all access" completes on one of the bank's own systems
-  (Security, Client Data or Transaction Processing): the bank shuts down and the game ends with no
-  winner. It is the nuclear option for a side about to lose.
-- **End screen**: who won and how (worded for each ending), both teams with their members and what each
+  the heist is over. Either way, the Thieves win instead if their goal is met at that moment.
+- **Bank shut down**: a Firewall "revoke all access" completing on one of the bank's own systems
+  (Security, Client Data or Transaction Processing) shuts the bank down and ends the game. Nobody wins,
+  unless the Thieves' goal is met at the moment it **completes** (not when it starts): then the Thieves
+  win ("kill the bank"). So it is the nuclear option for the bank, and a way for Thieves holding their
+  goal to lock it in. The Firewall's confirmation is the same for everyone.
+- **End screen**: who won, one line on how it ended (a different line for each row of the table above, in
+  ending.ts; e.g. close of business with both goals met: "They thought it was a good day, everything was in
+  the green! But there was still some green missing."), both teams with their members and what each
   team made against its goal (settled for the bank, diverted for the Thieves), who was terminated, and
   as an aside anyone who **embezzled** ("Embezzled $2,351": payments settled into their own account, which
   count toward no goal). It can be put away to look at the desk and brought back from the status bar.
@@ -67,8 +93,10 @@ Details:
   can still be finished). The header shows the time of day, the busy level and the game clock counting
   up to its end ("07:42 / 20:00"). Every time players see (logs, records, requests, the end screen) uses
   that same clock.
-- **Request timing** (`scheduleRequest` in `requests.ts`): two requests are waiting at the start, and the
-  next one comes after **half** a normal gap. Each gap is the average gap **±50% at random**
+- **The day starts empty:** nothing is waiting at the start. The first automatic payment arrives at
+  **10s** (`FIRST_PAYMENT_SEC`, bank.ts) and the first client request at **20s** (`FIRST_REQUEST_SEC`,
+  requests.ts); phishing messages start no earlier than 20s either.
+- **Request timing** (`scheduleRequest` in `requests.ts`): after the first, each gap is the average gap **±50% at random**
   (`REQUEST_JITTER`), then bent by the time of day, so arrivals are uneven but the total stays about the
   same. Each request comes from a random active customer, so one banker can get several in a row.
   Automatic payments arrive at even gaps (bent by the time of day).
@@ -135,10 +163,10 @@ Roles are dealt over a shuffled seat order. Each role starts with one credential
 | Permissions | W | - | - | W |
 | Customer Records | R | W | R | R |
 | Client Requests | - | W | - | R |
-| Verification | - | R | W | W |
+| Verification | - | - | W | W |
 | Payment Queue | R | W | R | R |
-| Risk Check | - | R | W | R |
-| Authorization | - | W | R | R |
+| Risk Check | - | - | W | R |
+| Authorization | - | W | - | R |
 | Settlement | - | R | W | W |
 
 - **Personal Bankers** are scoped to their own customers: they change only those in Customer Records
@@ -198,7 +226,9 @@ Roles are dealt over a shuffled seat order. Each role starts with one credential
   owner (and, hidden, who really did it).
 - Verification: **View** (Pending / All changes), **Investigate changes** (a customer tag lists that
   customer's changes; an account number follows that account across customers and says where it is
-  now, or that it floats, and its balance), **Verify a change** (by change id).
+  now, or that it floats, and its balance), **Verify a change** (by change id). A change made with a
+  request id on it shows that request ("... by Sarah  for REQ-7  [UNVERIFIED]"); one made without shows none.
+  The link is recorded as it was made: it does not check that the change is what the request asked for.
 - **What customers believe is separate from the bank's file** (`Customer.known`). A customer believes
   their accounts are as they were at the start, updated only by their own requests, **at the moment they
   ask** (add, add as primary, set primary, remove), whether or not the bank ever does it. Changes nobody
@@ -323,7 +353,8 @@ of "potential targets for fraudulent transactions").
     one in progress, until it completes or is cancelled.
     When it runs, the address is blocked permanently, and a workstation's owner loses every bank credential
     and is terminated. It cannot be undone. Completing it on a bank system ends the game with no winner; on
-    the unregistered host, the bank wins.
+    the unregistered host, the bank wins; either way the Thieves win instead if their goal is met when it
+    completes (see Win conditions).
 - **Security alerts**: every Firewall action that weakens the bank, and every credential issued or revoked,
   raises a Master Log alert naming the credential owner, like the log entry it points at.
   - **Suspicious security activity** (tier 2, so Alert mute can hide it): blocking an address, switching a
@@ -441,7 +472,7 @@ of "potential targets for fraudulent transactions").
   complains.
 - Personal Bankers create the payments their customers ask for and approve them; Accounts &
   Receivables score risk and settle. A banker cannot verify their own account changes (Verification is
-  read-only for them): Accounts & Receivables or the Bank Manager must.
+  closed to them): Accounts & Receivables or the Bank Manager must.
 
 ### When a request counts as done
 
@@ -560,7 +591,8 @@ have no timed tools, so no bell.
   `BLACKNET_ALIASES`, core.ts, never repeated in a game) and cannot change it. A post carries the alias of
   the credential's owner, so a borrowed code posts as its owner. A Thief sees their alias on their
   workstation profile and on the Blacknet page; a visitor to their workstation does not.
-- **Target Ledger** is read-only: the total diverted against the goal, then each of the 3 mule accounts
+- **Target Ledger** is read-only: the total diverted against the goal (plus "Heist secured" while it is
+  met), then each of the 3 mule accounts
   with the customer it is on (marked `(primary)` when it is that customer's primary) or `floating`, and
   its balance. It can auto-update every second like Blacknet.
 - **Kit tools** (tier in brackets):

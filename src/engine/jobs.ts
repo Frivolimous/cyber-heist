@@ -32,7 +32,7 @@ function commonRules(c: GameConfig): string[] {
     `${c.lockoutAfterFails} wrong codes in a row lock your workstation for ${secs(c.lockoutSec)}.`,
     'Your workstation has its own login code (W): it never changes and cannot be revoked. Anyone who has it can log in to your workstation and read it: your codes, your activity log and your messages (not your objective or which side you are on).',
     'Switch on the bell of a page you can write to and it tells you when someone else does something there.',
-    "Lose every credential, or have your IP revoked by the Firewall, and you are terminated: the bank's systems refuse you for the rest of the game. The bank wins at once if every Thief is terminated.",
+    "Lose every credential, or have your IP revoked by the Firewall, and you are terminated: the bank's systems refuse you for the rest of the game. Terminating every Thief ends the game: the bank wins, unless the Thieves' goal is already met.",
   ];
 }
 
@@ -56,7 +56,7 @@ const JOBS: Record<RoleId, (c: GameConfig, n: number) => Omit<JobDescription, 't
       `Customers expect action within ${secs(c.requestDeadlineSec)} (${secs(c.urgentDeadlineSec)} when urgent). Halfway there they chase you in your messages, and an archived request comes back. When a deadline passes they complain to the Bank Manager, naming you; after ${c.strikesToSuspend} missed requests a customer stops doing business with the bank for the day.`,
       'Requests are written in words. Look up account numbers and customer tags (CU3) in Customer Records.',
       'Not every request is genuine. Phishing messages claim customer tags and accounts that do not exist: archive them.',
-      'Every account change waits in Verification until someone verifies it. You can see the queue but cannot verify.',
+      'Every account change waits in Verification until Accounts & Receivables or the Bank Manager verifies it. You cannot see that queue, or the Risk Check queue.',
       'A payment is paid into the payee\'s primary account at the moment it settles, not when it was created. Changing a primary account redirects payments already on their way.',
       'Approval needs a risk check first, but not a LOW score. Hold and Reject need a typed reason.',
       `Authorization approves payments by itself up to a risk level (${c.automation.approveUpTo} at the start). Anyone with Authorization write can change it; setting HIGH raises an alert.`,
@@ -81,7 +81,7 @@ const JOBS: Record<RoleId, (c: GameConfig, n: number) => Omit<JobDescription, 't
       'A payment is paid into the payee\'s primary account at the moment it settles. Check the primary before you settle.',
       `A settled payment can be reversed for ${secs(c.reversalWindowSec)}, as long as the account it was paid into still holds the money.`,
       "A payment fails at settlement if the account it is paid from holds too little. Customer Records shows every account's balance.",
-      `The bank wins if ${money(c.whiteTarget)} of customer payments are settled by close of business. Every payment held, rejected or reversed slows the bank down. A payment settled into an employee's own account counts for nobody.`,
+      `The bank wins if ${money(c.whiteTarget)} of legitimate customer payments are settled by close of business and the Thieves' goal is not met. "Settled today" counts every settled payment, diverted and embezzled ones too, so it runs ahead of the bank's real progress. Every payment held, rejected or reversed slows the bank down. A payment settled into an employee's own account counts for nobody.`,
     ],
   }),
   IT_SPECIALIST: (c, n) => ({
@@ -102,7 +102,7 @@ const JOBS: Record<RoleId, (c: GameConfig, n: number) => Omit<JobDescription, 't
       `A trace reveals which workstation made a log entry. Entries must be under ${secs(c.traceMaxAgeSec)} old, and you can trace once every ${secs(c.traceCooldownSec)}. Employee Records list every workstation's IP.`,
       '"Unknown server activity" comes from an unregistered host. Tracing it gives only a partial clue, unless an alert points at it.',
       `A block lasts ${secs(c.blockSec)}. A blocked workstation cannot use any system.`,
-      `"Revoke all access" is permanent once its ${secs(c.revokeCountdownSec)} countdown ends; only the Firewall can cancel it, and only one can count down at a time. Revoking a workstation terminates its owner for good. Revoking the unregistered host shuts it down and the bank wins; revoking one of the bank's own systems shuts the bank down, and everybody loses.`,
+      `"Revoke all access" is permanent once its ${secs(c.revokeCountdownSec)} countdown ends; only the Firewall can cancel it, and only one can count down at a time. Revoking a workstation terminates its owner for good. Revoking the unregistered host shuts it down and the bank wins; revoking one of the bank's own systems shuts the bank down, and everybody loses. Either way, if the Thieves' goal is met at that moment, they win.`,
       'While the Master Log is offline nothing is recorded, but the entry numbers keep counting, so the gap shows.',
       'You can issue a credential in anyone\'s name. Its owner is told.',
       'Blocking an address, switching security off, taking a module offline, and issuing or revoking a credential raise a "Suspicious security activity" alert naming you. Starting a "revoke all access", and issuing or revoking Firewall or Permissions write, raise a "Fatal" one.',
@@ -142,6 +142,7 @@ const OPERATIVE = (c: GameConfig): string[] => [
   'Kit tools are marked noisy, loud or reckless. The louder the tool, the more a trace of its alert gives away: a partial clue, then your exact IP or the server\'s address, then your IP and your host code.',
   'Your Host Log warns you when the bank gets an alert about you, and when someone traces one of your entries. Its bell and Blacknet\'s start on, so these pop up on your screen (in the host\'s dark red): mind who can see it, or switch them off.',
   'If you are terminated, the unregistered host still answers you: keep helping from there.',
+  "Meeting your goal does not end the game. However it ends (close of business, every Thief terminated, the host or a bank system shut down), the Thieves win if the Target Ledger meets the goal at that moment. Once it does, revoking all access to a bank system from the Firewall ends the day on the spot.",
   `Money counts while it sits in a Target Ledger account. A settled payment can be reversed for ${secs(c.reversalWindowSec)}, but only while the account it went to still holds the money: a mule account can pay it on first.`,
 ];
 

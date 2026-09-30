@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { accountVerified, applyAction, CHANNELS, createGame, CREDENTIAL_SHARING_ENABLED, DAY_PHASES, dayPhaseAt, nextArrival, paceMultiplier, ENCRYPTION_ENABLED, getPlayerView, grantMasterAccess, thiefCountFor, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, SYSTEMS, tick } from './index';
 import type { Action, ActionResult, GameConfig, GameState, Player, RoleId, SystemId } from './index';
 import { NPC_AMOUNT_FACTOR, REQUEST_AMOUNT_FACTOR } from './setup';
+import { spawnNpc } from './bank';
+import { spawnRequest } from './requests';
 
 const NAMES = ['Jeremy', 'Sarah', 'Mike', 'David', 'Lisa', 'Anna', 'Omar', 'Priya', 'Chen', 'Rosa'];
 const PLAYERS = NAMES.map((name, i) => ({ id: `p${i}`, name }));
@@ -14,8 +16,12 @@ const EVERYTHING: GameConfig['automation'] = { scoreMax: 1e12, scoreSource: 'ALL
 class Sim {
   s: GameState;
   sec = 0;
-  constructor(config: Partial<GameConfig> = {}, seed = 42) {
+  /** `warm`: start with some work waiting (3 automatic payments, 2 requests), as most tests need; a real game starts empty. */
+  constructor(config: Partial<GameConfig> = {}, seed = 42, warm = true) {
     this.s = createGame({ seed, players: PLAYERS, now: T0, config: { automation: MANUAL, ...config } });
+    if (!warm) return;
+    for (let i = 0; i < 3; i++) spawnNpc(this.s);
+    for (let i = 0; i < 2; i++) spawnRequest(this.s);
   }
   at(sec: number): this {
     this.sec = sec;
@@ -211,7 +217,7 @@ test('manual payments count toward the bank target only when they fulfil a payme
   // Made up, no request: does not count.
   assert.equal(pay({ originAccount: from(r1), beneficiaryId: r1.payeeId!, amount: '1000000' }), 0);
   // Linked, but not what was asked (wrong amount): does not count.
-  assert.equal(pay({ originAccount: from(r1), beneficiaryId: r1.payeeId!, amount: String(r1.amount! + 1000), requestId: r1.id }), 0);
+  assert.equal(pay({ originAccount: from(r1), beneficiaryId: r1.payeeId!, amount: String(r1.amount! - 1000), requestId: r1.id }), 0);
   // Linked and matching payee and amount: counts in full.
   assert.equal(pay({ originAccount: from(r2), beneficiaryId: r2.payeeId!, amount: String(r2.amount), requestId: r2.id }), r2.amount);
 });
@@ -395,7 +401,7 @@ test('fraud pipeline: making a mule account the payee\'s primary diverts a payme
   sim.at(40);
   const add = sim.run(pb.id, cr, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: payee.id, account: mule.slice(4), makePrimary: 'YES' });
   assert.ok(add.ok, add.message);
-  const inv = sim.run(pb.id, sim.code(pb.id, 'CLIENT_DATA', 'VERIFICATION'), 'CLIENT_DATA', 'VERIFICATION', 'INVESTIGATE_CHANGES', { target: payee.id });
+  const inv = sim.run(ar.id, sim.code(ar.id, 'CLIENT_DATA', 'VERIFICATION'), 'CLIENT_DATA', 'VERIFICATION', 'INVESTIGATE_CHANGES', { target: payee.id });
   assert.ok(inv.lines!.some((l) => l.includes(`added ${mule}`)));
   assert.ok(inv.lines!.some((l) => l.includes(`primary ${originalPrimary} -> ${mule}`) && l.includes(`by ${pb.name}`)), inv.lines!.join('\n'));
 
@@ -453,7 +459,7 @@ test('the hidden system assessment flags recent primary changes; verifying clear
   assert.deepEqual(sim.s.transactions[0].riskFlags, []);
 });
 
-test('Thieves win as soon as stolen money reaches the target', () => {
+test('meeting the Thieves\' goal does not end the game: it secures the win until a reversal takes it back', () => {
   const sim = new Sim({ npcMinAmount: 2_000_000, npcMaxAmount: 2_000_000 });
   const pb = sim.bankerOf(sim.s.transactions[0].beneficiaryId);
   const [ar] = sim.byRole('ACCOUNTS_RECEIVABLES');
@@ -473,10 +479,107 @@ test('Thieves win as soon as stolen money reaches the target', () => {
     const r = sim.run(who.id, sim.code(who.id, 'TRANSACTIONS', mod), 'TRANSACTIONS', mod, fn, { txId: id });
     assert.ok(r.ok, r.message);
   }
+  assert.equal(sim.s.status, 'RUNNING', 'the game goes on');
+  const thieves = Object.values(sim.s.players).filter((p) => p.allegiance === 'BLACK');
+  const white = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE')!;
+  // Every Thief is told, once; the view says so for them only; the ledger says so too.
+  for (const t of thieves) {
+    assert.equal(t.activity.filter((a) => a.text.startsWith('Heist secured')).length, 1);
+    assert.ok(t.notifications.some((n) => n.page === 'Target Ledger' && n.text.startsWith('Heist secured')));
+  }
+  assert.ok(!white.activity.some((a) => a.text.includes('Heist')));
+  const black = thieves[0];
+  const ledger = sim.run(black.id, sim.code(black.id, 'HIDDEN_HOST', 'TARGET_LEDGER'), 'HIDDEN_HOST', 'TARGET_LEDGER', 'VIEW_TARGETS');
+  assert.match(ledger.message, /Heist secured/);
+
+  // A reversal takes it back under the goal: no longer secured, and they are told.
+  const rev = sim.run(ar.id, sim.code(ar.id, 'TRANSACTIONS', 'SETTLEMENT'), 'TRANSACTIONS', 'SETTLEMENT', 'REVERSE', { txId: id });
+  assert.ok(rev.ok, rev.message);
+  assert.ok(black.id && sim.s.players[black.id].activity.some((a) => a.text.startsWith('Heist no longer secured')));
+
+  // Back over the goal at close of business: the Thieves win.
+  sim.s.balances[mule] = sim.s.config.blackTarget;
+  sim.s.totals.stolen = sim.s.config.blackTarget;
+  sim.at(sim.s.config.durationSec + 1);
   assert.equal(sim.s.status, 'ENDED');
   assert.equal(sim.s.winner, 'BLACK');
+  assert.equal(sim.s.endKind, 'CLOSE_OF_BUSINESS');
+  assert.match(getPlayerView(sim.s, white.id).end!.text, /until they checked the books/, 'the bank short of its target');
   const after = sim.run(pb.id, sim.code(pb.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS'), 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS');
   assert.equal(after.message, 'The game is over.');
+});
+
+/** Puts the Thieves' goal (or `amount`) straight into a mule account. */
+function fillLedger(sim: Sim, amount = sim.s.config.blackTarget): void {
+  sim.s.balances[sim.s.targets[0].account] = amount;
+  sim.s.totals.stolen = amount;
+}
+
+test('with the Thieves\' goal met, every ending goes to the Thieves; the check is made when the ending fires', () => {
+  // A bank system shut down, by a Thief.
+  const shut = new Sim();
+  const thiefFw = shut.byRole('IT_SPECIALIST').find((p) => p.allegiance === 'BLACK')!; // seed 42 deals one
+  shut.at(2);
+  fillLedger(shut);
+  const started = shut.run(thiefFw.id, shut.code(thiefFw.id, 'SECURITY', 'FIREWALL'), 'SECURITY', 'FIREWALL', 'REVOKE_ALL_ACCESS', { address: '10.0.0.30' });
+  assert.ok(started.ok, started.message);
+  shut.at(shut.sec + shut.s.config.revokeCountdownSec + 1);
+  assert.equal(shut.s.winner, 'BLACK');
+  assert.equal(shut.s.endKind, 'SHUTDOWN');
+
+  // The unregistered host shut down.
+  const host = new Sim();
+  host.at(2);
+  fillLedger(host);
+  host.run(whiteIt(host).id, host.code(whiteIt(host).id, 'SECURITY', 'FIREWALL'), 'SECURITY', 'FIREWALL', 'REVOKE_ALL_ACCESS', { address: host.s.hiddenHost });
+  host.at(host.sec + host.s.config.revokeCountdownSec + 1);
+  assert.equal(host.s.winner, 'BLACK');
+  assert.equal(host.s.endKind, 'HOST_SHUT_DOWN');
+
+  // Every Thief terminated.
+  const term = new Sim();
+  const admin = whiteIt(term);
+  term.at(2);
+  fillLedger(term);
+  for (const b of Object.values(term.s.players).filter((p) => p.allegiance === 'BLACK')) {
+    term.run(admin.id, term.code(admin.id, 'SECURITY', 'FIREWALL'), 'SECURITY', 'FIREWALL', 'REVOKE_ALL_ACCESS', { address: b.ip });
+    term.at(term.sec + term.s.config.revokeCountdownSec + 1);
+  }
+  assert.equal(term.s.winner, 'BLACK');
+  assert.equal(term.s.endKind, 'THIEVES_TERMINATED');
+  assert.match(term.s.endReason!, /their plan all along/);
+
+  // Close of business with both goals met: the Thieves still win.
+  const both = new Sim();
+  fillLedger(both);
+  both.s.totals.processed = both.s.config.whiteTarget;
+  both.at(both.s.config.durationSec + 1);
+  assert.equal(both.s.winner, 'BLACK');
+  assert.equal(both.s.endKind, 'CLOSE_OF_BUSINESS');
+  assert.match(both.s.endReason!, /still some green missing/);
+
+  // Met when the shutdown starts, gone by the time it completes: the ending's own outcome (nobody wins).
+  const live = new Sim();
+  live.at(2);
+  fillLedger(live);
+  live.run(whiteIt(live).id, live.code(whiteIt(live).id, 'SECURITY', 'FIREWALL'), 'SECURITY', 'FIREWALL', 'REVOKE_ALL_ACCESS', { address: '10.0.0.30' });
+  live.at(10);
+  fillLedger(live, 0);
+  live.at(2 + live.s.config.revokeCountdownSec + 1);
+  assert.equal(live.s.status, 'ENDED');
+  assert.equal(live.s.winner, null);
+  assert.equal(live.s.endKind, 'SHUTDOWN');
+});
+
+test('players see every settled payment as one total and the bank\'s goal, never its real progress', () => {
+  const sim = new Sim({ automation: EVERYTHING });
+  sim.at(200);
+  const v = getPlayerView(sim.s, 'p0') as unknown as Record<string, unknown>;
+  const settled = sim.s.transactions.filter((tx) => tx.status === 'SETTLED').reduce((sum, tx) => sum + tx.amount, 0);
+  assert.ok(settled > 0);
+  assert.equal(v.settled, settled);
+  assert.ok(!('processed' in v));
+  assert.ok(getPlayerView(sim.s, 'p0').me.objective!.includes('$150,000,000'), 'the goal itself is known');
 });
 
 test('NPC traffic arrives on a schedule, and the bank wins at close of business once enough is settled', () => {
@@ -497,8 +600,8 @@ test('NPC traffic arrives on a schedule, and the bank wins at close of business 
   win.at(win.s.config.durationSec + 1);
   assert.equal(win.s.status, 'ENDED');
   assert.equal(win.s.winner, 'WHITE');
-  assert.equal(win.s.endKind, 'WHITE_TARGET');
-  assert.match(win.s.endReason!, /clearing its \$8,000,000 target/);
+  assert.equal(win.s.endKind, 'CLOSE_OF_BUSINESS');
+  assert.match(win.s.endReason!, /every account where it belongs/);
 });
 
 test('when time runs out with neither goal met, both sides lose', () => {
@@ -508,8 +611,8 @@ test('when time runs out with neither goal met, both sides lose', () => {
   sim.at(61);
   assert.equal(sim.s.status, 'ENDED');
   assert.equal(sim.s.winner, null, 'neither side made its goal: both lose');
-  assert.equal(sim.s.endKind, 'BANK_SHORT');
-  assert.match(sim.s.endReason!, /neither side made its goal/);
+  assert.equal(sim.s.endKind, 'CLOSE_OF_BUSINESS');
+  assert.match(sim.s.endReason!, /balance for nobody/);
   const end = getPlayerView(sim.s, 'p0').end!;
   assert.equal(end.headline, 'Everybody loses');
   assert.ok(end.teams.every((t) => !t.won));
@@ -1019,17 +1122,13 @@ test('risk is scored by hand, the reason optional; hold and reject need a reason
 });
 
 test('client requests: bankers are assigned, requests arrive over time, and each banker sees only their own', () => {
-  const sim = new Sim();
+  const sim = new Sim({}, 42, false);
   const bankers = sim.byRole('PERSONAL_BANKER');
   assert.ok(sim.s.customers.every((c) => bankers.some((b) => b.id === c.bankerId)), 'every customer has a personal banker');
-  assert.equal(sim.s.requests.length, 2, 'two requests waiting at the start');
-  // Three more arrive on the (time-of-day) schedule.
-  const c = sim.s.config;
-  let third = 0;
-  for (let i = 0; i < 3; i++) third = nextArrival(c.durationSec, third, c.requestIntervalSec);
-  sim.at(third + 0.5);
-  assert.equal(sim.s.requests.length, 5);
-  for (const r of sim.s.requests) {
+  assert.equal(sim.s.requests.length, 0, 'none waiting at the start');
+  sim.at(240); // they arrive over the morning (phishing too, from 20s)
+  assert.ok(sim.s.requests.filter((r) => !r.phish).length >= 3, `${sim.s.requests.length} requests`);
+  for (const r of sim.s.requests.filter((x) => !x.phish)) {
     const cust = sim.s.customers.find((c) => c.id === r.customerId)!;
     assert.ok(r.text.includes(cust.name), 'signed with the customer name');
     assert.ok(!/CU[0-9]/.test(r.text), 'never uses customer codes');
@@ -1087,6 +1186,10 @@ test('client requests close by linking a payment or an account change, or by arc
   });
   assert.ok(added.ok, added.message);
   assert.equal(now(add.id).status, 'DONE');
+  // Verification shows which request each change was made for.
+  const verification = sim.run('p0', cd, 'CLIENT_DATA', 'VERIFICATION', 'VIEW_VERIFICATION', {}).lines!;
+  const forAdd = verification.filter((l) => l.includes(add.account!));
+  assert.ok(forAdd.length >= 1 && forAdd.every((l) => l.includes(`for ${add.id}  [UNVERIFIED]`)), verification.join('\n'));
 
   const other = sim.s.requests.find((r) => r.status === 'OPEN')!;
   const archive = (reason: string) => sim.run('p0', cd, 'CLIENT_DATA', 'CLIENT_REQUESTS', 'ARCHIVE_REQUEST', { requestId: other.id, reason });
@@ -1116,8 +1219,9 @@ test('Permissions lives in Security; every account change waits in the Verificat
   assert.ok(sim.run(it.id, sim.code(it.id, 'SECURITY', 'PERMISSIONS'), 'SECURITY', 'PERMISSIONS', 'VIEW_PERMISSIONS').ok);
 
   const pb = sim.bankerOf('CU2');
-  const ver = sim.code(pb.id, 'CLIENT_DATA', 'VERIFICATION');
-  const view = (show: string) => sim.run(pb.id, ver, 'CLIENT_DATA', 'VERIFICATION', 'VIEW_VERIFICATION', { show }).lines!;
+  const [ar] = sim.byRole('ACCOUNTS_RECEIVABLES');
+  const arVer = sim.code(ar.id, 'CLIENT_DATA', 'VERIFICATION');
+  const view = (show: string) => sim.run(ar.id, arVer, 'CLIENT_DATA', 'VERIFICATION', 'VIEW_VERIFICATION', { show }).lines!;
   sim.at(5);
   assert.deepEqual(view('PENDING'), ['Nothing here.']);
   sim.open(0, '54321');
@@ -1127,10 +1231,10 @@ test('Permissions lives in Security; every account change waits in the Verificat
   assert.equal(pending.length, 2);
   assert.ok(pending[0].startsWith('CH-1 ') && pending[0].includes('CU2') && pending[0].includes('added ACC-54321') && pending[0].endsWith('[UNVERIFIED]'), pending[0]);
   assert.ok(pending[1].includes('-> ACC-54321') && pending[1].includes(`by ${pb.name}`), pending[1]);
-  // Bankers can see the queue but not verify: that is Accounts & Receivables' (and the Bank Manager's) job.
-  assert.equal(sim.run(pb.id, ver, 'CLIENT_DATA', 'VERIFICATION', 'VERIFY_CHANGE', { changeId: 'CH-1' }).message, 'Access denied.');
-  const [ar] = sim.byRole('ACCOUNTS_RECEIVABLES');
-  const arVer = sim.code(ar.id, 'CLIENT_DATA', 'VERIFICATION');
+  // Bankers cannot see the queue or verify: that is Accounts & Receivables' (and the Bank Manager's) job.
+  assert.ok(!Object.values(sim.s.credentials).some((c) => c.owner === pb.id && c.module === 'VERIFICATION'));
+  const pbRecords = sim.code(pb.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS');
+  assert.equal(sim.run(pb.id, pbRecords, 'CLIENT_DATA', 'VERIFICATION', 'VIEW_VERIFICATION', {}).message, 'Access denied.');
   assert.match(sim.run(ar.id, arVer, 'CLIENT_DATA', 'VERIFICATION', 'VERIFY_CHANGE', { changeId: 'CH-9' }).message, /No such change/);
   sim.run(ar.id, arVer, 'CLIENT_DATA', 'VERIFICATION', 'VERIFY_CHANGE', { changeId: '1' });
   assert.equal(view('PENDING').length, 1);
@@ -1170,7 +1274,7 @@ test('customer accounts: 3 per banker; add, set primary and remove, with their r
   assert.deepEqual(cu().history.map((h) => h.action), ['ADD_ACCOUNT', 'SET_PRIMARY', 'REMOVE_ACCOUNT']);
   assert.ok(cu().history.every((h) => h.byOwner === pb.id && h.actualPlayerId === other.id));
   const investigate = (target: string) =>
-    sim.run(pb.id, sim.code(pb.id, 'CLIENT_DATA', 'VERIFICATION'), 'CLIENT_DATA', 'VERIFICATION', 'INVESTIGATE_CHANGES', { target });
+    sim.run(sim.byRole('ACCOUNTS_RECEIVABLES')[0].id, sim.code(sim.byRole('ACCOUNTS_RECEIVABLES')[0].id, 'CLIENT_DATA', 'VERIFICATION'), 'CLIENT_DATA', 'VERIFICATION', 'INVESTIGATE_CHANGES', { target });
   const inv = investigate('CU5').lines!.join('\n');
   assert.ok(inv.includes(`added ${floating}`) && inv.includes(`primary ${start} -> ${floating}`) && inv.includes(`removed ${start}`), inv);
   // Looking up an account follows it across customers and says where it is now.
@@ -1375,7 +1479,7 @@ test('revoking all access to a bank system shuts the bank down: everybody loses'
   assert.equal(sim.s.status, 'ENDED');
   assert.equal(sim.s.winner, null);
   assert.equal(sim.s.endKind, 'SHUTDOWN');
-  assert.match(sim.s.endReason!, /Transaction Processing was revoked .* Nobody wins/);
+  assert.match(sim.s.endReason!, /plug on the bank itself/);
   assert.equal(getPlayerView(sim.s, admin.id).end!.headline, 'Everybody loses');
 });
 
@@ -1390,7 +1494,7 @@ test('revoking all access to the unregistered host shuts it down: the bank wins'
   assert.equal(sim.s.status, 'ENDED');
   assert.equal(sim.s.winner, 'WHITE');
   assert.equal(sim.s.endKind, 'HOST_SHUT_DOWN');
-  assert.match(sim.s.endReason!, /unregistered host at 10\.\d+\.\d+\.\d+ and shut it down/);
+  assert.match(sim.s.endReason!, /The heist died with it/);
 });
 
 test('firewall: "revoke all access" counts down, can be cancelled only from the Firewall, and is permanent once done', () => {
@@ -1462,7 +1566,7 @@ function clueIsTrue(sim: Sim, message: string, entry: { sourceIp: string | null;
     const real = sim.s.hiddenHost.split('.');
     return shown.filter((p) => p !== 'x').length === 1 && shown.every((p, i) => p === 'x' || p === real[i]);
   }
-  m = message.match(/Activity performed: (.+)\.$/);
+  m = message.replace(/ The (message posted|newest message).*$/, '').match(/Activity performed: (.+)\.$/); // a Blacknet leak may follow
   return Boolean(m && m[1] === entry.activity);
 }
 
@@ -1934,10 +2038,10 @@ test('request deadlines: a follow-up halfway, then expiry, a complaint to the Ba
   sim.at(61);
   assert.equal(req(r1.id).status, 'OPEN', 'the customer is still waiting: the request comes back');
   assert.equal(req(r1.id).reminders.length, 1);
-  const inbox = banker().messages.at(-1)!;
-  assert.equal(inbox.text, req(r1.id).reminders[0].text, 'the banker is pinged with the same follow-up');
+  const pinged = banker().messages.findIndex((m) => m.text === req(r1.id).reminders[0].text);
+  assert.ok(pinged >= 0, 'the banker is pinged with the same follow-up');
   const who = cust().person ? cust().name : `${cust().contact} (${cust().name})`;
-  assert.equal(getPlayerView(sim.s, banker().id).me.messages.at(-1)!.fromName, who);
+  assert.equal(getPlayerView(sim.s, banker().id).me.messages[pinged].fromName, who);
   assert.ok(sim.s.logs.some((l) => l.message === `Client follow-up received on ${r1.id}`));
   const view = sim.run('p0', cd, 'CLIENT_DATA', 'CLIENT_REQUESTS', 'VIEW_REQUESTS', {}).lines!;
   assert.ok(view[0].startsWith(r1.id) && view[0].includes('REMINDER') && view[0].includes('due in 59s'), view[0]);
@@ -1969,6 +2073,7 @@ test('request deadlines: a follow-up halfway, then expiry, a complaint to the Ba
   // No new requests or automatic payments involve them from now on.
   sim.s.config.requestIntervalSec = 1;
   sim.s.config.npcIntervalSec = 1;
+  sim.s.nextNpcAt = sim.s.nextRequestAt = sim.sec; // arrivals are scheduled ahead: bring the next ones forward
   const before = { req: sim.s.requests.length, tx: sim.s.transactions.length };
   sim.at(sim.sec + 60);
   const id = cust().id;
@@ -2303,7 +2408,7 @@ test('the bank wins at once when every Thief is terminated; the end screen shows
   assert.equal(sim.s.status, 'ENDED');
   assert.equal(sim.s.winner, 'WHITE');
   assert.equal(sim.s.endKind, 'THIEVES_TERMINATED');
-  for (const b of blacks) assert.ok(sim.s.endReason!.includes(b.name));
+  assert.match(sim.s.endReason!, /broke and empty handed/);
 
   const end = getPlayerView(sim.s, blacks[0].id).end!;
   assert.equal(end.headline, 'The Bank wins');
@@ -2508,12 +2613,23 @@ test('solo test: scripted regular employees work the bank, and the IT bot traces
   assert.ok(s.transactions.some((tx) => tx.status === 'SETTLED' && tx.origin === 'PLAYER'), 'a requested payment was settled');
 });
 
-test('client requests arrive at uneven gaps around the average, the first one sooner', () => {
-  const s0 = createGame({ seed: 8, players: PLAYERS, now: T0, config: { strikesToSuspend: 999 } }); // nobody walks out
-  // Two requests wait at the start; the next comes after half a gap (jittered), bent by the slow morning.
-  assert.equal(s0.requests.filter((r) => !r.phish).length, 2);
-  assert.ok(s0.nextRequestAt < nextArrival(s0.config.durationSec, 0, s0.config.requestIntervalSec * 0.75 + 1e-9), `first at ${s0.nextRequestAt}`);
-  let s = s0;
+test('the day starts empty: the first automatic payment at 10s, the first client request at 20s', () => {
+  let s = createGame({ seed: 8, players: PLAYERS, now: T0 });
+  assert.equal(s.transactions.length + s.requests.length, 0, 'nothing waiting at the start');
+  s = tick(s, T0 + 9_900);
+  assert.equal(s.transactions.length + s.requests.length, 0);
+  s = tick(s, T0 + 10_000);
+  assert.equal(s.transactions.length, 1, 'the first payment at 10s');
+  assert.equal(s.transactions[0].createdAt, 10);
+  s = tick(s, T0 + 19_900);
+  assert.equal(s.requests.length, 0);
+  s = tick(s, T0 + 20_000);
+  assert.equal(s.requests.filter((r) => !r.phish).length, 1, 'the first request at 20s');
+  assert.equal(s.requests[0].t, 20);
+});
+
+test('client requests arrive at uneven gaps around the average', () => {
+  let s = createGame({ seed: 8, players: PLAYERS, now: T0, config: { strikesToSuspend: 999 } }); // nobody walks out
   for (let t = 1; t <= s.config.durationSec; t++) s = tick(s, T0 + t * 1000);
   const times = s.requests.filter((r) => !r.phish && r.t > 0 && !r.scam).map((r) => r.t);
   const gaps = times.slice(1).map((t, i) => t - times[i]);

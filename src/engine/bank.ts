@@ -194,6 +194,9 @@ export function affordableAmount(s: GameState, account: string, min: number, max
   return Math.round((lo + rand(s) * (hi - lo)) / 1000) * 1000;
 }
 
+/** The game starts with no payments waiting: the first automatic payment arrives this many seconds in. */
+export const FIRST_PAYMENT_SEC = 10;
+
 /** An automatic payment between two customers. Skipped when the chosen account cannot afford one. */
 export function spawnNpc(s: GameState): void {
   const active = activeCustomers(s); // suspended customers neither pay nor get paid

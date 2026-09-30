@@ -38,6 +38,7 @@ import { automationText, computeRisk, paymentFor, recordTx, reverseTransaction, 
 import type { TxActor } from './bank';
 import { accountRequestText, paymentRequestText, requestReceived, requestTimes } from './requests';
 import { notify } from './notify';
+import { thiefTargetMet } from './ending';
 import type { AccountChange, ClientRequest, CodeCrack, Credential, Customer, Message, RequestKind, Revocation, GameState, LogEntry, Player, RoleId, SystemId, Transaction, TxEvent, TxStatus, WorkstationUnlock } from './types';
 
 export interface Ctx {
@@ -595,7 +596,7 @@ function customerLines(c: Ctx, x: Customer): string[] {
   ];
 }
 
-function recordAccountChange(c: Ctx, x: Customer, action: AccountChange['action'], account: string, previousPrimary: string): AccountChange {
+function recordAccountChange(c: Ctx, x: Customer, action: AccountChange['action'], account: string, previousPrimary: string, req: ClientRequest | null = null): AccountChange {
   const change: AccountChange = {
     id: nextId(c.s, 'change', 'CH-'),
     customerId: x.id,
@@ -608,6 +609,7 @@ function recordAccountChange(c: Ctx, x: Customer, action: AccountChange['action'
     verified: false,
     verifiedBy: null,
     verifiedAt: null,
+    requestId: req?.id ?? null,
   };
   x.history.push(change);
   x.lastModifiedAt = c.t;
@@ -626,10 +628,10 @@ function recordAccountChange(c: Ctx, x: Customer, action: AccountChange['action'
 }
 
 /** Switching the primary redirects every future payment to this customer. */
-function makePrimary(c: Ctx, x: Customer, account: string): AccountChange {
+function makePrimary(c: Ctx, x: Customer, account: string, req: ClientRequest | null = null): AccountChange {
   const previous = x.primary;
   x.primary = account;
-  return recordAccountChange(c, x, 'SET_PRIMARY', account, previous);
+  return recordAccountChange(c, x, 'SET_PRIMARY', account, previous, req);
 }
 
 H['CLIENT_DATA.CUSTOMER_RECORDS.VIEW_CUSTOMERS'] = (c, q) => {
@@ -655,8 +657,8 @@ H['CLIENT_DATA.CUSTOMER_RECORDS.ADD_ACCOUNT'] = (c, q) => {
   const req = linkedRequest(c, q, ['ADD_ACCOUNT', 'ADD_AND_PRIMARY']);
   if (typeof req === 'string') return bad(req);
   x.accounts.push(acc);
-  const ids = [recordAccountChange(c, x, 'ADD_ACCOUNT', acc, x.primary).id];
-  if (primary) ids.push(makePrimary(c, x, acc).id);
+  const ids = [recordAccountChange(c, x, 'ADD_ACCOUNT', acc, x.primary, req).id];
+  if (primary) ids.push(makePrimary(c, x, acc, req).id);
   if (req) closeRequest(c, req, 'DONE');
   return good(
     `${acc} added to ${x.id} ${x.name}${primary ? ' as their primary account' : ''}. Waiting for verification: ${ids.join(', ')}.${req ? ` ${req.id} is done.` : ''}`,
@@ -674,7 +676,7 @@ H['CLIENT_DATA.CUSTOMER_RECORDS.SET_PRIMARY'] = (c, q) => {
   if (x.primary === acc) return bad(`${acc} is already ${x.id}'s primary account.`);
   const req = linkedRequest(c, q, ['SET_PRIMARY', 'ADD_AND_PRIMARY']);
   if (typeof req === 'string') return bad(req);
-  const change = makePrimary(c, x, acc);
+  const change = makePrimary(c, x, acc, req);
   if (req) closeRequest(c, req, 'DONE');
   return good(
     `${x.id} ${x.name} is now paid into ${acc}. Waiting for verification: ${change.id}.${req ? ` ${req.id} is done.` : ''}`,
@@ -693,7 +695,7 @@ H['CLIENT_DATA.CUSTOMER_RECORDS.REMOVE_ACCOUNT'] = (c, q) => {
   const req = linkedRequest(c, q, ['REMOVE_ACCOUNT']);
   if (typeof req === 'string') return bad(req);
   x.accounts = x.accounts.filter((a) => a !== acc);
-  const change = recordAccountChange(c, x, 'REMOVE_ACCOUNT', acc, x.primary);
+  const change = recordAccountChange(c, x, 'REMOVE_ACCOUNT', acc, x.primary, req);
   if (req) closeRequest(c, req, 'DONE');
   return good(
     `${acc} removed from ${x.id} ${x.name}. Waiting for verification: ${change.id}.${req ? ` ${req.id} is done.` : ''}`,
@@ -711,7 +713,8 @@ function changeLine(c: Ctx, h: AccountChange): string {
   const what =
     h.action === 'ADD_ACCOUNT' ? `added ${h.account}` : h.action === 'REMOVE_ACCOUNT' ? `removed ${h.account}` : `primary ${h.previousPrimary} -> ${h.account}`;
   const status = h.verified ? `[VERIFIED by ${h.verifiedBy ? nameOf(c.s, h.verifiedBy) : '?'}]` : '[UNVERIFIED]';
-  return `${h.id.padEnd(6)} ${fmtClock(h.t)}  ${h.customerId.padEnd(4)} ${(x?.name ?? '?').padEnd(22)} ${what}  by ${nameOf(c.s, h.byOwner)}  ${status}`;
+  const forReq = h.requestId ? `  for ${h.requestId}` : ''; // the request it was linked to when it was made
+  return `${h.id.padEnd(6)} ${fmtClock(h.t)}  ${h.customerId.padEnd(4)} ${(x?.name ?? '?').padEnd(22)} ${what}  by ${nameOf(c.s, h.byOwner)}${forReq}  ${status}`;
 }
 
 /** PENDING: account changes nobody has verified yet. ALL: the most recent changes. */
@@ -1424,7 +1427,7 @@ H['HIDDEN_HOST.BLACKNET.POST_MESSAGE'] = (c, q) => {
 /** Each mule account: the customer it is on (and whether it is their primary) or floating, and its balance. */
 H['HIDDEN_HOST.TARGET_LEDGER.VIEW_TARGETS'] = (c) =>
   good(
-    `Target accounts: ${money(c.s.totals.stolen)} of ${money(c.s.config.blackTarget)} diverted.`,
+    `Target accounts: ${money(c.s.totals.stolen)} of ${money(c.s.config.blackTarget)} diverted.${thiefTargetMet(c.s) ? ' Heist secured: Hold funds until close of business, or shut the bank down to escape with your prize.' : ''}`,
     c.s.targets.map((tg) => {
       const owner = accountOwner(c.s, tg.account);
       const where = owner ? `${owner.id}${owner.primary === tg.account ? ' (primary)' : ''}` : 'floating';

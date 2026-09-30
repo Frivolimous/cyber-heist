@@ -271,7 +271,7 @@ function renderDev(): void {
       .filter((id) => !game.players[id].fake) // planted users are records, not seats you can control
       .map((id) => `<option value="${id}" ${id === selected ? 'selected' : ''}>${esc(game.players[id].name)}${game.players[id].bot ? ' (bot)' : id === MASTER_SEAT && !game.scenario ? ' (master access)' : ''}${online[id] ? ` · ${online[id]} online` : ''}</option>`)
       .join('')}</select></label>
-    <span class="grp">${btn('speed:0', 'Pause', speed === 0)}${btn('speed:1', '1x', speed === 1)}${btn('speed:5', '5x', speed === 5)}${btn('speed:20', '20x', speed === 20)}<button data-act="skip:30">+30s</button></span>
+    <span class="grp">${btn('speed:0', 'Pause', speed === 0)}${btn('speed:0.5', '0.5x', speed === 0.5)}${btn('speed:1', '1x', speed === 1)}${btn('speed:5', '5x', speed === 5)}${btn('speed:20', '20x', speed === 20)}<button data-act="skip:30">+30s</button></span>
     <label><input type="checkbox" data-f="god" ${god ? 'checked' : ''}> show allegiances</label>
     <label>table <select data-f="scenario" title="Applies on New game">${[['', 'normal'], ['DUO', SCENARIO_LABEL.DUO], ['SOLO', SCENARIO_LABEL.SOLO]]
       .map(([v, l]) => `<option value="${v}" ${(scenario ?? '') === v ? 'selected' : ''}>${l}</option>`)
@@ -402,7 +402,7 @@ function renderStatus(): void {
       ${v.me.terminated ? '<span class="chip terminated">Terminated</span>' : ''}
       <span id="lock" class="chip lock" hidden></span></div>
     <div class="clock"><span id="phase" class="phase"></span><span id="pace" class="pace"></span><b id="elapsed"></b><span class="ends" title="The game ends at this time">/ ${fmtClock(v.durationSec)}</span></div>
-    <div class="throughput"><div class="bar"><i id="bar"></i></div><span id="thr"></span></div>
+    <div class="throughput" title="Every payment settled today, however it counts"><span id="thr"></span></div>
     ${banner}`;
   updateClock();
   renderEnd();
@@ -481,8 +481,7 @@ function updateClock(): void {
   pace.textContent = PACE_TEXT[v.pace];
   pace.className = `pace ${v.pace}`;
   $('elapsed').textContent = fmtClock(v.t);
-  $('bar').style.width = `${Math.min(100, (v.processed / v.whiteTarget) * 100)}%`;
-  $('thr').textContent = `${money(v.processed)} of ${money(v.whiteTarget)} legitimate payments settled`;
+  $('thr').textContent = `Settled today: ${money(v.settled)}`;
   const lock = $('lock');
   lock.hidden = v.me.lockedForSec <= 0;
   lock.textContent = `Workstation locked ${v.me.lockedForSec}s`;
@@ -867,7 +866,10 @@ function browserHtml(w: Win): string {
     }
     crumbs = `<div class="crumbs">${parts.join('<i>/</i>')}${r.kind === 'module' ? bellHtml(`${r.system}.${r.module}`) : ''}</div>`;
     if (r.kind === 'system') {
-      return `${nav}${crumbs}${splitBody(w, '', `<div class="tiles">${sys.modules
+      // On the unregistered host, the tool kits you can use (read & write) come first; the rest keep their order.
+      const rank = (id: string): number => (sys.id === 'HIDDEN_HOST' && HOST_KITS.includes(id) ? 1 + ['WRITE', 'READ', 'NONE'].indexOf(moduleAccess(view(), sys.id, id)) : 0);
+      const modules = [...sys.modules].sort((a, b) => rank(a.id) - rank(b.id));
+      return `${nav}${crumbs}${splitBody(w, '', `<div class="tiles">${modules
         .map((m) => {
           const a = moduleAccess(view(), sys.id, m.id);
           const kit = sys.id === 'HIDDEN_HOST' && HOST_KITS.includes(m.id);

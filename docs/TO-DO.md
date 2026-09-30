@@ -30,3 +30,11 @@ thieves can choose to end the game or not when they meet their goal
 Variable mule account number? Or always 3?
 
 a way to tap into the chat feed without knowing server ip?
+
+look at "all in" vs "trickle" strategies. Balanced?
+Big score can dwarf thief goals. ie. one big $8m score is 2+x the $3m target at 3 thieves
+
+when does payment count to score? instant or after clawback countdown?
+
+
+check: where does it state bank goal? maybe in the profile?
