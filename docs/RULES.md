@@ -5,6 +5,19 @@ Decisions marked **assumed** were not in the design brief. Change them in `catal
 
 ## Win conditions
 
+Every way the game ends (`EndKind`, ending.ts and engine.ts):
+
+| Ending | Winner | When |
+|---|---|---|
+| Black Hat target | Black Hats | at once, when the money sitting in the mule accounts reaches $1M per Black Hat |
+| Bank target | White Hats | at close of business (timer runs out), if $15M per player of legitimate payments settled |
+| Bank short | nobody (both lose) | at close of business, with neither target met |
+| Black Hats terminated | White Hats | at once, when every Black Hat is terminated |
+| Host shut down | White Hats | at once, when a Firewall "revoke all access" completes on the unregistered host |
+| Bank shut down | nobody | at once, when a Firewall "revoke all access" completes on one of the bank's own systems |
+
+Details:
+
 - **Black Hats** win **at once** when stolen money reaches **$1M per Black Hat** ($3M at 10 players).
   Stolen money is whatever sits in the Target Ledger (mule) accounts, which start empty: it arrives when a
   payment SETTLES into one of them, and leaves again on a successful reversal or when a mule account pays out.
@@ -28,18 +41,8 @@ Decisions marked **assumed** were not in the design brief. Change them in `catal
   as an aside anyone who **embezzled** ("Embezzled $2,351": payments settled into their own account, which
   count toward no goal). It can be put away to look at the desk and brought back from the status bar.
 
-## Termination
+## Targets, volume and time of day
 
-- A player is **terminated** for good when **every bank credential they own has been revoked**, or when
-  a Firewall **"revoke all access" completes on their workstation's IP**. Nothing brings them back,
-  White Hat or Black Hat.
-- The Master Log records "<name> (<ip>) terminated: ..." and Employee Records mark them **TERMINATED**.
-  Permissions refuses to issue them credentials.
-- They lose every bank system, workstation logins and connections: every bank page shows "ERROR: Your
-  credentials are invalid." Private messages still work.
-- A terminated Black Hat **keeps the unregistered host**: it is outside the bank's firewall, so a revoked
-  IP does not cut it off and its credentials are not revoked. (A timed Firewall block still does.)
-- Planted users (Infiltration) are terminated the same way once they have been issued a credential.
 - **Volume scales with the table** (`scaledConfig` in `setup.ts`). Each Personal Banker gets a client
   request about every **90 seconds** on average. Automatic traffic fills the rest, up to about $17.4M per
   player in total (1.16x the target), but automatic volume is capped at **80% of the bank target**, so the
@@ -75,6 +78,18 @@ Decisions marked **assumed** were not in the design brief. Change them in `catal
 | 4m - 1m | 20% - 5% | End of Day | Busy |
 | 1m - 0m | 5% - 0% | Close of Business | Closed |
 
+## Termination
+
+- A player is **terminated** for good when **every bank credential they own has been revoked**, or when
+  a Firewall **"revoke all access" completes on their workstation's IP**. Nothing brings them back,
+  White Hat or Black Hat.
+- The Master Log records "<name> (<ip>) terminated: ..." and Employee Records mark them **TERMINATED**.
+  Permissions refuses to issue them credentials.
+- They lose every bank system, workstation logins and connections: every bank page shows "ERROR: Your
+  credentials are invalid." Private messages still work.
+- A terminated Black Hat **keeps the unregistered host**: it is outside the bank's firewall, so a revoked
+  IP does not cut it off and its credentials are not revoked. (A timed Firewall block still does.)
+- Planted users (Infiltration) are terminated the same way once they have been issued a credential.
 ## Roles
 
 **Player count:** 6 to 30 (`MIN_PLAYERS` / `MAX_PLAYERS`; anything else is refused). The cap of 30 is
