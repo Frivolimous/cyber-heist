@@ -54,7 +54,7 @@ Details:
   a larger share of players are bankers. The rates below are game-wide averages; the time of day speeds
   them up and slows them down:
 
-| Players | Bank target | Hacker target | Automatic | Requests (payment share) |
+| Players | Bank target | Thief target | Automatic | Requests (payment share) |
 |---|---|---|---|---|
 | 6 | $90M | $2M | every 14s, ~$59M | every 45s, ~$46M |
 | 10 | $150M | $3M | every 10s, ~$82M | every 23s, ~$92M |
@@ -99,7 +99,7 @@ Details:
 
 **Player count:** 6 to 30 (`MIN_PLAYERS` / `MAX_PLAYERS`; anything else is refused). The cap of 30 is
 for now and may move. For `n` players
-(`roleCounts` / `hackerCount` in `catalog.ts`):
+(`roleCounts` / `thiefCountFor` in `catalog.ts`):
 
 - Bank Manager = 1
 - IT Specialist = 1 + floor((n − 2) / 6)
@@ -556,8 +556,8 @@ have no timed tools, so no bell.
   are dealt at random each game: every operative gets exactly one. With more kits than operatives, the
   rest go unused; with more operatives than kits (15+ players), kits repeat so everyone has one. Operatives can tell each other
   kit codes like any other code.
-- **Blacknet aliases**: every player is dealt a random hacker alias at the start (from 40 in
-  `HACKER_ALIASES`, core.ts, never repeated in a game) and cannot change it. A post carries the alias of
+- **Blacknet aliases**: every player is dealt a random Blacknet alias at the start (from 40 in
+  `BLACKNET_ALIASES`, core.ts, never repeated in a game) and cannot change it. A post carries the alias of
   the credential's owner, so a borrowed code posts as its owner. A Thief sees their alias on their
   workstation profile and on the Blacknet page; a visitor to their workstation does not.
 - **Target Ledger** is read-only: the total diverted against the goal, then each of the 3 mule accounts

@@ -23,13 +23,13 @@ export interface GameConfig {
   // Scaling with the table (see scaledConfig in setup.ts). The four derived values below are computed
   // from these at game creation unless the game's config sets them explicitly.
   whiteTargetPerPlayer: number; // bank target per player
-  blackTargetPerHacker: number; // the Thieves' goal, per Thief
+  blackTargetPerThief: number; // the Thieves' goal, per Thief
   volumePerPlayer: number; // legitimate payment volume offered over the game (automatic + requested), per player
   requestEverySecPerBanker: number; // each Personal Banker gets a client request about this often
   customersPerBanker: number;
   whiteTarget: number; // derived: legitimate money that must be settled for the bank to win
   blackTarget: number; // derived: stolen money for the Thieves to win
-  thiefCount: number | null; // null = hackerCount(n): floor(n / 3)
+  thiefCount: number | null; // null = thiefCountFor(n): floor(n / 3)
   npcIntervalSec: number; // derived: one automatic payment every N seconds
   npcMinAmount: number; // automatic payments: between these (and what the paying account can afford)
   npcMaxAmount: number;

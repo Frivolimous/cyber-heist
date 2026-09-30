@@ -57,7 +57,7 @@ Built, but the numbers or the balance are a first guess.
     good cover for the Thieves, or just noise?
   - the amount factors in `scaledConfig` (0.94 automatic, 0.39 requested) were measured by simulation;
     re-measure if payment sizing or tiers change;
-  - the hacker target grows with Thieves, but their chances per payment do not;
+  - the Thieves' target grows with their number, but their chances per payment do not;
   - the 20-minute timer (was 40), and time-of-day pacing (busy = 4x slow).
 - **Endings.** At close of business the bank wins if it met its target; otherwise both sides lose, so
   Thieves short of their goal may prefer to stall the bank rather than steal. Terminating every Thief
@@ -77,7 +77,7 @@ Suggested, not agreed. Pick up if a playtest shows the need.
 - **Result flash:** new terminal lines flash briefly, green for OK and red for FAILED, so a mistake is
   noticed even when the terminal is busy.
 - **Taskbar attention:** a minimized or background window's taskbar button pulses when its bell rings.
-- **Hacker styling:** faint scanlines or a flicker when an unregistered host window opens.
+- **Hidden host styling:** faint scanlines or a flicker when an unregistered host window opens.
 - **Alerts that land:** a tier 3-4 alert flashes the Master Log window (or its taskbar button) red.
 
 ## Deferred (from the original design)

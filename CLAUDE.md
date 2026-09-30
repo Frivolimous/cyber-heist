@@ -31,7 +31,7 @@ through `rng.ts` (seeded, stored in state). `getPlayerView` (views.ts) is the on
 never hand raw `GameState` to player-facing code.
 
 **Everything a player can do is data in `catalog.ts`**: systems > modules > functions (`fn(...)` with
-params and READ/WRITE), plus `ROLES` (starting credentials per role), `roleCounts`/`hackerCount`
+params and READ/WRITE), plus `ROLES` (starting credentials per role), `roleCounts`/`thiefCountFor`
 (player-count formulas), `MIN_PLAYERS`/`MAX_PLAYERS`, and `DEFAULT_CONFIG`. Each catalog function has one
 handler in `handlers.ts` keyed `H['SYSTEM.MODULE.FN']`. `engine.ts` does everything common before a
 handler runs: code lookup, scope check, lockouts, firewall blocks, offline modules, logging.

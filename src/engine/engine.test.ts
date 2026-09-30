@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { accountVerified, applyAction, CHANNELS, createGame, CREDENTIAL_SHARING_ENABLED, DAY_PHASES, dayPhaseAt, nextArrival, paceMultiplier, ENCRYPTION_ENABLED, getPlayerView, grantMasterAccess, hackerCount, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, SYSTEMS, tick } from './index';
+import { accountVerified, applyAction, CHANNELS, createGame, CREDENTIAL_SHARING_ENABLED, DAY_PHASES, dayPhaseAt, nextArrival, paceMultiplier, ENCRYPTION_ENABLED, getPlayerView, grantMasterAccess, thiefCountFor, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, SYSTEMS, tick } from './index';
 import type { Action, ActionResult, GameConfig, GameState, Player, RoleId, SystemId } from './index';
 import { NPC_AMOUNT_FACTOR, REQUEST_AMOUNT_FACTOR } from './setup';
 
@@ -91,11 +91,11 @@ test('setup deals roles, allegiances, unique codes and a job description for eve
   }
 });
 
-test('any table of 6 to 30: roles and hackers follow the formulas, and every operative gets a kit', () => {
+test('any table of 6 to 30: roles and thieves follow the formulas, and every operative gets a kit', () => {
   const table = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `P${i}` }));
   assert.throws(() => createGame({ seed: 1, players: table(MIN_PLAYERS - 1), now: T0 }), /at least 6 players/);
   assert.throws(() => createGame({ seed: 1, players: table(MAX_PLAYERS + 1), now: T0 }), /at most 30 players/);
-  // Spot checks against the formulas, as [n, Bank Manager, IT, Personal Banker, A&R, hackers].
+  // Spot checks against the formulas, as [n, Bank Manager, IT, Personal Banker, A&R, thieves].
   const expected = [
     [6, 1, 1, 2, 2, 2],
     [7, 1, 2, 2, 2, 2], // the fixed exception
@@ -106,9 +106,9 @@ test('any table of 6 to 30: roles and hackers follow the formulas, and every ope
     [14, 1, 3, 6, 4, 4],
     [20, 1, 4, 9, 6, 6],
   ];
-  for (const [n, bm, it, pb, ar, hackers] of expected) {
+  for (const [n, bm, it, pb, ar, thieves] of expected) {
     assert.deepEqual(roleCounts(n), { BANK_MANAGER: bm, IT_SPECIALIST: it, PERSONAL_BANKER: pb, ACCOUNTS_RECEIVABLES: ar }, `n=${n}`);
-    assert.equal(hackerCount(n), hackers, `n=${n}`);
+    assert.equal(thiefCountFor(n), thieves, `n=${n}`);
   }
   for (let n = MIN_PLAYERS; n <= MAX_PLAYERS; n++) {
     const s = createGame({ seed: n, players: table(n), now: T0 });
@@ -117,7 +117,7 @@ test('any table of 6 to 30: roles and hackers follow the formulas, and every ope
     for (const role of Object.keys(want) as RoleId[]) assert.equal(ps.filter((p) => p.role === role).length, want[role], `n=${n} ${role}`);
     assert.ok(Object.values(want).every((k) => k >= 1), `n=${n}: every role is present`);
     const blacks = ps.filter((p) => p.allegiance === 'BLACK');
-    assert.equal(blacks.length, hackerCount(n), `n=${n} hackers`);
+    assert.equal(blacks.length, thiefCountFor(n), `n=${n} thieves`);
     for (const b of blacks) {
       const kits = Object.values(s.credentials).filter((c) => c.owner === b.id && HOST_KITS.includes(c.module ?? ''));
       assert.ok(kits.length >= 1, `n=${n}: ${b.name} has a kit`);
@@ -131,7 +131,7 @@ test('allegiances: every role but the Bank Manager has at least one regular empl
     for (let seed = 1; seed <= 40; seed++) {
       const s = createGame({ seed, players: Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `P${i}` })), now: T0 });
       const players = Object.values(s.players);
-      assert.equal(players.filter((p) => p.allegiance === 'BLACK').length, hackerCount(n), `n=${n} seed=${seed}`);
+      assert.equal(players.filter((p) => p.allegiance === 'BLACK').length, thiefCountFor(n), `n=${n} seed=${seed}`);
       for (const role of ['IT_SPECIALIST', 'PERSONAL_BANKER', 'ACCOUNTS_RECEIVABLES'] as RoleId[]) {
         assert.ok(players.some((p) => p.role === role && p.allegiance === 'WHITE'), `n=${n} seed=${seed}: no regular employee ${role}`);
       }
@@ -173,7 +173,7 @@ test('the economy scales with the table: targets, customers, requests and automa
     const bankers = roleCounts(n).PERSONAL_BANKER;
     assert.equal(c.durationSec, 20 * 60);
     assert.equal(c.whiteTarget, 15_000_000 * n, `n=${n} bank target`);
-    assert.equal(c.blackTarget, 1_000_000 * hackerCount(n), `n=${n} hacker target`);
+    assert.equal(c.blackTarget, 1_000_000 * thiefCountFor(n), `n=${n} thief target`);
     assert.equal(s.customers.length, 3 * bankers, `n=${n} customers`);
     assert.ok(new Set(s.customers.map((x) => x.name)).size === s.customers.length, 'no duplicate customers');
     // Each banker gets a request about every 90 seconds.

@@ -1,7 +1,7 @@
 // Builds a fresh game: roles, allegiances, credentials and bank data.
 
-import { DEFAULT_CONFIG, hackerCount, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, roleCreds, ROLES, ROLE_ORDER, SHARED_SECURITY_TABLE, SYSTEMS } from './catalog';
-import { addLog, HACKER_ALIASES, keyOf, money } from './core';
+import { DEFAULT_CONFIG, thiefCountFor, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, roleCreds, ROLES, ROLE_ORDER, SHARED_SECURITY_TABLE, SYSTEMS } from './catalog';
+import { addLog, BLACKNET_ALIASES, keyOf, money } from './core';
 import { createCredential, createWorkstationCredential } from './credentials';
 import { spawnNpc } from './bank';
 import { HOST_WATCH_DEFAULT, WATCHABLE } from './notify';
@@ -87,7 +87,7 @@ export const PERSON_CUSTOMERS: ReadonlySet<string> = new Set([
 
 /**
  * The values that scale with the table, from the per-player settings in `base`:
- * - targets: whiteTargetPerPlayer x players, blackTargetPerHacker x Thieves;
+ * - targets: whiteTargetPerPlayer x players, blackTargetPerThief x Thieves;
  * - client requests: each Personal Banker gets one about every requestEverySecPerBanker seconds;
  * - automatic payments fill the rest, so that automatic payments plus requested payments add up to about
  *   volumePerPlayer x players over the game, but never more than MAX_AUTO_SHARE of the bank target. Manual
@@ -99,7 +99,7 @@ export const PERSON_CUSTOMERS: ReadonlySet<string> = new Set([
 export const NPC_AMOUNT_FACTOR = 0.94; // average automatic payment / middle of npcMinAmount..npcMaxAmount
 export const REQUEST_AMOUNT_FACTOR = 0.39; // average requested payment / (requestAmountFactor x middle of requestMinAmount..requestMaxAmount)
 const MAX_AUTO_SHARE = 0.8; // automatic volume is capped at this share of the bank target
-export function scaledConfig(base: GameConfig, n: number, hackers: number, bankers = roleCounts(n).PERSONAL_BANKER): Pick<GameConfig, 'whiteTarget' | 'blackTarget' | 'npcIntervalSec' | 'requestIntervalSec'> {
+export function scaledConfig(base: GameConfig, n: number, thieves: number, bankers = roleCounts(n).PERSONAL_BANKER): Pick<GameConfig, 'whiteTarget' | 'blackTarget' | 'npcIntervalSec' | 'requestIntervalSec'> {
   const requestIntervalSec = base.requestEverySecPerBanker / bankers;
   const requests = base.durationSec / requestIntervalSec;
   const avgRequested = (REQUEST_AMOUNT_FACTOR * base.requestAmountFactor * (base.requestMinAmount + base.requestMaxAmount)) / 2;
@@ -109,7 +109,7 @@ export function scaledConfig(base: GameConfig, n: number, hackers: number, banke
   const npcVolume = Math.max(Math.min(base.volumePerPlayer * n - requestedVolume, MAX_AUTO_SHARE * whiteTarget), avgNpc); // at least one payment's worth
   return {
     whiteTarget,
-    blackTarget: base.blackTargetPerHacker * hackers,
+    blackTarget: base.blackTargetPerThief * thieves,
     npcIntervalSec: base.durationSec / (npcVolume / avgNpc),
     requestIntervalSec,
   };
@@ -138,10 +138,10 @@ export function createGame(o: NewGameOptions): GameState {
   // Scaled values are derived from the per-player settings; anything the caller sets explicitly wins.
   // A scenario scales its economy as SCENARIO_SCALE players, with the bankers it really has.
   const base: GameConfig = { ...DEFAULT_CONFIG, ...o.config };
-  const blackCount = scenario === 'DUO' ? 0 : scenario === 'SOLO' ? 1 : Math.min(n - 1, Math.max(1, base.thiefCount ?? hackerCount(n)));
+  const blackCount = scenario === 'DUO' ? 0 : scenario === 'SOLO' ? 1 : Math.min(n - 1, Math.max(1, base.thiefCount ?? thiefCountFor(n)));
   const counts = scenario === 'DUO' ? { BANK_MANAGER: 0, IT_SPECIALIST: 0, PERSONAL_BANKER: 1, ACCOUNTS_RECEIVABLES: 1 } : roleCounts(n);
   const scaled = scenario
-    ? scaledConfig(base, SCENARIO_SCALE[scenario], scenario === 'SOLO' ? hackerCount(SCENARIO_SCALE.SOLO) : 0, counts.PERSONAL_BANKER)
+    ? scaledConfig(base, SCENARIO_SCALE[scenario], scenario === 'SOLO' ? thiefCountFor(SCENARIO_SCALE.SOLO) : 0, counts.PERSONAL_BANKER)
     : scaledConfig(base, n, blackCount);
   const config: GameConfig = { ...base, ...scaled, ...o.config };
   const s: GameState = {
@@ -208,7 +208,7 @@ export function createGame(o: NewGameOptions): GameState {
     for (const b of SOLO_BOTS) roleOf.set(b.id, b.role);
   } else shuffle(s, s.playerOrder).forEach((id, i) => roleOf.set(id, roleSeats[i]));
 
-  // Allegiances: hackerCount(n) Thieves, unless the config fixes the number (blackCount, above), taken in a
+  // Allegiances: thiefCountFor(n) Thieves, unless the config fixes the number (blackCount, above), taken in a
   // shuffled order. Every role but the Bank Manager keeps at least one regular employee: a player who would be their
   // role's last regular employee is skipped. At SHARED_SECURITY_TABLE players the lone IT Specialist and the Bank
   // Manager (who then shares the Firewall) count as one group: at least one of the two stays White.
@@ -241,7 +241,7 @@ export function createGame(o: NewGameOptions): GameState {
   const hosts = shuffle(net, Array.from({ length: 253 }, (_, k) => k + 2)).slice(0, n);
   s.hiddenHost = `10.${randInt(net, 32, 254)}.${randInt(net, 0, 255)}.${randInt(net, 2, 254)}`;
   // Blacknet aliases, also from a side stream: one each, never repeated.
-  const aliases = shuffle({ rngState: (o.seed ^ 0x1a5e7b3d) | 0 }, HACKER_ALIASES);
+  const aliases = shuffle({ rngState: (o.seed ^ 0x1a5e7b3d) | 0 }, BLACKNET_ALIASES);
 
   // Players.
   for (let i = 0; i < n; i++) {

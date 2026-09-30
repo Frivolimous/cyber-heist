@@ -22,7 +22,7 @@ const GROUPS: { title: string; note?: string; fields: Field[] }[] = [
     note: 'The test scenarios ignore the Thief count.',
     fields: [
       { key: 'whiteTargetPerPlayer', label: 'Bank target per player ($)' },
-      { key: 'blackTargetPerHacker', label: 'Heist goal per Thief ($)', min: 1 },
+      { key: 'blackTargetPerThief', label: 'Heist goal per Thief ($)', min: 1 },
       { key: 'thiefCount', label: 'Thieves (blank: a third of the table)', int: true, min: 1, blank: true },
     ],
   },

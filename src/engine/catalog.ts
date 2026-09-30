@@ -540,12 +540,12 @@ export function roleCreds(role: RoleId, n: number): CredTemplate[] {
 }
 
 /** How many Thieves a game of `n` players gets (unless the config fixes it). */
-export const hackerCount = (n: number): number => Math.floor(n / 3);
+export const thiefCountFor = (n: number): number => Math.floor(n / 3);
 
 export const DEFAULT_CONFIG: GameConfig = {
   durationSec: 20 * 60,
   whiteTargetPerPlayer: 15_000_000,
-  blackTargetPerHacker: 1_000_000,
+  blackTargetPerThief: 1_000_000,
   volumePerPlayer: 17_400_000, // 1.16x the target: room for held, rejected and missed payments
   requestEverySecPerBanker: 90,
   customersPerBanker: 3,
