@@ -1,7 +1,7 @@
 // Builds a fresh game: roles, allegiances, credentials and bank data.
 
 import { DEFAULT_CONFIG, hackerCount, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, ROLES, ROLE_ORDER, SYSTEMS } from './catalog';
-import { addLog, keyOf, money } from './core';
+import { addLog, HACKER_ALIASES, keyOf, money } from './core';
 import { createCredential, createWorkstationCredential } from './credentials';
 import { spawnNpc } from './bank';
 import { assignBankers, assignContacts, schedulePhishing, spawnRequest } from './requests';
@@ -83,7 +83,7 @@ export const PERSON_CUSTOMERS: ReadonlySet<string> = new Set([
  * below the middle of its range; the factors below are measured averages over simulated games.
  */
 export const NPC_AMOUNT_FACTOR = 0.94; // average automatic payment / middle of npcMinAmount..npcMaxAmount
-export const REQUEST_AMOUNT_FACTOR = 0.41; // average requested payment / (requestAmountFactor x middle of requestMinAmount..requestMaxAmount)
+export const REQUEST_AMOUNT_FACTOR = 0.39; // average requested payment / (requestAmountFactor x middle of requestMinAmount..requestMaxAmount)
 const MAX_AUTO_SHARE = 0.8; // automatic volume is capped at this share of the bank target
 export function scaledConfig(base: GameConfig, n: number, hackers: number): Pick<GameConfig, 'whiteTarget' | 'blackTarget' | 'npcIntervalSec' | 'requestIntervalSec'> {
   const bankers = roleCounts(n).PERSONAL_BANKER;
@@ -182,8 +182,18 @@ export function createGame(o: NewGameOptions): GameState {
   const roleOf = new Map<string, RoleId>();
   shuffle(s, s.playerOrder).forEach((id, i) => roleOf.set(id, roleSeats[i]));
 
-  // Allegiances: hackerCount(n) Black Hats, unless the config fixes the number (blackCount, above).
-  const blackIds = new Set(shuffle(s, s.playerOrder).slice(0, blackCount));
+  // Allegiances: hackerCount(n) Black Hats, unless the config fixes the number (blackCount, above), taken in a
+  // shuffled order. Every role but the Bank Manager keeps at least one White Hat: a player who would be their
+  // role's last White Hat is skipped.
+  const whitesLeft = { ...counts };
+  const blackIds = new Set<string>();
+  for (const id of shuffle(s, s.playerOrder)) {
+    if (blackIds.size >= blackCount) break;
+    const role = roleOf.get(id)!;
+    if (role !== 'BANK_MANAGER' && whitesLeft[role] <= 1) continue;
+    blackIds.add(id);
+    whitesLeft[role]--;
+  }
 
   // Bank data.
   // customersPerBanker per Personal Banker, drawn at random from the name pool (CU1, CU2, ... in draw order).
@@ -200,6 +210,8 @@ export function createGame(o: NewGameOptions): GameState {
   const net = { rngState: (o.seed ^ 0x51ed270b) | 0 };
   const hosts = shuffle(net, Array.from({ length: 253 }, (_, k) => k + 2)).slice(0, n);
   s.hiddenHost = `10.${randInt(net, 32, 254)}.${randInt(net, 0, 255)}.${randInt(net, 2, 254)}`;
+  // Blacknet aliases, also from a side stream: one each, never repeated.
+  const aliases = shuffle({ rngState: (o.seed ^ 0x1a5e7b3d) | 0 }, HACKER_ALIASES);
 
   // Players.
   for (let i = 0; i < n; i++) {
@@ -210,6 +222,7 @@ export function createGame(o: NewGameOptions): GameState {
       name,
       role: roleOf.get(id)!,
       allegiance,
+      alias: aliases[i],
       objective: '',
       motivation: pick(s, allegiance === 'BLACK' ? BLACK_MOTIVATIONS : WHITE_MOTIVATIONS),
       ip: `10.1.0.${hosts[i]}`,
@@ -225,7 +238,7 @@ export function createGame(o: NewGameOptions): GameState {
       lastActiveAt: null,
       monitoring: [],
       remoteAccess: [],
-      watching: [],
+      watching: [...ROLES[roleOf.get(id)!].watch], // the role's usual bells start on (switchable in play)
       notifications: [],
       terminated: null,
     };

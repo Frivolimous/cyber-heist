@@ -8,6 +8,7 @@ import {
   advanceState,
   applyAction,
   createGame,
+  CREDENTIAL_SHARING_ENABLED,
   findFn,
   findModule,
   findSystem,
@@ -68,6 +69,7 @@ interface Win {
   notice: Line[]; // one-off notices on workstation pages
   scrollEnd?: boolean; // a command just ran: the next render scrolls the page and its terminal to the bottom
   liveEnd?: number; // live monitor: w.out length right after its last block (so the next refresh can replace it)
+  unsnap?: { w: number; h: number }; // snapped to half the desk: its size before, given back when dragged away
 }
 
 // ---- Sandbox state ----------------------------------------------------------------
@@ -88,6 +90,7 @@ let truthOpen = false;
 let endHidden = false; // the end screen was put away to look at the desk
 let tickCount = 0;
 let desks: Record<PlayerId, Win[]> = {}; // each seat keeps its own open windows
+const deskShown = new Set<PlayerId>(); // seats whose desk has been on screen this game (it opened their workstation)
 let winSeq = 0;
 let zSeq = 10;
 const seenMessages: Record<PlayerId, number> = {};
@@ -102,6 +105,7 @@ app.innerHTML = `
         <nav id="rail" aria-label="Employees"></nav>
         <div id="desk" class="desk">
           <div id="icons" class="icons"></div>
+          <div id="snap" class="snap-preview" hidden></div>
           <div id="wins"></div>
           <footer id="taskbar" class="taskbar"></footer>
           <div id="toasts" class="toasts" aria-live="polite"></div>
@@ -122,9 +126,32 @@ const view = (): PlayerView => {
   return getPlayerView(game, selected);
 };
 
+/**
+ * The button just pressed, if any. A remote screen marks it busy while its action travels to the host and
+ * back (~0.2s), so nobody presses twice or wonders whether it worked. Cleared once the click has been handled.
+ */
+let pressed: HTMLButtonElement | null = null;
+function notePressed(b: HTMLButtonElement | null | undefined): void {
+  if (!b || !client) return;
+  pressed = b;
+  setTimeout(() => (pressed = null), 0);
+}
+
 /** Plays an action as the selected seat: here, or through the host when this is a remote screen. */
 async function act(action: Action): Promise<ActionResult> {
-  if (client) return client.send(action);
+  if (client) {
+    const b = pressed;
+    pressed = null;
+    b?.classList.add('busy');
+    if (b) b.disabled = true;
+    try {
+      return await client.send(action);
+    } finally {
+      // Usually the window has been redrawn by now and the button is gone; if not, give it back.
+      b?.classList.remove('busy');
+      if (b) b.disabled = false;
+    }
+  }
   const r = applyAction(game, action, vNow);
   game = r.state;
   hostSession?.publish();
@@ -148,6 +175,7 @@ function newGame(seed: number): void {
   game = createGame({ seed, players: roster, now: vNow });
   grantMasterAccess(game, MASTER_SEAT);
   desks = {};
+  deskShown.clear();
   endHidden = false;
   for (const p of roster) {
     seenMessages[p.id] = 0;
@@ -309,36 +337,65 @@ function renderStatus(): void {
 
 // ---- Game: end screen ---------------------------------------------------------------------
 /** Both teams, who was on them and what they made, and how the game was won. Embezzlement is an aside. */
+/** The end screen already built (seat and ending), so redraws do not replay its reveal. */
+let endKey = '';
+const REVEAL_START = 0.5; // seconds: the first name appears
+const REVEAL_STEP = 0.22; // then one name after another, the Black Hats last
+const BAR_SEC = 0.9;
+
+/**
+ * The end screen is revealed in steps, for everyone watching on the call: the teams' names one at a time
+ * (Black Hats last), then how far each side got, then who won. A click on the card skips to the end.
+ */
 function renderEnd(): void {
   const el = $('endscreen');
   const end = view().end;
   el.hidden = !end || endHidden;
-  if (!end || endHidden) return;
+  if (!end) {
+    endKey = '';
+    return;
+  }
+  const key = `${selected}|${end.clock}|${end.headline}`;
+  if (key === endKey) return;
+  endKey = key;
+  const at = (sec: number): string => `style="--d:${sec.toFixed(2)}s"`;
+  // Reveal order: White Hats first, then the Black Hats.
+  const order = [...end.teams].sort((a, b) => (a.side === 'BLACK' ? 1 : 0) - (b.side === 'BLACK' ? 1 : 0)).flatMap((t) => t.members);
+  const barsAt = REVEAL_START + order.length * REVEAL_STEP + 0.1;
+  const verdictAt = barsAt + BAR_SEC;
   const made = (t: EndTeam): string =>
     `<div class="end-made"><b>${money(t.made)}</b> of ${money(t.target)} ${t.side === 'WHITE' ? 'settled' : 'diverted'}</div>
-     <div class="end-bar"><i style="width:${Math.min(100, (t.made / t.target) * 100)}%"></i></div>`;
+     <div class="end-bar"><i class="rv-bar" style="--d:${barsAt.toFixed(2)}s;width:${Math.min(100, (t.made / t.target) * 100)}%"></i></div>`;
   const member = (m: EndMember): string =>
-    `<li><span class="nm">${esc(m.name)}</span><span class="rl">${esc(m.roleLabel)}</span>
+    `<li class="rv" ${at(REVEAL_START + order.indexOf(m) * REVEAL_STEP)}><span class="nm">${esc(m.name)}</span><span class="rl">${esc(m.roleLabel)}</span>
       ${m.terminated ? '<span class="flag term">Terminated</span>' : ''}
       ${m.embezzled > 0 ? `<span class="flag emb">Embezzled ${money(m.embezzled)}</span>` : ''}</li>`;
   const anyEmbezzled = end.teams.some((t) => t.members.some((m) => m.embezzled > 0));
-  el.innerHTML = `<div class="end-card ${end.winner ?? 'NONE'}" role="dialog" aria-label="Game over">
+  el.innerHTML = `<div class="end-card ${end.winner ?? 'NONE'}" role="dialog" aria-label="Game over" title="Click to skip ahead">
     <p class="end-kicker">Game over at ${esc(end.clock)}</p>
-    <h2>${esc(end.headline)}</h2>
-    <p class="end-text">${esc(end.text)}</p>
+    <h2 class="rv verdict" ${at(verdictAt)}>${esc(end.headline)}</h2>
+    <p class="end-text rv" ${at(verdictAt + 0.3)}>${esc(end.text)}</p>
     <div class="end-teams">${end.teams
       .map(
-        (t) => `<section class="end-team ${t.side} ${t.won ? 'won' : ''}">
-          <header><h3>${esc(t.label)}</h3><span class="result">${t.won ? 'Won' : 'Lost'}</span></header>
+        (t) => `<section class="end-team ${t.side} ${t.won ? 'won' : ''}" ${at(verdictAt)}>
+          <header><h3>${esc(t.label)}</h3><span class="result rv" ${at(verdictAt)}>${t.won ? 'Won' : 'Lost'}</span></header>
           ${made(t)}
           <ul>${t.members.map(member).join('')}</ul>
         </section>`,
       )
       .join('')}</div>
-    ${anyEmbezzled ? `<p class="end-note">Embezzled money was paid into an employee's own account. It counts toward no one's goal.</p>` : ''}
-    <button class="end-close" data-act="endhide">Back to the desk</button>
+    ${anyEmbezzled ? `<p class="end-note rv" ${at(verdictAt + 0.3)}>Embezzled money was paid into an employee's own account. It counts toward no one's goal.</p>` : ''}
+    <button class="end-close rv" ${at(verdictAt + 0.3)} data-act="endhide">Back to the desk</button>
   </div>`;
 }
+
+// A click on the end card skips the reveal.
+$('endscreen').addEventListener('click', (e) => {
+  if ((e.target as HTMLElement).closest('button')) return;
+  $('endscreen')
+    .getAnimations({ subtree: true })
+    .forEach((a) => a.finish());
+});
 
 const PACE_TEXT: Record<Pace, string> = { SLOW: 'Slow', MEDIUM: 'Medium', BUSY: 'Busy', CLOSED: 'Closed' };
 
@@ -346,6 +403,7 @@ function updateClock(): void {
   const v = view();
   // Time of day, how busy it is, and the game clock counting up to the end.
   $('phase').textContent = v.dayPhase;
+  $('desk').dataset.phase = v.dayPhase.toLowerCase().replace(/ /g, '-'); // tints the desktop (style.css)
   const pace = $('pace');
   pace.textContent = PACE_TEXT[v.pace];
   pace.className = `pace ${v.pace}`;
@@ -456,6 +514,8 @@ function openWindow(kind: Win['kind'], first?: Route): Win {
   }
   markFocus();
   renderTaskbar();
+  const el = winEl(win);
+  if (el) animateWin(el, POP_IN, 170);
   return win;
 }
 
@@ -476,12 +536,89 @@ function placeWin(w: Win, el = winEl(w)): void {
   el.classList.toggle('max', w.max);
 }
 
+// ---- Window animations: open, close, minimize/restore (to and from the taskbar), maximize/restore ----
+// Purely visual: the window's state changes at once and the animation only plays over the top of it.
+
+const EASE = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
+const reduceMotion = (): boolean => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/** Plays keyframes on a window, replacing whatever it was already playing. Null when motion is off. */
+function animateWin(el: HTMLElement, frames: Keyframe[], ms: number): Animation | null {
+  el.getAnimations().forEach((a) => a.cancel());
+  if (reduceMotion() || !el.animate) return null;
+  return el.animate(frames, { duration: ms, easing: EASE });
+}
+
+/** A transform that shrinks `from` onto `to` (both screen rectangles), about the element's centre. */
+function shrinkOnto(from: DOMRect, to: DOMRect): string {
+  const dx = to.left + to.width / 2 - (from.left + from.width / 2);
+  const dy = to.top + to.height / 2 - (from.top + from.height / 2);
+  return `translate(${dx}px, ${dy}px) scale(${Math.max(0.05, to.width / from.width)})`;
+}
+
+/**
+ * Runs `done` when a window animation ends, or at once without one. A timer backs up the finish event, which
+ * a background tab may never deliver; `done` must be safe to run late (it re-applies the window's state).
+ */
+function afterAnim(a: Animation | null, ms: number, done: () => void): void {
+  if (!a) return done();
+  let ran = false;
+  const once = (): void => {
+    if (ran) return;
+    ran = true;
+    done();
+  };
+  a.onfinish = once;
+  setTimeout(once, ms + 50);
+}
+
+const taskRect = (w: Win): DOMRect | undefined =>
+  document.querySelector<HTMLElement>(`.taskbar [data-act="task:${w.id}"]`)?.getBoundingClientRect();
+
+const POP_IN: Keyframe[] = [{ opacity: 0, transform: 'scale(0.94)' }, { opacity: 1, transform: 'none' }];
+
+function minimizeWin(w: Win): void {
+  const el = winEl(w);
+  w.min = true;
+  markFocus();
+  renderTaskbar();
+  const to = taskRect(w);
+  if (!el || !to) return placeWin(w);
+  const a = animateWin(el, [{ opacity: 1, transform: 'none' }, { opacity: 0.2, transform: shrinkOnto(el.getBoundingClientRect(), to) }], 200);
+  afterAnim(a, 200, () => placeWin(w, el)); // hide it once it has landed in the taskbar (unless restored meanwhile)
+}
+
+/** Maximize or restore, sliding from the old frame to the new one. */
+/** Changes a window's frame (`change`, then a redraw) and slides it there from where it was. */
+function slideWin(w: Win, change: () => void, redraw: (el: HTMLElement) => void): void {
+  const el = winEl(w);
+  const before = el?.getBoundingClientRect();
+  change();
+  if (!el || !before) return;
+  redraw(el);
+  const after = el.getBoundingClientRect();
+  const from = `translate(${before.left - after.left}px, ${before.top - after.top}px) scale(${before.width / after.width}, ${before.height / after.height})`;
+  animateWin(el, [{ transformOrigin: 'top left', transform: from }, { transformOrigin: 'top left', transform: 'none' }], 180);
+}
+
+function toggleMax(w: Win): void {
+  slideWin(w, () => (w.max = !w.max), () => renderWin(w));
+}
+
 function focusWin(w: Win): void {
+  const wasMin = w.min;
   w.min = false;
   w.z = ++zSeq;
   placeWin(w);
   markFocus();
+  const from = wasMin ? taskRect(w) : undefined;
   renderTaskbar();
+  const el = winEl(w);
+  if (wasMin && el) {
+    // Back up out of its taskbar button.
+    const frames = from ? [{ opacity: 0.2, transform: shrinkOnto(el.getBoundingClientRect(), from) }, { opacity: 1, transform: 'none' }] : POP_IN;
+    animateWin(el, frames, 200);
+  }
 }
 
 function markFocus(): void {
@@ -493,7 +630,14 @@ function markFocus(): void {
 
 function closeWin(w: Win): void {
   desks[selected] = wins().filter((x) => x !== w);
-  winEl(w)?.remove();
+  const el = winEl(w);
+  if (el) {
+    // Gone at once as far as the game is concerned; the element just fades out first.
+    delete el.dataset.win;
+    el.style.pointerEvents = 'none';
+    const a = animateWin(el, [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(0.94)' }], 140);
+    afterAnim(a, 140, () => el.remove());
+  }
   markFocus();
   renderTaskbar();
 }
@@ -567,9 +711,12 @@ async function goAddress(w: Win): Promise<void> {
 }
 
 function renderWins(): void {
+  const firstLook = !deskShown.has(selected);  deskShown.add(selected);
   $('wins').innerHTML = '';
   for (const w of wins()) renderWin(w);
   markFocus();
+  // A seat's desk starts with its workstation open: role, objective and credentials are the first read.
+  if (firstLook) openWindow('personal');
 }
 
 function renderWin(w: Win): void {
@@ -590,7 +737,7 @@ function renderWin(w: Win): void {
   el.classList.toggle('kit', onHost && r.kind === 'module' && HOST_KITS.includes(r.module));
   // Redrawing replaces the page, so keep where it was scrolled to (or jump to the bottom after a command).
   const prevScroll = el.querySelector<HTMLElement>('.wbody')?.scrollTop ?? 0;
-  el.innerHTML = titleBar(w) + (w.kind === 'personal' ? personalHtml(w) : browserHtml(w)) + `<div class="grip" data-resize="${w.id}" aria-hidden="true"></div>`;
+  el.innerHTML = titleBar(w) + (w.kind === 'personal' ? personalHtml(w) : browserHtml(w)) + resizeHandles();
   const out = el.querySelector('.out');
   if (out) out.scrollTop = out.scrollHeight;
   const body = el.querySelector<HTMLElement>('.wbody');
@@ -680,7 +827,8 @@ function credLabel(c: Cred): string {
 /**
  * Credential dropdown + code box. Lists only active credentials that `applies` accepts, then "Manual code".
  * With no such credentials the first option is "No credentials granted". Only "Manual code" makes the
- * code box editable. Starts on the first credential `prefer` accepts (else the first listed).
+ * code box editable. Starts on the first credential `prefer` accepts (else the first listed); with none to
+ * list, on "No code needed" when security is off, else on "Manual code", ready to type.
  */
 function credentialFields(w: Win, v: PlayerView, applies: (c: Cred) => boolean, prefer?: (c: Cred) => boolean, openKey?: string): string {
   const list = v.me.credentials.filter((c) => c.status === 'ACTIVE' && applies(c));
@@ -688,7 +836,9 @@ function credentialFields(w: Win, v: PlayerView, applies: (c: Cred) => boolean, 
   const opts: [string, string][] = [
     ...(open ? [['open', 'No code needed (security is off)'] as [string, string]] : []),
     ...(list.length ? list.map((c): [string, string] => [c.id, credLabel(c)]) : [['none', 'No credentials granted'] as [string, string]]), ['manual', 'Manual code']];
-  if (!opts.some(([id]) => id === w.form.credSel)) w.form.credSel = (prefer && list.find(prefer)?.id) || opts[0][0];
+  if (!opts.some(([id]) => id === w.form.credSel)) {
+    w.form.credSel = (prefer && list.find(prefer)?.id) || (open ? 'open' : list[0]?.id) || 'manual';
+  }
   const sel = w.form.credSel;
   const manual = sel === 'manual';
   w.form.code = manual ? (w.form.manualCode ?? '') : (list.find((c) => c.id === sel)?.code ?? '');
@@ -856,14 +1006,20 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       card(
         'Post a message',
         'WRITE',
-        input(w, 'alias', 'Alias', 'ghost') + input(w, 'text', 'Message', 'say something', true, true) + btns(btn(w, 'post', 'Post', '', true)),
+        `<p class="hint full">${
+          view().me.alias
+            ? `You post as <b class="mono">${esc(view().me.alias)}</b> (with someone else's code, as theirs).`
+            : 'Posts show the alias of the code\'s owner.'
+        }</p>` +
+          input(w, 'text', 'Message', 'say something', true, true) +
+          btns(btn(w, 'post', 'Post', '', true)),
         `${w.id}:post`,
       ),
     run: (w, cmd) => {
       if (cmd === 'view') {
         execute(w, 'BLACKHAT_DB', 'BLACKNET', 'READ_MESSAGES', {});
         w.liveEnd = w.out.length;
-      } else runFresh(w, 'BLACKHAT_DB', 'BLACKNET', 'POST_MESSAGE', { alias: w.form['p:alias'] ?? '', text: w.form['p:text'] ?? '' }, ['text']);
+      } else runFresh(w, 'BLACKHAT_DB', 'BLACKNET', 'POST_MESSAGE', { text: w.form['p:text'] ?? '' }, ['text']);
     },
     monitor: () => ({ fn: 'READ_MESSAGES', params: {} }),
   },
@@ -1130,8 +1286,13 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       ];
       return (
         card('View credentials', 'READ', btn(w, 'view:ACTIVE', 'Active') + btn(w, 'view:ALL', 'All, incl. revoked', 'alt')) +
-        card('Revoke a credential', 'WRITE', input(w, 'credentialId', 'Credential', 'C12 or 12', true, true) + btns(btn(w, 'revoke', 'Revoke', 'danger', true)), `${w.id}:revoke`) +
-        card('Cancel a revocation', 'WRITE', input(w, 'cancelCred', 'Credential', 'C12 or 12', true, true) + btns(btn(w, 'cancelRevoke', 'Cancel it', '', true)), `${w.id}:cancelRevoke`) +
+        card(
+          'Revoke a credential',
+          'WRITE',
+          input(w, 'credentialId', 'Credential', 'C12 or 12', true, true) +
+            btns(btn(w, 'revoke', 'Revoke', 'danger', true) + btn(w, 'cancelRevoke', 'Cancel a revocation', 'alt', true)),
+          `${w.id}:revoke`,
+        ) +
         card(
           'Issue a credential',
           'WRITE',
@@ -1147,7 +1308,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       const f = (k: string): string => w.form[`p:${k}`] ?? '';
       if (cmd === 'view') execute(w, 'SECURITY', 'PERMISSIONS', 'VIEW_PERMISSIONS', { show: arg ?? 'ACTIVE' });
       else if (cmd === 'revoke') runFresh(w, 'SECURITY', 'PERMISSIONS', 'REVOKE_CREDENTIAL', { credentialId: f('credentialId') }, ['credentialId']);
-      else if (cmd === 'cancelRevoke') runFresh(w, 'SECURITY', 'PERMISSIONS', 'CANCEL_REVOKE', { credentialId: f('cancelCred') }, ['cancelCred']);
+      else if (cmd === 'cancelRevoke') runFresh(w, 'SECURITY', 'PERMISSIONS', 'CANCEL_REVOKE', { credentialId: f('credentialId') }, ['credentialId']);
       else execute(w, 'SECURITY', 'PERMISSIONS', 'CREATE_CREDENTIAL', { owner: f('owner'), scope: f('scope'), permission: f('permission') });
     },
   },
@@ -1368,7 +1529,7 @@ function workstationHtml(w: Win, ws: WorkstationView, current: Tab, remote: bool
     const job = ws.job;
     const list = (items: string[]): string => `<ul class="job-list">${items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
     body = `
-      <dl class="kv"><dt>Name</dt><dd>${esc(ws.name)}</dd><dt>Role</dt><dd>${esc(ws.roleLabel)}</dd><dt>IP</dt><dd>${esc(ws.ip)}</dd><dt>Account</dt><dd>${esc(ws.bankAccount)}${ws.bankBalance === null ? "" : " · " + money(ws.bankBalance)}</dd></dl>
+      <dl class="kv"><dt>Name</dt><dd>${esc(ws.name)}</dd><dt>Role</dt><dd>${esc(ws.roleLabel)}</dd><dt>IP</dt><dd>${esc(ws.ip)}</dd>${ws.alias ? `<dt>Blacknet alias</dt><dd class="mono">${esc(ws.alias)}</dd>` : ''}<dt>Account</dt><dd>${esc(ws.bankAccount)}${ws.bankBalance === null ? "" : " · " + money(ws.bankBalance)}</dd></dl>
       <h4>${their} objective</h4><div class="note">${esc(ws.objective)}</div>
       <p class="hint">${esc(ws.motivation)}</p>
       <h4>Job: ${esc(ws.roleLabel)}</h4><p class="job-summary">${esc(job.summary)}</p>
@@ -1380,13 +1541,13 @@ function workstationHtml(w: Win, ws: WorkstationView, current: Tab, remote: bool
   } else if (current === 'codes') {
     body = `
       <p class="hint">Logs name the credential owner, not the person who typed the code.</p>
-      ${remote ? '' : `<div class="sharebar"><span>Share with</span><select data-f="shareTo">${playerOpts(f.shareTo)}</select></div>`}
+      ${remote || !CREDENTIAL_SHARING_ENABLED ? '' : `<div class="sharebar"><span>Share with</span><select data-f="shareTo">${playerOpts(f.shareTo)}</select></div>`}
       <table class="cred">${ws.credentials
         .map(
           (c) => `<tr>
             <td><span class="code ${c.status === 'REVOKED' ? 'rev' : ''}">${esc(c.code)}</span></td>
             <td>${esc(c.id)} ${c.own ? '' : `<em>${esc(c.ownerName)}'s</em>`}<br><small>${esc(c.scope)}${c.status === 'REVOKED' ? ', revoked' : ''}</small></td>
-            ${remote ? '' : `<td><button class="small-btn" data-act="share:${c.id}">Share</button></td>`}</tr>`,
+            ${remote || !CREDENTIAL_SHARING_ENABLED ? '' : `<td><button class="small-btn" data-act="share:${c.id}">Share</button></td>`}</tr>`,
         )
         .join('')}</table>`;
   } else if (current === 'activity') {
@@ -1552,6 +1713,7 @@ function refresh(): void {
 
 // ---- Events ---------------------------------------------------------------------------------
 app.addEventListener('click', (e) => {
+  notePressed((e.target as HTMLElement).closest<HTMLButtonElement>('.win button'));
   const el = (e.target as HTMLElement).closest<HTMLElement>('[data-act]');
   if (!el) return;
   const [act, ...args] = (el.dataset.act ?? '').split(':');
@@ -1598,27 +1760,15 @@ app.addEventListener('click', (e) => {
     case 'task': {
       const t = winById(Number(args[0]));
       if (!t) break;
-      if (!t.min && t === topWin()) {
-        t.min = true;
-        placeWin(t);
-        markFocus();
-        renderTaskbar();
-      } else focusWin(t);
+      if (!t.min && t === topWin()) minimizeWin(t);
+      else focusWin(t);
       break;
     }
     case 'wmin':
-      if (w) {
-        w.min = true;
-        placeWin(w);
-        markFocus();
-        renderTaskbar();
-      }
+      if (w) minimizeWin(w);
       break;
     case 'wmax':
-      if (w) {
-        w.max = !w.max;
-        renderWin(w);
-      }
+      if (w) toggleMax(w);
       break;
     case 'wclose':
       if (w) closeWin(w);
@@ -1684,6 +1834,7 @@ app.addEventListener('submit', (e) => {
   const form = e.target as HTMLElement;
   if (form.dataset.mform) {
     e.preventDefault();
+    notePressed(((e as SubmitEvent).submitter as HTMLButtonElement | null) ?? form.querySelector<HTMLButtonElement>('button[type=submit]'));
     const [id, ...formCmd] = form.dataset.mform.split(':');
     // The button that was pressed decides the command; Enter uses the form's default.
     // "cmd" or "cmd:arg", from the button that was pressed (Enter uses the form's default).
@@ -1736,7 +1887,43 @@ app.addEventListener('input', (e) => {
 });
 
 // ---- Window dragging and resizing ------------------------------------------------------------
-let drag: { w: Win; el: HTMLElement; mode: 'move' | 'resize'; sx: number; sy: number; ox: number; oy: number } | null = null;
+/** A drag in progress: moving by the title bar, or resizing from an edge or corner (`dir`: n, se, w, ...). */
+let drag: { w: Win; el: HTMLElement; dir: string | null; sx: number; sy: number; x: number; y: number; ww: number; wh: number; snap: Snap } | null = null;
+/**
+ * Snapping, as on a desktop OS: drag a window's title bar to the left or right edge of the desk to fill that
+ * half, or to the top edge to maximize it. A preview shows where it will land.
+ */
+type Snap = 'left' | 'right' | 'max' | null;
+const SNAP_EDGE = 8;
+function snapAt(clientX: number, clientY: number): Snap {
+  const r = $('desk').getBoundingClientRect();
+  if (clientY <= r.top + SNAP_EDGE) return 'max';
+  if (clientX <= r.left + SNAP_EDGE) return 'left';
+  if (clientX >= r.right - SNAP_EDGE) return 'right';
+  return null;
+}
+/** Where a snap puts a window, in desk coordinates. */
+function snapRect(snap: 'left' | 'right' | 'max'): { x: number; y: number; w: number; h: number } {
+  const { w: dw, h: dh } = deskSize();
+  const half = Math.floor(dw / 2);
+  if (snap === 'left') return { x: 0, y: 0, w: half, h: dh };
+  if (snap === 'right') return { x: half, y: 0, w: dw - half, h: dh };
+  return { x: 0, y: 0, w: dw, h: dh };
+}
+function showSnapPreview(snap: Snap, under?: Win): void {
+  const el = $('snap');
+  el.hidden = !snap;
+  if (!snap) return;
+  const r = snapRect(snap);
+  // Same layer as the dragged window but earlier in the page, so it shows just beneath it.
+  const inset = 6;
+  Object.assign(el.style, { left: `${r.x + inset}px`, top: `${r.y + inset}px`, width: `${r.w - 2 * inset}px`, height: `${r.h - 2 * inset}px`, zIndex: String(under?.z ?? 1) });
+}
+const MIN_W = 340;
+const MIN_H = 220;
+/** The resize handles: four edges and four corners. The south-east corner also shows the grip. */
+const RESIZE_DIRS = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'];
+const resizeHandles = (): string => RESIZE_DIRS.map((d) => `<div class="rz ${d}${d === 'se' ? ' grip' : ''}" data-resize="${d}" aria-hidden="true"></div>`).join('');
 
 $('wins').addEventListener('pointerdown', (e) => {
   const target = e.target as HTMLElement;
@@ -1746,9 +1933,12 @@ $('wins').addEventListener('pointerdown', (e) => {
   if (topWin() !== w) focusWin(w);
   const handle = target.closest<HTMLElement>('[data-drag],[data-resize]');
   if (!handle || target.closest('button') || w.max || e.button !== 0) return;
-  const mode = handle.dataset.resize ? 'resize' : 'move';
-  if (mode === 'resize') w.sized = true;
-  drag = { w, el, mode, sx: e.clientX, sy: e.clientY, ox: mode === 'move' ? w.x : w.w, oy: mode === 'move' ? w.y : w.h };
+  const dir = handle.dataset.resize ?? null;
+  if (dir) {
+    w.sized = true;
+    delete w.unsnap; // resized by hand: this is its size now
+  }
+  drag = { w, el, dir, sx: e.clientX, sy: e.clientY, x: w.x, y: w.y, ww: w.w, wh: w.h, snap: null };
   handle.setPointerCapture(e.pointerId);
   el.classList.add('dragging');
   e.preventDefault();
@@ -1756,26 +1946,70 @@ $('wins').addEventListener('pointerdown', (e) => {
 
 window.addEventListener('pointermove', (e) => {
   if (!drag) return;
-  const { w, mode, sx, sy, ox, oy } = drag;
+  const { w, dir, sx, sy, x, y, ww, wh } = drag;
   const { w: dw, h: dh } = deskSize();
   const dx = e.clientX - sx;
   const dy = e.clientY - sy;
-  if (mode === 'move') {
-    w.x = clamp(ox + dx, 80 - w.w, dw - 80);
-    w.y = clamp(oy + dy, 0, dh - 34);
+  if (!dir) {
+    // Dragging a snapped window away gives it back its old size, keeping the grab point under the pointer.
+    if (w.unsnap && Math.hypot(dx, dy) > 4) {
+      const grab = (sx - drag.el.getBoundingClientRect().left) / w.w;
+      w.w = w.unsnap.w;
+      w.h = w.unsnap.h;
+      delete w.unsnap;
+      drag.x = sx - $('desk').getBoundingClientRect().left - grab * w.w;
+      drag.ww = w.w;
+      drag.wh = w.h;
+    }
+    w.x = clamp(drag.x + dx, 80 - w.w, dw - 80);
+    w.y = clamp(y + dy, 0, dh - 34);
+    drag.snap = snapAt(e.clientX, e.clientY);
+    showSnapPreview(drag.snap, w);
   } else {
-    w.w = clamp(ox + dx, 340, Math.max(340, dw - w.x));
-    w.h = clamp(oy + dy, 220, Math.max(220, dh - w.y));
+    // East and south stretch the far edge; west and north move the near edge and keep the far one still.
+    if (dir.includes('e')) w.w = clamp(ww + dx, MIN_W, Math.max(MIN_W, dw - x));
+    if (dir.includes('s')) w.h = clamp(wh + dy, MIN_H, Math.max(MIN_H, dh - y));
+    if (dir.includes('w')) {
+      w.x = clamp(x + dx, Math.min(0, x), x + ww - MIN_W);
+      w.w = ww + x - w.x;
+    }
+    if (dir.includes('n')) {
+      w.y = clamp(y + dy, Math.min(0, y), y + wh - MIN_H);
+      w.h = wh + y - w.y;
+    }
   }
   placeWin(w, drag.el);
 });
 
 const endDrag = (): void => {
-  drag?.el.classList.remove('dragging');
+  if (!drag) return;
+  const { w, el, snap, x, y, ww, wh } = drag;
+  el.classList.remove('dragging');
   drag = null;
+  showSnapPreview(null);
+  if (snap === 'max') {
+    // Maximizing restores to where the window was before this drag.
+    w.x = x;
+    w.y = y;
+    toggleMax(w);
+  } else if (snap) {
+    const r = snapRect(snap);
+    slideWin(
+      w,
+      () => {
+        w.unsnap ??= { w: ww, h: wh };
+        Object.assign(w, r);
+        w.sized = true;
+      },
+      (node) => placeWin(w, node),
+    );
+  }
 };
 window.addEventListener('pointerup', endDrag);
-window.addEventListener('pointercancel', endDrag);
+window.addEventListener('pointercancel', () => {
+  if (drag) drag.snap = null; // an interrupted drag never snaps
+  endDrag();
+});
 
 // The desktop never scrolls: focusing an input in a window that sticks out would otherwise shift everything.
 $('desk').addEventListener('scroll', () => {
@@ -1788,8 +2022,7 @@ $('wins').addEventListener('dblclick', (e) => {
   const bar = target.closest<HTMLElement>('[data-drag]');
   const w = bar && winById(Number(bar.dataset.drag));
   if (!w || target.closest('button')) return;
-  w.max = !w.max;
-  renderWin(w);
+  toggleMax(w);
 });
 
 // ---- Clock ---------------------------------------------------------------------------------------

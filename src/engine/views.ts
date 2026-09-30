@@ -19,6 +19,8 @@ export interface WorkstationView {
   role: RoleId;
   roleLabel: string;
   allegiance: Allegiance;
+  /** Blacknet alias: only a Black Hat's (theirs to know; a visitor to their workstation can read it too). */
+  alias: string | null;
   objective: string;
   motivation: string;
   ip: string;
@@ -89,6 +91,7 @@ function workstationView(s: GameState, p: Player): WorkstationView {
     role: p.role,
     roleLabel: ROLES[p.role].label,
     allegiance: p.allegiance,
+    alias: p.allegiance === 'BLACK' ? p.alias : null,
     objective: p.objective,
     motivation: p.motivation,
     ip: p.ip,

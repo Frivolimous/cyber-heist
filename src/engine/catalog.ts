@@ -61,6 +61,13 @@ const inbox: ParamSpec = { name: 'show', label: 'Show', kind: 'select', options:
 
 /** Encryption layers (Firewall add/remove/bypass + layer codes on every function) are switched off for now. */
 export const ENCRYPTION_ENABLED = false;
+/** The host's Credential Cache module (White Hat credentials held by operatives) is switched off for now. */
+export const CREDENTIAL_CACHE_ENABLED = false;
+/**
+ * Credential sharing is switched off for now: the "Share" action, and keeping a credential in your list after
+ * typing its code (the code still works every time it is typed). Kit tools that hand over a credential still do.
+ */
+export const CREDENTIAL_SHARING_ENABLED = false;
 
 export const SYSTEMS: SystemDef[] = [
   {
@@ -275,9 +282,7 @@ export const SYSTEMS: SystemDef[] = [
         label: 'Blacknet',
         fns: [
           fn('READ_MESSAGES', 'Read messages', 'READ', 'The operatives message board.', [limit]),
-          fn('POST_MESSAGE', 'Post message', 'WRITE', 'Post under an alias.', [
-            { name: 'alias', label: 'Alias', kind: 'text', optional: true, placeholder: 'ghost' },
-          ]),
+          fn('POST_MESSAGE', 'Post message', 'WRITE', 'Post under the credential owner\'s alias.'),
         ],
       },
       {
@@ -296,11 +301,15 @@ export const SYSTEMS: SystemDef[] = [
           ]),
         ],
       },
-      {
-        id: 'CREDENTIAL_CACHE',
-        label: 'Credential Cache',
-        fns: [fn('VIEW_CACHE', 'View cache', 'READ', 'Credentials of White Hat staff held by operatives.')],
-      },
+      ...(CREDENTIAL_CACHE_ENABLED
+        ? [
+            {
+              id: 'CREDENTIAL_CACHE',
+              label: 'Credential Cache',
+              fns: [fn('VIEW_CACHE', 'View cache', 'READ', 'Credentials of White Hat staff held by operatives.')],
+            },
+          ]
+        : []),
       // Tool kits: each operative is dealt one or two at random each game.
       {
         id: 'INFILTRATION',
@@ -401,7 +410,7 @@ export const SYSTEMS: SystemDef[] = [
 ];
 
 /** Hidden host modules every operative can use. */
-export const HOST_SHARED_MODULES = ['BLACKNET', 'TARGET_LEDGER', 'HOST_LOG', 'CREDENTIAL_CACHE'];
+export const HOST_SHARED_MODULES = ['BLACKNET', 'TARGET_LEDGER', 'HOST_LOG', ...(CREDENTIAL_CACHE_ENABLED ? ['CREDENTIAL_CACHE'] : [])];
 /** Hidden host tool kits, dealt to operatives at random (more kits than operatives, so some go unused). */
 export const HOST_KITS = ['INFILTRATION', 'SOCIAL', 'CLEANUP', 'ACCESS'];
 
@@ -426,6 +435,7 @@ export interface RoleDef {
   id: RoleId;
   label: string;
   creds: CredTemplate[];
+  watch: string[]; // pages (SYSTEM.MODULE) whose notification bell starts on; each needs one of `creds` with WRITE
 }
 
 const c = (system: SystemId, module: string | null, permission: Permission): CredTemplate => ({ system, module, permission });
@@ -447,6 +457,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
       c('TRANSACTIONS', 'AUTHORIZATION', 'WRITE'),
       c('TRANSACTIONS', 'SETTLEMENT', 'READ'),
     ],
+    watch: ['CLIENT_DATA.CLIENT_REQUESTS', 'TRANSACTIONS.AUTHORIZATION'],
   },
   ACCOUNTS_RECEIVABLES: {
     id: 'ACCOUNTS_RECEIVABLES',
@@ -460,6 +471,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
       c('TRANSACTIONS', 'AUTHORIZATION', 'READ'),
       c('TRANSACTIONS', 'SETTLEMENT', 'WRITE'),
     ],
+    watch: ['CLIENT_DATA.VERIFICATION', 'TRANSACTIONS.RISK_CHECK', 'TRANSACTIONS.SETTLEMENT'],
   },
   IT_SPECIALIST: {
     id: 'IT_SPECIALIST',
@@ -472,6 +484,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
       c('CLIENT_DATA', 'CUSTOMER_RECORDS', 'READ'),
       c('TRANSACTIONS', 'PAYMENT_QUEUE', 'READ'),
     ],
+    watch: ['SECURITY.EMPLOYEE_RECORDS'],
   },
   BANK_MANAGER: {
     id: 'BANK_MANAGER',
@@ -489,6 +502,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
       c('TRANSACTIONS', 'AUTHORIZATION', 'READ'),
       c('TRANSACTIONS', 'SETTLEMENT', 'WRITE'),
     ],
+    watch: ['SECURITY.MASTER_LOG'],
   },
 };
 

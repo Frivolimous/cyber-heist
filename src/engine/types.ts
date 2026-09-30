@@ -345,6 +345,7 @@ export interface Player {
   name: string;
   role: RoleId;
   allegiance: Allegiance;
+  alias: string; // Blacknet handle, dealt at random (unique) and fixed for the game; posts carry the credential owner's
   objective: string;
   motivation: string;
   ip: string;

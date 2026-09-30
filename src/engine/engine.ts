@@ -1,7 +1,7 @@
 // The rules engine. Pure with respect to its inputs: applyAction(state, action, now) returns a NEW state.
 // No Firebase, no DOM. Later this exact module runs inside a Cloud Function.
 
-import { findFn, findSystem, SYSTEMS } from './catalog';
+import { CREDENTIAL_SHARING_ENABLED, findFn, findSystem, SYSTEMS } from './catalog';
 import { runAutomation, spawnNpc } from './bank';
 import { advanceRequests, spawnRequest } from './requests';
 import {
@@ -218,8 +218,8 @@ function execute(s: GameState, p: Player, a: ExecuteAction): ActionResult {
     return deny(owner.id, 'AUTH_DENIED', `${owner.name}'s credential was denied on ${label}`, `credential ${cred.id} lacks scope`);
   }
 
-  // The code worked, so this player now knows (holds) that credential.
-  if (!p.heldCredentialIds.includes(cred.id)) {
+  // The code worked, so this player now knows (holds) that credential (while credential sharing is on).
+  if (CREDENTIAL_SHARING_ENABLED && !p.heldCredentialIds.includes(cred.id)) {
     p.heldCredentialIds.push(cred.id);
     note(p, t, `Learned credential ${cred.id} (${owner.name}'s, ${credScopeText(cred)}) by entering its code.`);
   }
@@ -315,6 +315,7 @@ function run(
 }
 
 function shareCredential(s: GameState, p: Player, credentialId: string, toId: string): ActionResult {
+  if (!CREDENTIAL_SHARING_ENABLED) return fail('Credential sharing is switched off.');
   const t = gameTime(s);
   const cred = s.credentials[credentialId];
   if (!cred || !p.heldCredentialIds.includes(cred.id)) return fail('You do not hold that credential.');
@@ -412,7 +413,7 @@ function accessWorkstation(s: GameState, p: Player, targetId: string, code: stri
   p.failStreak = 0;
   p.remoteAccess = p.remoteAccess.filter((g) => g.playerId !== target.id);
   p.remoteAccess.push({ playerId: target.id, credentialId: cred.id });
-  if (!p.heldCredentialIds.includes(cred.id)) p.heldCredentialIds.push(cred.id);
+  if (CREDENTIAL_SHARING_ENABLED && !p.heldCredentialIds.includes(cred.id)) p.heldCredentialIds.push(cred.id);
   const from = effectiveIp(s, p, t); // an active IP reroute frames the login as coming from the fake IP
   addLog(s, {
     actor: target.id,

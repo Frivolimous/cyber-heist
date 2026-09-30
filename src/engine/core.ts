@@ -160,6 +160,28 @@ export function moveMoney(s: GameState, from: string, to: string, amount: number
   s.totals.stolen = s.targets.reduce((sum, tg) => sum + balanceOf(s, tg.account), 0);
 }
 
+/**
+ * Blacknet handles. Every player is dealt one at random when the game starts (more than MAX_PLAYERS, so they
+ * never repeat) and cannot change it; a post carries the alias of the credential's owner.
+ */
+export const HACKER_ALIASES = [
+  // A quarter in l33t...
+  'Z3r0_C00l', 'Gh0st_1n_th3_Sh3ll', 'xX_R00tK1t_Xx', 'K3rn3l_P4n1c', 'Bl4ck_1C3',
+  '0xD34DB33F', 'St4ck_Sm4sh3r', 'N1ghtCr4wl3r', 'L0g1c_B0mb', 'Ph1sh_H00k',
+  // ...the rest plain.
+  'CrashOverride', 'AcidBurn', 'PhantomPhreak', 'NeonRaven', 'DarkTangent', 'ShadowRunner',
+  'BytePhantom', 'ZeroDay', 'GlitchWitch', 'MalwareMaven', 'SynapticSnake', 'HexEditor',
+  'ColdBoot', 'CyberWolf', 'NullPointer', 'PacketRat', 'DaemonShell', 'VoidWalker',
+  'Overflow', 'SpoofMaster', 'TrojanHorse', 'BitRot', 'ChaosCode', 'WhiteNoise',
+  'CronJob', 'SilkRoute', 'NetRunner', 'BackdoorBandit', 'FirewallFreak', 'Sudo_Rm_Rf',
+];
+
+/** An alias nobody in the game has yet (for players added mid-game); the list order, then numbered. */
+export function unusedAlias(s: GameState): string {
+  const taken = new Set(Object.values(s.players).map((p) => p.alias));
+  return HACKER_ALIASES.find((a) => !taken.has(a)) ?? `Gh0st_${Object.keys(s.players).length}`;
+}
+
 /** A fresh account number that nothing uses yet (not registered, not a player's or planted user's number). */
 export function unusedAccountNumber(s: GameState): string {
   const players = new Set(Object.values(s.players).map((p) => p.bankAccount));

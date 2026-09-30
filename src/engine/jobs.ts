@@ -100,7 +100,7 @@ const JOBS: Record<RoleId, (c: GameConfig) => Omit<JobDescription, 'tools'>> = {
       `A trace reveals which workstation made a log entry. Entries must be under ${secs(c.traceMaxAgeSec)} old, and you can trace once every ${secs(c.traceCooldownSec)}. Employee Records list every workstation's IP.`,
       '"Unknown server activity" comes from an unregistered host. Tracing it gives only a partial clue, unless an alert points at it.',
       `A block lasts ${secs(c.blockSec)}. A blocked workstation cannot use any system.`,
-      `"Revoke all access" is permanent once its ${secs(c.revokeCountdownSec)} countdown ends; only the Firewall can cancel it. Revoking a workstation terminates its owner for good. Revoking the unregistered host shuts it down and the bank wins; revoking one of the bank's own systems shuts the bank down, and everybody loses.`,
+      `"Revoke all access" is permanent once its ${secs(c.revokeCountdownSec)} countdown ends; only the Firewall can cancel it, and only one can count down at a time. Revoking a workstation terminates its owner for good. Revoking the unregistered host shuts it down and the bank wins; revoking one of the bank's own systems shuts the bank down, and everybody loses.`,
       'While the Master Log is offline nothing is recorded, but the entry numbers keep counting, so the gap shows.',
       'You can issue a credential in anyone\'s name. Its owner is told.',
       'Blocking an address, switching security off, taking a module offline, and issuing or revoking a credential raise a "Suspicious security activity" alert naming you. Starting a "revoke all access", and issuing or revoking Firewall or Permissions write, raise a "Fatal" one.',

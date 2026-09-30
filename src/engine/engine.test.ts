@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { accountVerified, applyAction, CHANNELS, createGame, DAY_PHASES, dayPhaseAt, nextArrival, paceMultiplier, ENCRYPTION_ENABLED, getPlayerView, grantMasterAccess, hackerCount, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, SYSTEMS, tick } from './index';
+import { accountVerified, applyAction, CHANNELS, createGame, CREDENTIAL_SHARING_ENABLED, DAY_PHASES, dayPhaseAt, nextArrival, paceMultiplier, ENCRYPTION_ENABLED, getPlayerView, grantMasterAccess, hackerCount, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, SYSTEMS, tick } from './index';
 import type { Action, ActionResult, GameConfig, GameState, Player, RoleId, SystemId } from './index';
 import { NPC_AMOUNT_FACTOR, REQUEST_AMOUNT_FACTOR } from './setup';
 
@@ -123,6 +123,22 @@ test('any table of 6 to 30: roles and hackers follow the formulas, and every ope
   }
 });
 
+test('allegiances: every role but the Bank Manager has at least one White Hat, at every table size', () => {
+  let managerWasBlack = false;
+  for (let n = MIN_PLAYERS; n <= MAX_PLAYERS; n++) {
+    for (let seed = 1; seed <= 40; seed++) {
+      const s = createGame({ seed, players: Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `P${i}` })), now: T0 });
+      const players = Object.values(s.players);
+      assert.equal(players.filter((p) => p.allegiance === 'BLACK').length, hackerCount(n), `n=${n} seed=${seed}`);
+      for (const role of ['IT_SPECIALIST', 'PERSONAL_BANKER', 'ACCOUNTS_RECEIVABLES'] as RoleId[]) {
+        assert.ok(players.some((p) => p.role === role && p.allegiance === 'WHITE'), `n=${n} seed=${seed}: no White Hat ${role}`);
+      }
+      managerWasBlack ||= players.some((p) => p.role === 'BANK_MANAGER' && p.allegiance === 'BLACK');
+    }
+  }
+  assert.ok(managerWasBlack, 'the Bank Manager can still be a Black Hat');
+});
+
 test('the economy scales with the table: targets, customers, requests and automatic traffic', () => {
   const table = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `P${i}` }));
   for (const n of [MIN_PLAYERS, 10, 20, MAX_PLAYERS]) {
@@ -230,7 +246,11 @@ test('logs name the credential owner, not the person at the keyboard; TRACE reve
   const entry = sim.s.logs[sim.s.logs.length - 1];
   assert.equal(entry.message, `${owner.name} accessed Master Log`);
   assert.equal(entry.actor, owner.id);
-  assert.ok(sim.s.players[thief.id].heldCredentialIds.some((id) => sim.s.credentials[id].owner === owner.id), 'thief now holds the credential');
+  assert.equal(
+    sim.s.players[thief.id].heldCredentialIds.some((id) => sim.s.credentials[id].owner === owner.id),
+    CREDENTIAL_SHARING_ENABLED,
+    'typing a code keeps the credential only while credential sharing is on',
+  );
   assert.ok(sim.s.players[thief.id].activity.some((a) => a.text.includes(`${owner.name}'s credential`)), 'personal log tells the truth');
 
   sim.at(20);
@@ -469,6 +489,27 @@ test('when time runs out with neither goal met, both sides lose', () => {
   assert.ok(end.teams.every((t) => !t.won));
 });
 
+test('Blacknet aliases: dealt at random, unique, fixed; a post carries the credential owner\'s alias', () => {
+  const table = Array.from({ length: MAX_PLAYERS }, (_, i) => ({ id: `p${i}`, name: `P${i}` }));
+  const aliases = (seed: number) => Object.values(createGame({ seed, players: table, now: T0 }).players).map((p) => p.alias);
+  assert.equal(new Set(aliases(1)).size, MAX_PLAYERS, 'never repeated, even at a full table');
+  assert.notDeepEqual(aliases(1), aliases(2), 'different each game');
+  assert.deepEqual(aliases(1), aliases(1), 'the same seed deals the same aliases');
+
+  const sim = new Sim();
+  const [a, b] = Object.values(sim.s.players).filter((p) => p.allegiance === 'BLACK');
+  sim.at(5);
+  assert.ok(sim.run(a.id, sim.code(a.id, 'BLACKHAT_DB', 'BLACKNET'), 'BLACKHAT_DB', 'BLACKNET', 'POST_MESSAGE', { text: 'hi', alias: 'ignored' }).ok);
+  assert.ok(sim.run(a.id, sim.code(b.id, 'BLACKHAT_DB', 'BLACKNET'), 'BLACKHAT_DB', 'BLACKNET', 'POST_MESSAGE', { text: 'framed' }).ok);
+  const board = sim.run(b.id, sim.code(b.id, 'BLACKHAT_DB', 'BLACKNET'), 'BLACKHAT_DB', 'BLACKNET', 'READ_MESSAGES').lines!;
+  assert.ok(board[0].endsWith(`${a.alias}: hi`), board[0]);
+  assert.ok(board[1].endsWith(`${b.alias}: framed`), 'a borrowed code posts as its owner');
+  // Only Black Hats see an alias on their workstation.
+  const white = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE')!;
+  assert.equal(getPlayerView(sim.s, a.id).me.alias, a.alias);
+  assert.equal(getPlayerView(sim.s, white.id).me.alias, null);
+});
+
 test('hidden host: guarded by credentials, discoverable through alerts, reachable once you know the address', () => {
   const sim = new Sim();
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
@@ -478,7 +519,7 @@ test('hidden host: guarded by credentials, discoverable through alerts, reachabl
   const dbCode = sim.code(black.id, 'BLACKHAT_DB', 'BLACKNET');
 
   sim.at(30);
-  assert.ok(sim.run(black.id, dbCode, 'BLACKHAT_DB', 'BLACKNET', 'POST_MESSAGE', { text: 'target B3 is ready', alias: 'ghost' }).ok);
+  assert.ok(sim.run(black.id, dbCode, 'BLACKHAT_DB', 'BLACKNET', 'POST_MESSAGE', { text: 'target B3 is ready' }).ok);
   // Only a cryptic, nameless system entry: hidden from "Player activity", visible under "Everything".
   const entry = sim.s.logs.at(-1)!;
   assert.equal(entry.message, 'Unknown server activity');
@@ -518,7 +559,7 @@ test('hidden host: guarded by credentials, discoverable through alerts, reachabl
   assert.ok(!reg.lines!.some((l) => l.includes('Unregistered host')));
 });
 
-test('sharing a credential is private; revoking one is visible and blocks its use', () => {
+test('sharing a credential is private (when switched on); revoking one is visible and blocks its use', () => {
   const sim = new Sim();
   const [analyst] = sim.byRole('BANK_MANAGER');
   const [pb] = sim.byRole('PERSONAL_BANKER');
@@ -527,9 +568,12 @@ test('sharing a credential is private; revoking one is visible and blocks its us
   sim.at(10);
   const logsBefore = sim.s.logs.length;
   assert.equal(sim.do({ type: 'SHARE_CREDENTIAL', playerId: pb.id, credentialId: cred.id, toPlayerId: analyst.id }).ok, false);
-  assert.ok(sim.do({ type: 'SHARE_CREDENTIAL', playerId: analyst.id, credentialId: cred.id, toPlayerId: pb.id }).ok);
-  assert.equal(sim.s.logs.length, logsBefore, 'sharing writes nothing to the Master Log');
-  assert.ok(sim.s.players[pb.id].activity.some((a) => a.text.includes(cred.code)));
+  const shared = sim.do({ type: 'SHARE_CREDENTIAL', playerId: analyst.id, credentialId: cred.id, toPlayerId: pb.id });
+  if (CREDENTIAL_SHARING_ENABLED) {
+    assert.ok(shared.ok);
+    assert.equal(sim.s.logs.length, logsBefore, 'sharing writes nothing to the Master Log');
+    assert.ok(sim.s.players[pb.id].activity.some((a) => a.text.includes(cred.code)));
+  } else assert.equal(shared.message, 'Credential sharing is switched off.');
 
   assert.ok(sim.run(it.id, sim.code(it.id, 'SECURITY', 'PERMISSIONS'), 'SECURITY', 'PERMISSIONS', 'REVOKE_CREDENTIAL', { credentialId: cred.id }).ok);
   assert.ok(sim.s.players[analyst.id].activity.some((a) => a.text.includes('was revoked')));
@@ -1266,6 +1310,9 @@ test('firewall: "revoke all access" counts down, can be cancelled only from the 
   assert.ok(sim.run(admin.id, fw, 'SECURITY', 'FIREWALL', 'REVOKE_ALL_ACCESS', { address: ar.ip }).ok);
   const r1 = sim.s.revocations.at(-1)!;
   assert.equal(r1.status, 'PENDING');
+  // Only one revocation counts down at a time, whatever the address.
+  assert.match(sim.run(admin.id, fw, 'SECURITY', 'FIREWALL', 'REVOKE_ALL_ACCESS', { address: bystander.ip }).message, /Only one revocation can run at a time/);
+  assert.equal(sim.s.revocations.length, 1);
   // Without Firewall access you cannot cancel it.
   const noFw = sim.run(bystander.id, sim.code(bystander.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS'), 'SECURITY', 'FIREWALL', 'CANCEL_REVOCATION', { revocationId: r1.id });
   assert.equal(noFw.message, 'Access denied.');
@@ -1378,7 +1425,7 @@ test('Host Log: activity on the host by credential owner, and alerts when the ba
   const host = (module: string) => sim.code(black.id, 'BLACKHAT_DB', module);
   const hostLog = (show: string) => sim.run(black.id, host('HOST_LOG'), 'BLACKHAT_DB', 'HOST_LOG', 'VIEW_HOST_LOG', { show }).lines!;
   sim.at(3);
-  sim.run(black.id, host('BLACKNET'), 'BLACKHAT_DB', 'BLACKNET', 'POST_MESSAGE', { text: 'hello', alias: 'ghost' });
+  sim.run(black.id, host('BLACKNET'), 'BLACKHAT_DB', 'BLACKNET', 'POST_MESSAGE', { text: 'hello' });
   assert.ok(hostLog('ALL').some((l) => l.endsWith(`${black.name}: posted on Blacknet`)), 'named after the host credential owner');
   assert.deepEqual(hostLog('ALERTS'), ['Nothing here.']);
 
@@ -2072,6 +2119,23 @@ test('notifications: a page bell needs write access, and pops up only other peop
   assert.ok(!sim.s.players[it1.id].watching.includes('SECURITY.FIREWALL'));
 });
 
+test('notifications: each role starts with its usual bells on, all on pages it can write', () => {
+  const sim = new Sim();
+  const expected: Record<RoleId, string[]> = {
+    IT_SPECIALIST: ['SECURITY.EMPLOYEE_RECORDS'],
+    PERSONAL_BANKER: ['CLIENT_DATA.CLIENT_REQUESTS', 'TRANSACTIONS.AUTHORIZATION'],
+    ACCOUNTS_RECEIVABLES: ['CLIENT_DATA.VERIFICATION', 'TRANSACTIONS.RISK_CHECK', 'TRANSACTIONS.SETTLEMENT'],
+    BANK_MANAGER: ['SECURITY.MASTER_LOG'],
+  };
+  for (const p of Object.values(sim.s.players)) {
+    assert.deepEqual(p.watching, expected[p.role], p.role);
+    for (const key of p.watching) {
+      const [system, module] = key.split('.');
+      assert.ok(Object.values(sim.s.credentials).some((c) => c.owner === p.id && c.system === system && c.module === module && c.permission === 'WRITE'), `${p.role} can write ${key}`);
+    }
+  }
+});
+
 // ---- Termination and the end of the game ----------------------------------------------
 
 const INVALID = 'ERROR: Your credentials are invalid.';
@@ -2129,9 +2193,12 @@ test('White Hats win at once when every Black Hat is terminated; the end screen 
   const fw = sim.code(admin.id, 'SECURITY', 'FIREWALL');
   const blacks = Object.values(sim.s.players).filter((p) => p.allegiance === 'BLACK');
   sim.at(2);
-  for (const b of blacks) assert.ok(sim.run(admin.id, fw, 'SECURITY', 'FIREWALL', 'REVOKE_ALL_ACCESS', { address: b.ip }).ok);
-  assert.equal(getPlayerView(sim.s, admin.id).end, null, 'no end screen while the game runs');
-  sim.at(3 + sim.s.config.revokeCountdownSec);
+  // One revocation counts down at a time: revoke each Black Hat in turn.
+  for (const b of blacks) {
+    assert.equal(getPlayerView(sim.s, admin.id).end, null, 'no end screen while the game runs');
+    assert.ok(sim.run(admin.id, fw, 'SECURITY', 'FIREWALL', 'REVOKE_ALL_ACCESS', { address: b.ip }).ok);
+    sim.at(sim.sec + sim.s.config.revokeCountdownSec + 1);
+  }
   assert.equal(sim.s.status, 'ENDED');
   assert.equal(sim.s.winner, 'WHITE');
   assert.equal(sim.s.endKind, 'BLACK_HATS_TERMINATED');

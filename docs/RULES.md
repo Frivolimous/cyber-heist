@@ -85,8 +85,9 @@ for now and may move. For `n` players
 - IT Specialist = 1 + floor((n − 2) / 6)
 - Personal Banker = 2 + ceil((n − 6) / 2)
 - Accounts & Receivables = n − 1 − IT − Personal Banker (the rest)
-- Black Hats = floor(n / 3), unless `blackHatCount` fixes it. Black Hats are dealt independently of
-  roles, so any role can be a Black Hat.
+- Black Hats = floor(n / 3), unless `blackHatCount` fixes it. Any role can be a Black Hat, but
+  every role other than the Bank Manager always keeps **at least one White Hat** (at 6-7 players the only
+  IT Specialist is always a White Hat). The Bank Manager can be a Black Hat.
 
 | Players | Bank Manager | IT | Personal Banker | A&R | Black Hats |
 |---|---|---|---|---|---|
@@ -129,7 +130,10 @@ Roles are dealt over a shuffled seat order. Each role starts with one credential
 - Unknown code, revoked code and wrong scope all return the same "Access denied." (no oracle for
   guessing) but the log tells the real story: UNKNOWN for a bad code, the owner's name otherwise.
 - Three failures in a row lock that workstation for 20s.
-- A player "holds" every credential they own, were shared, or successfully used.
+- A player "holds" (sees in their credential list) every credential they own or were handed by a kit tool.
+  **Credential sharing is switched off** (`CREDENTIAL_SHARING_ENABLED` in `catalog.ts`): there is no
+  Share action, and a code someone else owns works every time it is typed but is not kept in your list.
+  Passing a code on means telling it to someone.
 - Anyone with Permissions write (IT Specialists, the Bank Manager) can create credentials **in anyone's
   name** (assumed). The owner is told in their personal log. Revoking is also visible to the owner.
 
@@ -183,7 +187,11 @@ Automatic payments and payment requests are sized to what the paying account hol
 paying is picked in proportion to their wealth, the account in proportion to its balance, and the amount
 is at most 40% of that account's balance (at least $10k). Automatic payments are $165k-$1.32M within that.
 A payment request picks $500k-$5M within that, then **x2.18**, but never more than the account holds or the
-$10M a banker may pay by hand (so a request can ask for up to ~87% of an account). Payees are also picked in
+$10M a banker may pay by hand (so a request can ask for up to ~87% of an account). A payment request says
+where to pay from in one of three forms, a third each: "from our main account" (the primary); "from our
+account 12345" (any of theirs, the richer the likelier); or "from our other account (not the main one)",
+"from whichever of our other accounts has the funds" with several (a non-primary account that can afford
+it; the banker looks up which). A form the customer cannot pay from falls back to the account number. Payees are also picked in
 proportion to wealth, so money does not drain from rich to poor customers. A customer too poor to pay
 anything asks to add an account instead. An automatic payment the chosen account cannot afford is skipped.
 
@@ -266,6 +274,8 @@ of "potential targets for fraudulent transactions").
     address (a bank system or the unregistered host) cannot be used by anyone. Logged in the Master Log only.
   - **Revoke all access** for an address: a confirmation ("irreversible"), then a 30s countdown
     (`revokeCountdownSec`) that can only be cancelled from the Firewall (**Cancel a revocation** by id).
+    **Only one revocation counts down at a time**, bank-wide: starting another is refused, naming the
+    one in progress, until it completes or is cancelled.
     When it runs, the address is blocked permanently, and a workstation's owner loses every bank credential
     and is terminated. It cannot be undone. Completing it on a bank system ends the game with no winner; on
     the unregistered host, the White Hats win.
@@ -397,6 +407,10 @@ of "potential targets for fraudulent transactions").
   credential for that whole module (its own or one it knows the code of). Losing it silences the bell.
 - It never reports activity recorded under your own name. Using someone else's code counts as theirs, so
   its owner is notified. Switching a bell on or off is not logged. There is no limit on bells.
+- Each role starts with its usual bells on (`watch` in `ROLES`): IT Specialist: Employee Records;
+  Personal Banker: Client Requests and Authorization; Accounts & Receivables: Verification, Risk Check and
+  Settlement; Bank Manager: Master Log.
+- A seat's desk opens with its workstation window on screen at the start of the game.
 
 | Page | Notifies about |
 |---|---|
@@ -422,8 +436,8 @@ A stage whose automation will take a payment is not rung for it.
   code.
 - Every player starts with their workstation's own login (id `W1`, `W2`...). It shows only in their own
   credential list, never in Permissions, and it can never be changed or revoked (Revoke credential
-  refuses it; "revoke all access" and termination leave it alone). Share it, or let it be read off your
-  workstation, and that access is for good.
+  refuses it; "revoke all access" and termination leave it alone). Tell someone the code, or let it be
+  read off your workstation, and that access is for good.
 - **Access / Unlock workstation** makes another workstation credential (a normal `C` id) that is not
   listed in Permissions either: it shows only as a gap in the ids, and Revoke credential by id removes it.
 - Logged in, you see their whole workstation read-only: profile, objective, job description (and a Black
@@ -438,11 +452,15 @@ A stage whose automation will take a payment is not rung for it.
 - Its address is random each game (`10.x.x.x`, never in the bank's `10.0`/`10.1` ranges); it is in every
   Black Hat's objective. Black Hats start knowing it (assumed: Black Hats do **not** start knowing who
   the other operatives are; they find each other on Blacknet).
-- Host modules: **Blacknet**, **Target Ledger**, **Host Log** and **Credential Cache** are shared: every
-  operative starts with a credential for each. The **tool kits** (Infiltration, Social, Cleanup, Access)
+- Host modules: **Blacknet**, **Target Ledger** and **Host Log** are shared: every operative starts with
+  a credential for each. (The **Credential Cache** module is switched off: `CREDENTIAL_CACHE_ENABLED`.) The **tool kits** (Infiltration, Social, Cleanup, Access)
   are dealt at random each game: every operative gets exactly one. With more kits than operatives, the
-  rest go unused; with more operatives than kits (15+ players), kits repeat so everyone has one. Operatives can share kit codes
-  like any other credential.
+  rest go unused; with more operatives than kits (15+ players), kits repeat so everyone has one. Operatives can tell each other
+  kit codes like any other code.
+- **Blacknet aliases**: every player is dealt a random hacker alias at the start (from 40 in
+  `HACKER_ALIASES`, core.ts, never repeated in a game) and cannot change it. A post carries the alias of
+  the credential's owner, so a borrowed code posts as its owner. A Black Hat sees their alias on their
+  workstation profile and on the Blacknet page, and so does anyone who logs in to their workstation.
 - **Target Ledger** is read-only: the total diverted against the goal, then each of the 3 mule accounts
   with the customer it is on (marked `(primary)` when it is that customer's primary) or `floating`, and
   its balance. It can auto-update every second like Blacknet.
@@ -519,12 +537,11 @@ A stage whose automation will take a payment is not rung for it.
   - a pair, the real one and a random decoy in random order: "one of two workstations: A or B."
   - one number of the server's address: "The server's IP address is x.143.x.x."
   - what was done: "Activity performed: posted on Blacknet." (also: read the board, viewed the target
-    ledger, viewed the credential cache, connected, failed login attempt)
+    ledger, connected, failed login attempt)
 - White Hats find the address from trace clues (one number of it at a time, or all of it from a loud
   tool's trace), use **Connect** to make the system appear, then need a credential: guess one, get one
-  from a reckless tool's trace, get one shared, or find one on a Black Hat's workstation. Permissions
+  from a reckless tool's trace, be told one, or find one on a Black Hat's workstation. Permissions
   cannot issue host credentials.
-- Credential Cache lists White Hat credentials held by operatives.
 - A Firewall "revoke all access" that completes on the host's address shuts it down, and the White Hats
   win (see Win conditions). A timed block only cuts the operatives off for its duration.
 

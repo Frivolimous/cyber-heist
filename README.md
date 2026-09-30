@@ -64,14 +64,17 @@ devices.
   settle; IT Specialists run the Firewall, logs and credentials; one Bank Manager oversees everything.
   Each player's profile has a job description with their tools and the rules that matter to them.
 - **Black Hats** (a third of the table) have normal jobs as cover, plus a hidden host (its address changes every game) with
-  a message board, a list of mule accounts and tool kits. Stronger tools are easier for the bank to
-  trace.
+  a message board (each posts under a random alias), a ledger of mule accounts and tool kits. Stronger
+  tools are easier for the bank to trace. Every role but the Bank Manager keeps at least one White Hat.
 - **Money:** every account has a balance. Customers are small, mid-sized or wealthy, and a payment the
   paying account cannot cover fails at settlement. Money moves at once, so a reversal only works while
   the account paid still holds it.
 - **Customers wait:** every request has a deadline (2 minutes, 1 if urgent). Customers chase halfway, complain
   to the Bank Manager when a deadline passes, and walk away for the day after a second miss. Obvious
   phishing messages turn up among the requests too.
+- **Payments:** many small automatic payments and fewer, bigger requested ones. Each stage (risk check,
+  approval, settlement) can handle routine payments by itself; anyone with write access can change those
+  settings, and the change is logged under their name.
 - **The heist:** a payment lands in the payee's primary account at the moment it settles, so making a
   mule account a customer's primary diverts every payment to them.
 - **Time:** 20 minutes, running through a working day (slow morning, lunch rush, busy end of day, close
@@ -93,10 +96,11 @@ Full rules and tuning: [docs/RULES.md](docs/RULES.md).
   repeatable.
 - The header shows the time of day, how busy it is, the game clock ("07:42 / 20:00", the same time the
   logs use) and the bank's progress.
-- The player screen is an employee sidebar plus a simulated desktop. Click a system to open a
-  window, then a module (each tile shows your access to it). Windows can be moved, resized,
-  minimized, maximized and navigated with back/forward or the address bar (e.g.
-  `10.0.0.30/settlement`).
+- The player screen is an employee sidebar plus a simulated desktop that starts with your workstation
+  open and tints with the time of day. Click a system to open a window, then a module (each tile shows
+  your access to it). Windows can be moved, resized from any edge or corner, snapped to half the screen
+  (drag to the left or right edge; the top edge maximizes), minimized, maximized and navigated with
+  back/forward or the address bar (e.g. `10.0.0.30/settlement`).
 - A module page has three parts: **Credential** (pick one you hold, or "Manual code" to type any
   code: that is how guessing and using someone else's credential works), **Commands** (cards), and
   the window's **Terminal**, which keeps its history while you stay in one system.
@@ -105,9 +109,6 @@ Full rules and tuning: [docs/RULES.md](docs/RULES.md).
 - **The bell** at the right of a page's breadcrumbs switches its notifications on or off (write access
   only). They pop up at the bottom right, above the taskbar, and vanish after 5s or a tap.
 - **Ground truth** in the yellow bar shows who really did what next to what the logs say.
-- **Auto-process routine payments** is a debug bot that settles low-risk automatic payments so a single
-  tester is not buried in paperwork. Turn it off for a stricter game. Risky payments are always left
-  for humans.
 - **Show allegiances** reveals the Black Hats in the player list.
 
 Things worth trying first:

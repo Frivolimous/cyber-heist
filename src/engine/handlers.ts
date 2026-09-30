@@ -6,6 +6,7 @@ import {
   accountExists,
   balanceOf,
   unusedAccountNumber,
+  unusedAlias,
   addAlert,
   addLog,
   fmtClock,
@@ -220,7 +221,11 @@ H['SECURITY.FIREWALL.REVOKE_ALL_ACCESS'] = (c, q) => {
   const a = networkAddress(c, q);
   if (typeof a !== 'string') return bad(a.error);
   if (activeBlock(c.s, a)?.until === null) return bad(`All access for ${a} is already revoked.`);
-  if (c.s.revocations.some((r) => r.address === a && r.status === 'PENDING')) return bad(`A revocation of ${a} is already counting down.`);
+  // Only one "revoke all access" counts down at a time, bank-wide.
+  const pending = c.s.revocations.find((r) => r.status === 'PENDING');
+  if (pending) {
+    return bad(pending.address === a ? `A revocation of ${a} is already counting down.` : `${pending.id} (${pending.address}) is already counting down. Only one revocation can run at a time.`);
+  }
   const r: Revocation = {
     id: nextId(c.s, 'revoke', 'R'),
     address: a,
@@ -1068,6 +1073,7 @@ function plantUser(s: GameState, name: string, role: RoleId, ip: string): Player
     name,
     role,
     allegiance: 'WHITE',
+    alias: unusedAlias(s),
     objective: '',
     motivation: '',
     ip,
@@ -1390,7 +1396,7 @@ H['BLACKHAT_DB.BLACKNET.POST_MESSAGE'] = (c, q) => {
   c.s.blacknet.push({
     id: nextId(c.s, 'msg', 'N'),
     t: c.t,
-    alias: str(q, 'alias').slice(0, 20) || 'anon',
+    alias: c.owner.alias, // the credential owner's fixed alias: a borrowed code posts as its owner
     text: text.slice(0, 300),
     ownerId: c.owner.id,
   });

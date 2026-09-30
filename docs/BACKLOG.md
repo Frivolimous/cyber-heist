@@ -9,6 +9,11 @@ Move an item out of here when it ships. Firebase, the lobby and real multiplayer
   play; a player who closes the tab while waiting in the lobby stays listed. Rooms made before the
   automatic cleanup (a room index, 2026-09-29) have to be deleted by hand in the Firebase console.
 
+- **Switched off: credential sharing and the Credential Cache** (`CREDENTIAL_SHARING_ENABLED`,
+  `CREDENTIAL_CACHE_ENABLED` in catalog.ts; the code remains). They were not working well: the Share
+  action, keeping a credential after typing its code, and the host module listing White Hat credentials
+  held by operatives. Fix or delete.
+
 - **Removing planted users.** Infiltration / Create user plants a fake employee, but there is no way to
   remove one: White Hats can only revoke its credentials (which terminates it once it has any).
 
@@ -47,7 +52,7 @@ Built, but the numbers or the balance are a first guess.
     wealthy. If too many customers can only ask to add accounts, raise the small tier (e.g. $0.5M-$3M);
   - the Master Log gets a "Batch processor queued" line per automatic payment (~120 a game at 10 players):
     good cover for the Black Hats, or just noise?
-  - the amount factors in `scaledConfig` (0.94 automatic, 0.41 requested) were measured by simulation;
+  - the amount factors in `scaledConfig` (0.94 automatic, 0.39 requested) were measured by simulation;
     re-measure if payment sizing or tiers change;
   - the hacker target grows with Black Hats, but their chances per payment do not;
   - the 20-minute timer (was 40), and time-of-day pacing (busy = 4x slow).
@@ -61,6 +66,16 @@ Built, but the numbers or the balance are a first guess.
 - **Workstation logins.** A W login can never be revoked, so once it is shared or read off a workstation
   that access is permanent. Watch whether that feels unfair; a "change your login" action would fix it.
   Unlock workstation (tier 3, 30s, stopped by a block on either end) is a first guess.
+
+## Visual polish (maybes)
+
+Suggested, not agreed. Pick up if a playtest shows the need.
+
+- **Result flash:** new terminal lines flash briefly, green for OK and red for FAILED, so a mistake is
+  noticed even when the terminal is busy.
+- **Taskbar attention:** a minimized or background window's taskbar button pulses when its bell rings.
+- **Hacker styling:** faint scanlines or a flicker when an unregistered host window opens.
+- **Alerts that land:** a tier 3-4 alert flashes the Master Log window (or its taskbar button) red.
 
 ## Deferred (from the original design)
 

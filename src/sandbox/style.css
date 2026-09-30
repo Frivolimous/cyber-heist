@@ -101,7 +101,13 @@ button:disabled { cursor: default; opacity: 0.4; }
 
 /* desktop */
 .desk { position: relative; overflow: hidden; background: radial-gradient(ellipse at 30% 20%, var(--os-desk-a), var(--os-desk-b) 70%); }
-.desk::before { content: ''; position: absolute; inset: 0; background-image: linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px); background-size: 32px 32px; pointer-events: none; }
+.desk::before { content: ''; position: absolute; inset: 0; background-image: linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px); background-size: 32px 32px; pointer-events: none; background-color: var(--day-tint, transparent); transition: background-color 20s linear; }
+/* Time of day: a wash over the desktop that drifts from a cool morning to a dark close of business. */
+.desk[data-phase='morning'] { --day-tint: rgba(110, 170, 255, 0.07); }
+.desk[data-phase='lunch-rush'] { --day-tint: rgba(255, 236, 170, 0.09); }
+.desk[data-phase='afternoon'] { --day-tint: rgba(255, 196, 120, 0.1); }
+.desk[data-phase='end-of-day'] { --day-tint: rgba(255, 112, 60, 0.14); }
+.desk[data-phase='close-of-business'] { --day-tint: rgba(8, 4, 24, 0.45); }
 .icons { position: absolute; inset: 0 0 var(--taskbar-h) 0; display: grid; grid-template-columns: repeat(2, 168px); grid-auto-rows: 168px; gap: 22px; place-content: center; }
 .sys-icon { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 16px; color: #e8eef8; padding: 12px; text-align: center; transition: background 0.15s, transform 0.15s; }
 .sys-icon:hover { background: rgba(255, 255, 255, 0.16); transform: translateY(-2px); }
@@ -114,6 +120,10 @@ button:disabled { cursor: default; opacity: 0.4; }
 /* windows */
 .win { position: absolute; display: flex; flex-direction: column; background: #f4f6f9; border-radius: 8px; overflow: hidden; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0, 0, 0, 0.3); min-width: 0; }
 .win.min { display: none; }
+/* Where a window dragged to the edge of the desk will snap. */
+.snap-preview { position: absolute; box-sizing: border-box; border-radius: 8px; background: rgba(120, 170, 255, 0.16); border: 2px solid rgba(160, 200, 255, 0.55); pointer-events: none; animation: snap-in 0.12s ease-out; }
+@keyframes snap-in { from { opacity: 0; } }
+.snap-preview[hidden] { display: none; }
 .win.max { left: 0 !important; top: 0 !important; width: 100% !important; height: calc(100% - var(--taskbar-h)) !important; border-radius: 0; }
 .win.dragging { user-select: none; }
 .titlebar { display: flex; align-items: center; gap: 8px; background: var(--win-title-off); color: #eef2f8; padding: 0 0 0 10px; height: 34px; flex: none; cursor: grab; user-select: none; }
@@ -140,8 +150,21 @@ button:disabled { cursor: default; opacity: 0.4; }
 
 .wbody { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
 .wbody h2 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px; }
-.grip { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, rgba(0, 0, 0, 0.25) 50%, rgba(0, 0, 0, 0.25) 60%, transparent 60%, transparent 70%, rgba(0, 0, 0, 0.25) 70%, rgba(0, 0, 0, 0.25) 80%, transparent 80%); }
-.win.max .grip { display: none; }
+/* Resize handles: thin strips along each edge and squares in the corners, drawn over the window's rim. */
+.rz { position: absolute; z-index: 2; }
+.rz.n, .rz.s { left: 10px; right: 10px; height: 5px; cursor: ns-resize; }
+.rz.e, .rz.w { top: 10px; bottom: 10px; width: 5px; cursor: ew-resize; }
+.rz.n { top: 0; }
+.rz.s { bottom: 0; }
+.rz.e { right: 0; }
+.rz.w { left: 0; }
+.rz.nw, .rz.ne, .rz.sw, .rz.se { width: 10px; height: 10px; }
+.rz.nw { top: 0; left: 0; cursor: nwse-resize; }
+.rz.ne { top: 0; right: 0; cursor: nesw-resize; }
+.rz.sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.rz.se { bottom: 0; right: 0; cursor: nwse-resize; }
+.win.max .rz { display: none; }
+.rz.grip { width: 16px; height: 16px; background: linear-gradient(135deg, transparent 50%, rgba(0, 0, 0, 0.25) 50%, rgba(0, 0, 0, 0.25) 60%, transparent 60%, transparent 70%, rgba(0, 0, 0, 0.25) 70%, rgba(0, 0, 0, 0.25) 80%, transparent 80%); }
 
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 .tile { display: grid; gap: 4px; text-align: left; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 16px 14px; min-height: 84px; align-content: center; }
@@ -265,6 +288,11 @@ table.cred .rev { text-decoration: line-through; color: var(--muted); }
 .cmd-btn.danger:hover { background: #fbeceb; }
 .cmd-row .field.full { flex-basis: 100%; }
 .cmd-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+/* A remote screen's action on its way to the host: a small spinner in the pressed button. */
+.win button.busy { cursor: progress; opacity: 0.75; }
+.win button.busy::after { content: ''; display: inline-block; width: 10px; height: 10px; margin-left: 7px; vertical-align: -1px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .win button.busy::after { animation: none; border-right-color: currentColor; opacity: 0.5; } }
 /* risk score picker */
 fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
 .seg-opts { display: flex; gap: 6px; }
@@ -385,6 +413,21 @@ fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
 .end-note { margin: 0; font-size: 12px; color: var(--muted); font-style: italic; }
 .end-close { justify-self: end; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 6px 14px; font-weight: 600; }
 .end-close:hover { border-color: var(--win-title); }
+/* The reveal (renderEnd): each .rv appears at its --d delay; the bars fill; the winner's glow comes last. */
+.end-card { animation: end-pop 0.35s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.end-card .rv { opacity: 0; animation: end-in 0.45s ease-out var(--d, 0s) forwards; }
+.end-card h2.verdict { animation-name: end-verdict; animation-duration: 0.6s; }
+.end-card .rv-bar { transform-origin: left; animation: end-bar 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) var(--d, 0s) both; }
+.end-team.won { box-shadow: none; animation: end-glow 0.6s ease-out var(--d, 0s) forwards; }
+@keyframes end-pop { from { opacity: 0; transform: scale(0.96); } }
+@keyframes end-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes end-verdict { 0% { opacity: 0; transform: scale(0.9); } 60% { opacity: 1; transform: scale(1.04); } 100% { opacity: 1; transform: none; } }
+@keyframes end-bar { from { transform: scaleX(0); } }
+@keyframes end-glow { to { box-shadow: 0 0 0 2px var(--gold); } }
+@media (prefers-reduced-motion: reduce) {
+  .end-card, .end-card .rv, .end-card .rv-bar, .end-team.won { animation: none; opacity: 1; }
+  .end-team.won { box-shadow: 0 0 0 2px var(--gold); }
+}
 .banner button { margin-left: 8px; border: 1px solid currentColor; background: none; color: inherit; border-radius: 4px; padding: 1px 8px; font: inherit; font-weight: 600; }
 
 /* a proxy's address typed into the nav bar */

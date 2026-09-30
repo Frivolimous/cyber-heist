@@ -1,7 +1,7 @@
 // Client Requests: customers write to their personal banker asking for payments or changes to their
 // own accounts. Requests are written in words (names, not codes), so acting on one means looking things up.
 
-import { activeCustomers, affordableAmount, payingAccount, paymentFor, wealthWeight } from './bank';
+import { activeCustomers, affordableAmount, MAX_BALANCE_SHARE, MIN_PAYMENT, payingAccount, paymentFor, wealthWeight } from './bank';
 import { addLog, balanceOf, gameTime, money, nextId, unusedAccountNumber } from './core';
 import { notify } from './notify';
 import { pick, rand, randInt, weightedPick } from './rng';
@@ -11,7 +11,7 @@ const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 
 
 type Words = { banker: string; cust: string; payee: string; amt: string; from: string; acct: string; month: string; ref: number };
 
-// Payment requests name who to pay (by name) and which account to pay from ("our main account" or a number).
+// Payment requests name who to pay (by name) and which account to pay from (see paymentSource).
 const PAYMENT_TEXTS: ((w: Words) => string)[] = [
   (w) => `Hi ${w.banker}, please send ${w.amt} ${w.from} to ${w.payee} for the ${w.month} invoice. Thanks, ${w.cust}`,
   (w) => `Good morning ${w.banker}. Kindly transfer ${w.amt} to ${w.payee} ${w.from}. Regards, ${w.cust}`,
@@ -137,6 +137,35 @@ function requestAmount(s: GameState, account: string): number | null {
   return Math.min(scaled, Math.floor(balanceOf(s, account) / 1000) * 1000, s.config.maxManualAmount);
 }
 
+/**
+ * Where a payment request says to pay from, picked at random from three forms:
+ * - MAIN: "from our main account" (the primary);
+ * - NUMBER: "from our account 12345" (any of their accounts, the richer the likelier);
+ * - OTHER: "from our other account" / "from whichever of our other accounts has the funds" (a non-primary
+ *   account; the banker has to look up which one can pay). Only when a non-primary account can afford it.
+ * A form the customer cannot pay from falls back to NUMBER. Null when no account can pay at all.
+ */
+function paymentSource(s: GameState, cust: Customer): { origin: string; amount: number; from: string } | null {
+  const others = cust.accounts.filter((a) => a !== cust.primary);
+  const form = pick(s, ['MAIN', 'NUMBER', 'OTHER'] as const);
+  if (form === 'MAIN') {
+    const amount = requestAmount(s, cust.primary);
+    if (amount !== null) return { origin: cust.primary, amount, from: 'from our main account' };
+  }
+  if (form === 'OTHER') {
+    const able = others.filter((a) => balanceOf(s, a) * MAX_BALANCE_SHARE >= MIN_PAYMENT);
+    if (able.length) {
+      const origin = weightedPick(s, able, (a) => balanceOf(s, a) + 1);
+      const amount = requestAmount(s, origin);
+      const from = others.length === 1 ? 'from our other account (not the main one)' : 'from whichever of our other accounts has the funds (not the main one)';
+      if (amount !== null) return { origin, amount, from };
+    }
+  }
+  const origin = payingAccount(s, cust);
+  const amount = requestAmount(s, origin);
+  return amount === null ? null : { origin, amount, from: `from our account ${origin.slice(4)}` };
+}
+
 /** Spawns a request from a customer still doing business with the bank (null if there is none). */
 export function spawnRequest(s: GameState): ClientRequest | null {
   const active = activeCustomers(s);
@@ -150,13 +179,11 @@ export function spawnRequest(s: GameState): ClientRequest | null {
   // A customer asks to pay what the account can afford; one too poor to pay anything asks to add an account instead.
   let originAccount: string | null = null;
   let amount: number | null = null;
+  let from = '';
   if (kind === 'PAYMENT') {
-    originAccount = payingAccount(s, cust);
-    amount = requestAmount(s, originAccount);
-    if (amount === null) {
-      kind = 'ADD_ACCOUNT';
-      originAccount = null;
-    }
+    const src = paymentSource(s, cust);
+    if (src) ({ origin: originAccount, amount, from } = src);
+    else kind = 'ADD_ACCOUNT';
   }
   const payee = kind === 'PAYMENT' ? weightedPick(s, active.filter((c) => c.id !== cust.id), (c) => wealthWeight(s, c)) : null;
   const urgent = kind === 'PAYMENT' && rand(s) < s.config.urgentShare;
@@ -166,7 +193,7 @@ export function spawnRequest(s: GameState): ClientRequest | null {
     cust: cust.name,
     payee: payee?.name ?? '',
     amt: amount === null ? '' : money(amount),
-    from: originAccount === null ? '' : originAccount === cust.primary ? 'from our main account' : `from our account ${originAccount.slice(4)}`,
+    from,
     acct: account ? account.slice(4) : '',
     month: pick(s, MONTHS),
     ref: randInt(s, 1000, 9999),
