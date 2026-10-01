@@ -86,9 +86,10 @@ devices.
   of business). New work arrives faster or slower accordingly.
 - **Winning:** the game ends at close of business, when every Thief is out (terminated: all their
   credentials or their IP revoked; or quit, from their Profile), or when the Firewall shuts down the
-  unregistered host or one of the bank's own systems. The Thieves win if their mule accounts hold their
-  goal when it ends. Otherwise the bank wins (its target met at close of business, the Thieves out, or the
-  host shut down) or, if time runs out short or a bank system is shut down, everybody loses. The end screen shows both teams, what they made,
+  unregistered host or one of the bank's own systems, or when all but one customer have walked out over
+  missed requests. The Thieves win if their mule accounts hold their goal when it ends. Otherwise the bank wins (its target met at close of business, the Thieves out, or the
+  host shut down) or, if time runs out short, a bank system is shut down or the customers are gone,
+  everybody loses. The end screen shows both teams, what they made,
   and anyone who embezzled.
 
 Full rules and tuning: [docs/RULES.md](docs/RULES.md).

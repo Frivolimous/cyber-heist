@@ -342,10 +342,11 @@ export type TerminationReason = 'CREDENTIALS' | 'IP_REVOKED' | 'RESIGNED';
 /**
  * What ended the game (the winner is kept separately). CLOSE_OF_BUSINESS: the clock ran out. THIEVES_TERMINATED:
  * every Thief was disabled. HOST_SHUT_DOWN: the unregistered host's access was revoked. SHUTDOWN: a bank
- * system's access was revoked. Whatever the trigger, the Thieves win if their goal is met at that instant
+ * system's access was revoked. NO_CUSTOMERS: one customer or none still doing business (the bank never wins
+ * it). Whatever the trigger, the Thieves win if their goal is met at that instant
  * (ending.ts: thiefTargetMet); otherwise the bank (target met, Thieves terminated, host shut down) or nobody.
  */
-export type EndKind = 'CLOSE_OF_BUSINESS' | 'THIEVES_TERMINATED' | 'HOST_SHUT_DOWN' | 'SHUTDOWN';
+export type EndKind = 'CLOSE_OF_BUSINESS' | 'THIEVES_TERMINATED' | 'HOST_SHUT_DOWN' | 'SHUTDOWN' | 'NO_CUSTOMERS';
 
 export interface ActivityEntry {
   t: number;

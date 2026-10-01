@@ -21,6 +21,8 @@ win. Otherwise the ending's own outcome applies.
 | Same | no | the bank |
 | Firewall "revoke all access" completes on a bank system (Security, Client Data, Transaction Processing) | yes | Thieves |
 | Same | no | nobody |
+| One customer or none still doing business (the rest suspended) | yes | Thieves |
+| Same | no | nobody (the bank never wins this one) |
 
 Details:
 
@@ -476,7 +478,11 @@ of "potential targets for fraudulent transactions").
   day**: they write to the Bank Manager and their banker, show as SUSPENDED in Customer Records, and send
   no more requests; automatic payments no longer come from or go to them. Their accounts and money stay.
   Payments already in the queue carry on. Losing a customer shrinks the bank's volume, and the margin
-  over the target is small.
+  over the target is small. When **one customer or none** is still doing business, no payments can arrive
+  any more, so **the day ends at once** (`NO_CUSTOMERS`): the Thieves win if their goal is met ("All the
+  bank's customers walked out and took their money. The thieves did the same."), otherwise everybody loses
+  ("The bankers forgot to do their day job and everyone walked out on them! Everyone's getting fired for
+  this.").
 - Customer messages come from a **contact**: a made-up first name for a company ("Cody (Cobalt Payroll)")
   or the person themselves for a private customer. Requests, follow-ups (normal and urgent), complaints
   and walkouts are each picked from a set of 6-10 form messages ("This is Cody from Cobalt Payroll.",

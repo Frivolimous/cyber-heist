@@ -1,5 +1,6 @@
 // How a game ends: terminated (disabled) players, the end conditions, and the end-screen summary.
 
+import { activeCustomers } from './bank';
 import { ROLES } from './catalog';
 import { activeBlock, addLog, fmtClock, gameTime, money, nextId, note } from './core';
 import { pick } from './rng';
@@ -117,11 +118,19 @@ function checkHeistSecured(s: GameState): void {
   }
 }
 
-/** Mutating: the instant end condition (every Thief out: terminated or quit), after telling the Thieves if their goal changed. */
+/**
+ * Mutating: the instant end conditions, after telling the Thieves if their goal changed: every Thief out
+ * (terminated or quit), and the bank down to one customer or none (no payments can arrive any more).
+ */
 export function checkEnd(s: GameState): void {
   if (s.status !== 'RUNNING') return;
   checkTerminations(s);
   checkHeistSecured(s);
+  if (s.customers.length > 1 && activeCustomers(s).length <= 1) {
+    if (thiefTargetMet(s)) endGame(s, 'NO_CUSTOMERS', 'BLACK', 'All the bank\'s customers walked out and took their money. The thieves did the same.');
+    else endGame(s, 'NO_CUSTOMERS', null, "The bankers forgot to do their day job and everyone walked out on them! Everyone's getting fired for this.");
+    return;
+  }
   const blacks = team(s, 'BLACK');
   if (blacks.length > 0 && blacks.every((p) => p.terminated)) {
     if (thiefTargetMet(s)) endGame(s, 'THIEVES_TERMINATED', 'BLACK', 'One by one they left the building, and the money left with them.');

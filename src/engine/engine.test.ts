@@ -461,7 +461,7 @@ test('the hidden system assessment flags recent primary changes; verifying clear
 });
 
 test('meeting the Thieves\' goal does not end the game: it secures the win until a reversal takes it back', () => {
-  const sim = new Sim({ npcMinAmount: 2_000_000, npcMaxAmount: 2_000_000 });
+  const sim = new Sim({ npcMinAmount: 2_000_000, npcMaxAmount: 2_000_000, strikesToSuspend: 999 }); // nobody walks out
   const pb = sim.bankerOf(sim.s.transactions[0].beneficiaryId);
   const [ar] = sim.byRole('ACCOUNTS_RECEIVABLES');
   const ben = sim.s.transactions[0].beneficiaryId;
@@ -622,6 +622,24 @@ test('quitting: terminated for good, everyone gets a parting message, and the la
   assert.ok(getPlayerView(sim.s, white.id).end!.teams.find((t) => t.side === 'BLACK')!.members.every((m) => m.resigned));
 });
 
+test('the day ends early when one customer or none is still doing business: the Thieves win if their goal is met, else everybody loses', () => {
+  for (const met of [false, true]) {
+    const sim = new Sim();
+    sim.at(2);
+    if (met) fillLedger(sim);
+    for (const c of sim.s.customers.slice(2)) c.suspended = true; // two left
+    sim.at(3);
+    assert.equal(sim.s.status, 'RUNNING');
+    sim.s.customers[1].suspended = true; // one left
+    sim.at(4);
+    assert.ok(!sim.s.customers[0].suspended);
+    assert.equal(sim.s.status, 'ENDED');
+    assert.equal(sim.s.endKind, 'NO_CUSTOMERS');
+    assert.equal(sim.s.winner, met ? 'BLACK' : null);
+    assert.match(sim.s.endReason!, met ? /The thieves did the same/ : /forgot to do their day job/);
+  }
+});
+
 test('players see every settled payment as one total and the bank\'s goal, never its real progress', () => {
   const sim = new Sim({ automation: EVERYTHING });
   sim.at(200);
@@ -644,7 +662,7 @@ test('NPC traffic arrives on a schedule, and the bank wins at close of business 
   sim.at(120);
   assert.equal(sim.s.transactions.length, 3 + due);
 
-  const win = new Sim({ npcMinAmount: 2_000_000, npcMaxAmount: 2_000_000, whiteTarget: 8_000_000, automation: EVERYTHING });
+  const win = new Sim({ npcMinAmount: 2_000_000, npcMaxAmount: 2_000_000, whiteTarget: 8_000_000, automation: EVERYTHING, strikesToSuspend: 999 });
   win.at(300);
   assert.ok(win.s.totals.processed >= 8_000_000);
   assert.equal(win.s.status, 'RUNNING', 'meeting the target early does not end the game');
