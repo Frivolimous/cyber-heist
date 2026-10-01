@@ -311,6 +311,14 @@ table.cred .rev { text-decoration: line-through; color: var(--muted); }
 .crumbs .bell { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border: 1px solid #c9d2e0; border-radius: 12px; background: #f4f6fa; color: var(--muted); text-decoration: none; font-size: 12px; font-weight: 600; }
 .crumbs .bell.on { background: var(--amber-bg); border-color: var(--amber); color: var(--amber); }
 .win.host .crumbs .bell { background: transparent; border-color: var(--line); }
+/* The automation badge, left of the bell on a payment stage page; its details open under the credential row. */
+.crumbs .auto-badge { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border: 1px solid #c9d2e0; border-radius: 12px; background: #f4f6fa; color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer; }
+.crumbs .auto-badge.on { background: #e8f3ec; border-color: #7fb894; color: #2f6b45; }
+.crumbs .auto-badge[aria-expanded="true"] { box-shadow: 0 0 0 2px rgba(127, 184, 148, 0.45); }
+.crumbs .auto-badge + .bell { margin-left: 6px; }
+.auto-panel { flex: none; margin: 8px 10px 0; padding: 8px 10px; border: 1px solid #7fb894; border-radius: 8px; background: #f3f9f5; }
+.auto-panel .auto-now { margin: 4px 0 8px; font-size: 13px; }
+.auto-panel .hint { margin: 6px 0 0; }
 
 .unread { margin-left: 8px; background: var(--amber); color: #fff; font-size: 11px; border-radius: 9px; padding: 0 6px; }
 
@@ -326,6 +334,41 @@ table.cred .rev { text-decoration: line-through; color: var(--muted); }
 .cmd-btn.danger:hover { background: #fbeceb; }
 .cmd-row .field.full { flex-basis: 100%; }
 .cmd-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+/* The Personal Banker tutorial: a checklist pinned to the top right of the desktop, above the windows. */
+#tutorial { position: absolute; top: 10px; right: 10px; width: min(290px, calc(100% - 20px)); max-height: calc(100% - var(--taskbar-h) - 20px); overflow-y: auto; z-index: 90000; display: flex; flex-direction: column; gap: 8px; }
+#tutorial:empty { display: none; }
+.tutorial { flex: none; border: 1px solid #2e4575; border-radius: 10px; background: rgba(12, 20, 38, 0.95); color: #dbe3f0; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); font-size: 13px; }
+.tutorial-head { margin: 0; padding: 8px 12px; color: var(--gold); font-size: 13px; font-weight: 700; }
+.tutorial ol { list-style: none; margin: 0; padding: 0 12px 10px; display: grid; gap: 6px; }
+.tutorial li { display: grid; grid-template-columns: 18px 1fr; gap: 6px; align-items: start; color: #8fa3c4; }
+.tutorial li .tick { width: 16px; height: 16px; border: 1px solid #4a5f86; border-radius: 4px; display: grid; place-items: center; font-size: 11px; line-height: 1; }
+.tutorial li.done { color: #9fc8ad; }
+.tutorial li.done .tick { background: #2f6b45; border-color: #4f9c6c; color: #fff; }
+.tutorial li.now { color: #fff; font-weight: 600; }
+.tutorial li.now .tick { border-color: var(--gold); }
+.tutorial li.skipped span:last-child { text-decoration: line-through; }
+.tutorial li.sub { margin-left: 18px; color: #f2c46d; font-weight: 600; }
+.tutorial li.sub .tick { border-color: #f2c46d; }
+.tutorial ol.parts { gap: 10px; }
+/* The heist: the hidden host's dark red. */
+.tutorial.heist { background: rgba(26, 12, 20, 0.96); border-color: #5a2a3a; }
+.tutorial.heist .tutorial-head { display: flex; justify-content: space-between; align-items: center; color: #ff7a8c; }
+.tutorial.heist .tutorial-head button { padding: 0; border: 0; background: none; color: #c99aa6; font-size: 12px; cursor: pointer; }
+.tutorial.heist li.part > b { color: #e7b3bf; }
+.tutorial.heist li.now .tick { border-color: #ff7a8c; }
+.tutorial li.part { display: block; color: #dbe3f0; }
+.tutorial li.part > b { display: block; margin-bottom: 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #b8c6de; }
+.tutorial li.part.done > b { color: #9fc8ad; }
+.tutorial li.part ol { padding: 0; }
+.tutorial li.part ol:empty { display: none; }
+.tutorial-result { padding: 4px 12px 12px; }
+.tutorial-result p { margin: 0 0 10px; font-weight: 600; color: #9fc8ad; }
+.tutorial-result.FAILED p { color: #ff9a8c; }
+
+/* A line of help under a card's buttons, with links to other pages by address. */
+.cmd-hint { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 12px; }
+.page-link { padding: 0; border: 0; background: none; color: #2a5db0; font: inherit; font-family: ui-monospace, Consolas, monospace; text-decoration: underline; cursor: pointer; }
+.page-link:hover { color: #173f80; }
 /* A remote screen's action on its way to the host: a small spinner in the pressed button. */
 .win button.busy { cursor: progress; opacity: 0.75; }
 .win button.busy::after { content: ''; display: inline-block; width: 10px; height: 10px; margin-left: 7px; vertical-align: -1px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; }
@@ -341,6 +384,7 @@ fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
 .seg-opt.LOW input:checked + span { background: #dff3ea; border-color: #3c9a73; color: #0f5132; }
 .seg-opt.MEDIUM input:checked + span { background: #fff1d1; border-color: #c98200; color: #6b4500; }
 .seg-opt.HIGH input:checked + span { background: #f7d9d5; border-color: var(--thief-side); color: #5c120c; }
+.seg-opt.NONE input:checked + span { background: #e6e9ee; border-color: #8a94a6; color: #3a4252; }
 /* terminal header + session handshake */
 .mod-sec.term h3 { display: flex; align-items: center; justify-content: space-between; }
 .term-clear { font: 600 11px var(--sans); text-transform: none; letter-spacing: 0; background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 1px 10px; color: var(--muted); }

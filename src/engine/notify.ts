@@ -62,7 +62,7 @@ export function notify(s: GameState, system: string, module: string, text: strin
     if (scope.bankerId !== undefined && scope.bankerId !== p.id) continue;
     if (scope.to !== undefined && scope.to !== p.id) continue;
     if (!canWriteModule(s, p, system, module)) continue;
-    p.notifications.push({ id: nextId(s, 'notice', 'N'), t: gameTime(s), page, text });
+    p.notifications.push({ id: nextId(s, 'notice', 'N'), t: gameTime(s), page, system, module, text });
     if (p.notifications.length > KEEP) p.notifications.splice(0, p.notifications.length - KEEP);
   }
 }

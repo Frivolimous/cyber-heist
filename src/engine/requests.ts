@@ -90,12 +90,23 @@ export function accountRequestText(s: GameState, cust: Customer, kind: Exclude<R
   return pick(s, ACCOUNT_TEXTS[kind])(words);
 }
 
+/**
+ * How a payment request names its payee: usually with their tag, "Keystone Plumbing (CU7)" (requestTagShare of
+ * requests), otherwise by name only. Drawn per request number from a side stream, so the game's main random
+ * sequence is unchanged and a scam request is tagged as often as a real one.
+ */
+export function payeeWords(s: GameState, payee: Customer, requestId: string): string {
+  const n = Number(requestId.replace(/\D/g, ''));
+  const tagged = rand({ rngState: (s.seed ^ Math.imul(n, 0x9e3779b1)) | 0 }) < s.config.requestTagShare;
+  return tagged ? `${payee.name} (${payee.id})` : payee.name;
+}
+
 /** A payment request in the customer's words (paid from their main account), from the same forms real requests use. */
-export function paymentRequestText(s: GameState, cust: Customer, payee: Customer, amount: number, urgent: boolean): string {
+export function paymentRequestText(s: GameState, cust: Customer, payee: Customer, amount: number, urgent: boolean, requestId: string): string {
   const words: Words = {
     banker: cust.bankerId ? s.players[cust.bankerId].name : 'team',
     cust: cust.name,
-    payee: payee.name,
+    payee: payeeWords(s, payee, requestId),
     amt: money(amount),
     from: 'from our main account',
     acct: '',
@@ -120,9 +131,8 @@ function newCustomerAccount(s: GameState): string {
   return a;
 }
 
-/** Deadline fields for a new request: due in requestDeadlineSec (urgentDeadlineSec if urgent), chased halfway. */
-export function requestTimes(s: GameState, t: number, urgent: boolean): Pick<ClientRequest, 'urgent' | 'dueAt' | 'remindAt' | 'reminders' | 'outcome'> {
-  const window = urgent ? s.config.urgentDeadlineSec : s.config.requestDeadlineSec;
+/** Deadline fields for a new request: due in requestDeadlineSec (urgentDeadlineSec if urgent, or `window`), chased halfway. */
+export function requestTimes(s: GameState, t: number, urgent: boolean, window = urgent ? s.config.urgentDeadlineSec : s.config.requestDeadlineSec): Pick<ClientRequest, 'urgent' | 'dueAt' | 'remindAt' | 'reminders' | 'outcome'> {
   return { urgent, dueAt: t + window, remindAt: t + window / 2, reminders: [], outcome: null };
 }
 
@@ -170,8 +180,13 @@ function paymentSource(s: GameState, cust: Customer): { origin: string; amount: 
 
 /** Each gap between client requests is the average gap times 1 ± this (at random), so arrivals are uneven. */
 export const REQUEST_JITTER = 0.5;
-/** The game starts with no requests waiting: the first arrives this many seconds in. */
-export const FIRST_REQUEST_SEC = 20;
+/**
+ * The game starts gently: each Personal Banker's first request is an easy payment with a long deadline
+ * (firstRequestDeadlineSec), arriving in this window (game seconds), spread evenly across the bankers.
+ */
+export const FIRST_REQUESTS_WINDOW: [number, number] = [10, 50];
+/** The regular requests start once every banker has had their first: this many seconds in. */
+export const FIRST_REQUEST_SEC = 90;
 
 /**
  * Schedules the next client request after one at `after`: a jittered gap around requestIntervalSec, then bent
@@ -180,6 +195,63 @@ export const FIRST_REQUEST_SEC = 20;
 export function scheduleRequest(s: GameState, after: number): void {
   const gap = s.config.requestIntervalSec * (1 + (rand(s) * 2 - 1) * REQUEST_JITTER);
   s.nextRequestAt = nextArrival(s.config.durationSec, after, gap);
+}
+
+// A gentle first request: an ordinary payment from the main account, saying there is no hurry. It names the account
+// number and the payee's tag, so nothing needs looking up.
+const FIRST_TEXTS: ((w: Words) => string)[] = [
+  (w) => `Hi ${w.banker}, no rush on this one, take your time: please pay ${w.amt} to ${w.payee} ${w.from}. Thanks, ${w.cust}`,
+  (w) => `Good morning ${w.banker}! Whenever you get a moment, could you send ${w.amt} to ${w.payee} ${w.from}? No hurry at all. ${w.cust}`,
+  (w) => `${w.banker}, an easy one to start the day: ${w.amt} to ${w.payee}, ${w.from}. Take your time. - ${w.cust}`,
+  (w) => `Hello ${w.banker}, nothing urgent, sometime this morning: please transfer ${w.amt} to ${w.payee} ${w.from}. Regards, ${w.cust}`,
+];
+
+/** Schedules every Personal Banker's gentle first request (no randomness, so the game's random sequence is unchanged). */
+export function scheduleFirstRequests(s: GameState): void {
+  const bankers = s.playerOrder.filter((id) => s.players[id].role === 'PERSONAL_BANKER');
+  const [from, to] = FIRST_REQUESTS_WINDOW;
+  const step = bankers.length > 1 ? (to - from) / (bankers.length - 1) : 0;
+  s.firstRequests = bankers.map((bankerId, i) => ({ at: from + step * i, bankerId }));
+}
+
+/** A banker's gentle first request: one of their customers pays another customer from their main account. */
+export function spawnFirstRequest(s: GameState, bankerId: string): ClientRequest | null {
+  const active = activeCustomers(s);
+  const able = active.filter((c) => c.bankerId === bankerId && requestAmount(s, knownOf(c).primary) !== null);
+  if (!able.length || active.length < 2) return null;
+  const cust = pick(s, able);
+  const originAccount = knownOf(cust).primary;
+  // A routine size: never over the line where a payment counts as large.
+  const amount = Math.min(requestAmount(s, originAccount)!, Math.floor(s.config.largeAmount / 1000) * 1000);
+  const payee = weightedPick(s, active.filter((c) => c.id !== cust.id), (c) => wealthWeight(s, c));
+  // Spelled out for a first-timer: the account to pay from by number, and the payee's customer tag.
+  const words: Words = { banker: s.players[bankerId].name, cust: cust.name, payee: `${payee.name} (${payee.id})`, amt: money(amount), from: `from our main account, ${originAccount.slice(4)}`, acct: '', month: '', ref: 0 };
+  const t = gameTime(s);
+  const req: ClientRequest = {
+    id: nextId(s, 'req', 'REQ-'),
+    t,
+    customerId: cust.id,
+    bankerId,
+    kind: 'PAYMENT',
+    text: pick(s, FIRST_TEXTS)(words),
+    payeeId: payee.id,
+    amount,
+    originAccount,
+    account: null,
+    first: true,
+    ...requestTimes(s, t, false, s.config.firstRequestDeadlineSec),
+    status: 'OPEN',
+    closedAt: null,
+    closedBy: null,
+    closedByActual: null,
+    txId: null,
+    archiveReason: null,
+  };
+  s.requests.push(req);
+  const tutorial = s.players[bankerId].tutorial;
+  if (tutorial?.kind === 'BANKER') tutorial.requestId = req.id;
+  requestReceived(s, req);
+  return req;
 }
 
 /** Spawns a request from a customer still doing business with the bank (null if there is none). */
@@ -205,10 +277,11 @@ export function spawnRequest(s: GameState): ClientRequest | null {
   const payee = kind === 'PAYMENT' ? weightedPick(s, active.filter((c) => c.id !== cust.id), (c) => wealthWeight(s, c)) : null;
   const urgent = kind === 'PAYMENT' && rand(s) < s.config.urgentShare;
   const account = kind === 'ADD_ACCOUNT' || kind === 'ADD_AND_PRIMARY' ? newCustomerAccount(s) : kind === 'PAYMENT' ? null : pick(s, others);
+  const id = nextId(s, 'req', 'REQ-');
   const words: Words = {
     banker: cust.bankerId ? s.players[cust.bankerId].name : 'team',
     cust: cust.name,
-    payee: payee?.name ?? '',
+    payee: payee ? payeeWords(s, payee, id) : '',
     amt: amount === null ? '' : money(amount),
     from,
     acct: account ? account.slice(4) : '',
@@ -217,7 +290,7 @@ export function spawnRequest(s: GameState): ClientRequest | null {
   };
   const t = gameTime(s);
   const req: ClientRequest = {
-    id: nextId(s, 'req', 'REQ-'),
+    id,
     t,
     customerId: cust.id,
     bankerId: cust.bankerId,
@@ -465,7 +538,7 @@ export function schedulePhishing(s: GameState): void {
   const latest = s.config.durationSec * 0.85; // nothing new at close of business
   for (const bankerId of bankers) {
     const n = randInt(s, s.config.phishPerBankerMin, s.config.phishPerBankerMax);
-    for (let i = 0; i < n; i++) s.phishSchedule.push({ at: randInt(s, 20, latest), bankerId });
+    for (let i = 0; i < n; i++) s.phishSchedule.push({ at: randInt(s, FIRST_REQUEST_SEC, latest), bankerId }); // the slow morning starts with first requests only
   }
   s.phishSchedule.sort((a, b) => a.at - b.at);
 }

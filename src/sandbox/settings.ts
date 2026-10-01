@@ -4,7 +4,7 @@
 // a custom game still scales with its table. The last settings used are remembered in this browser.
 
 import './settings.css';
-import { DEFAULT_CONFIG } from '../engine';
+import { DEFAULT_CONFIG, MODES } from '../engine';
 import type { Automation, GameConfig } from '../engine';
 
 interface Field {
@@ -33,6 +33,7 @@ const GROUPS: { title: string; note?: string; fields: Field[] }[] = [
       { key: 'requestEverySecPerBanker', label: 'Average seconds between requests, per banker', min: 1 },
       { key: 'customersPerBanker', label: 'Customers per banker', int: true, min: 1 },
       { key: 'requestChangeShare', label: 'Share of requests that change accounts (0-1)' },
+      { key: 'requestTagShare', label: "Share of payment requests giving the payee's tag (0-1)" },
       { key: 'urgentShare', label: 'Share of payment requests that are urgent (0-1)' },
     ],
   },
@@ -53,6 +54,7 @@ const GROUPS: { title: string; note?: string; fields: Field[] }[] = [
     fields: [
       { key: 'requestDeadlineSec', label: 'Request deadline (s)', min: 1 },
       { key: 'urgentDeadlineSec', label: 'Urgent request deadline (s)', min: 1 },
+      { key: 'firstRequestDeadlineSec', label: "Banker's first request deadline (s)", min: 1 },
       { key: 'strikesToSuspend', label: 'Missed requests before a customer leaves', int: true, min: 1 },
       { key: 'phishPerBankerMin', label: 'Phishing messages per banker, min', int: true },
       { key: 'phishPerBankerMax', label: 'Phishing messages per banker, max', int: true },
@@ -85,7 +87,9 @@ const GROUPS: { title: string; note?: string; fields: Field[] }[] = [
     ],
   },
 ];
-const FIELDS = GROUPS.flatMap((g) => g.fields);
+/** The game mode: shown on its own, next to the Custom settings button. */
+const MODE_FIELD: Field = { key: 'mode', label: 'Mode', select: Object.keys(MODES) };
+const FIELDS = [MODE_FIELD, ...GROUPS.flatMap((g) => g.fields)];
 /** Pairs that must not cross. */
 const MIN_MAX: [string, string][] = [
   ['npcMinAmount', 'npcMaxAmount'],
@@ -163,13 +167,17 @@ export function mountSettings(el: HTMLElement, onChange?: (config: Partial<GameC
   let open = false;
   const current = (): { config: Partial<GameConfig>; errors: string[] } => toConfig(values);
   const render = (): void => {
-    const changed = Object.keys(values).length;
+    const changed = Object.keys(values).filter((k) => k !== 'mode').length;
     const { errors } = current();
+    const mode = values.mode ?? DEFAULT_CONFIG.mode;
     el.innerHTML = `<div class="cfg">
+      <label class="cfg-mode"><span>Mode</span><select data-cfg-key="mode">${Object.entries(MODES)
+        .map(([k, x]) => `<option value="${k}" ${k === mode ? 'selected' : ''}>${esc(x.label)}</option>`)
+        .join('')}</select></label>
       <button type="button" class="cfg-toggle ${changed ? 'on' : ''}" data-cfg="toggle" aria-expanded="${open}">Custom settings${changed ? ` (${changed} changed)` : ''}</button>
       ${open
         ? `<div class="cfg-panel">
-          <p class="cfg-note">Applies to the next game. Blank a field or press Reset for the default. Targets and arrival rates still scale with the table.</p>
+          <p class="cfg-note">Applies to the next game. Blank a field or press Reset for the default. Targets and arrival rates still scale with the table. The mode's own settings apply to any field you leave unchanged.</p>
           ${GROUPS.map(
             (g) => `<fieldset><legend>${g.title}</legend>${g.note ? `<p class="cfg-note">${g.note}</p>` : ''}${g.fields
               .map((f) => {

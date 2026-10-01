@@ -114,7 +114,7 @@ function checkHeistSecured(s: GameState): void {
   const text = met ? HEIST_SECURED_TEXT(s) : HEIST_LOST_TEXT(s);
   for (const p of team(s, 'BLACK')) {
     note(p, t, text);
-    p.notifications.push({ id: nextId(s, 'notice', 'N'), t, page: 'Target Ledger', text });
+    p.notifications.push({ id: nextId(s, 'notice', 'N'), t, page: 'Target Ledger', system: 'HIDDEN_HOST', module: 'TARGET_LEDGER', text });
   }
 }
 

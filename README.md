@@ -74,7 +74,8 @@ devices.
 - **Money:** every account has a balance. Customers are small, mid-sized or wealthy, and a payment the
   paying account cannot cover fails at settlement. Money moves at once, so a reversal only works while
   the account paid still holds it.
-- **Customers wait:** every request has a deadline (2 minutes, 1 if urgent). Customers chase halfway, complain
+- **Customers wait:** every request has a deadline (2 minutes, 1 if urgent; each banker's first request of
+  the game is an easy one with 3 minutes). Customers chase halfway, complain
   to the Bank Manager when a deadline passes, and walk away for the day after a second miss. Obvious
   phishing messages turn up among the requests too.
 - **Payments:** many small automatic payments and fewer, bigger requested ones. Each stage (risk check,
@@ -117,7 +118,16 @@ Full rules and tuning: [docs/RULES.md](docs/RULES.md).
 - **My workstation** in the taskbar holds your profile and job description, credentials, activity log
   and messages.
 - **The bell** at the right of a page's breadcrumbs switches its notifications on or off (write access
-  only). They pop up at the bottom right, above the taskbar, and vanish after 5s or a tap.
+  only). They pop up at the bottom right, above the taskbar, and vanish after 5s; tapping one opens its page.
+- **Modes**, next to Custom settings: Noob (for new players: a lower bank target, customers more patient),
+  Normal, and Expert (no tutorial checklists).
+- **Tutorials:** every role gets a checklist at the top right: a banker's walks them through their first
+  request, from reading it to the payment settling; A&R's through scoring, settling and verifying once each,
+  in any order; IT's through the Master Log, tracing and the Firewall; the Bank Manager's through watching
+  every customer, request and payment, and a trace. Thieves also get "The heist" under it: their personal
+  tasks on the host, then the crew's heist one step at a time.
+- **The Auto badge** next to the bell on Risk Check, Authorization and Settlement shows what that stage does
+  by itself; tap it to read the setting in full and change it.
 - **Ground truth** in the yellow bar shows who really did what next to what the logs say.
 - **Show allegiances** reveals the Thieves in the player list.
 

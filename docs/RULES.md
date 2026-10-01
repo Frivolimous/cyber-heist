@@ -46,8 +46,8 @@ Details:
   Termination); shutting down a bank system does too, an easter egg: the only hint is the Thieves'
   handbook ("However it ends (close of business, every Thief out or bank shuts down), the Thieves win
   if the Target Ledger meets the goal at that moment").
-- **The bank** (the regular employees) wins **at close of business** (when the timer runs out) if **$15M per player** ($150M at
-  10 players) of legitimate payments have been SETTLED by then, and the Thieves' goal is not met. Meeting the target early does not end the
+- **The bank** (the regular employees) wins **at close of business** (when the timer runs out) if **$13M per player** ($130M at
+  10 players; $9.5M per player in Noob mode, see Game modes) of legitimate payments have been SETTLED by then, and the Thieves' goal is not met. Meeting the target early does not end the
   game: the bank has to survive the whole day. Legitimate = every automatic payment, plus manual payments that **fulfil a payment request**
   (linked to it by request id, to the payee and for the amount the customer asked). Other manual
   payments never count, so players cannot invent payments to win. Rejected, held, failed and reversed
@@ -92,10 +92,20 @@ Details:
 
 | Players | Bank target | Thief target | Automatic | Requests (payment share) |
 |---|---|---|---|---|
-| 6 | $90M | $2M | every 14s, ~$59M | every 45s, ~$46M |
-| 10 | $150M | $3M | every 10s, ~$82M | every 23s, ~$92M |
-| 20 | $300M | $6M | every 6s, ~$142M | every 10s, ~$206M |
-| 30 | $450M | $10M | every 4s, ~$201M | every 6s, ~$321M |
+| 6 | $78M | $2M | every 14s, ~$59M | every 45s, ~$46M |
+| 10 | $130M | $3M | every 10s, ~$82M | every 23s, ~$92M |
+| 20 | $260M | $6M | every 6s, ~$142M | every 10s, ~$206M |
+| 30 | $390M | $10M | every 4s, ~$201M | every 6s, ~$321M |
+
+The volumes in the table are estimates; in simulated 10-player games where every request is answered, the
+most the bank could settle ranged from about $130M to $180M (the requested volume varies a lot), so the
+Normal target is about 70-95% of what is possible and the Noob one about 60-75%.
+
+- **Game modes** (`MODES`, catalog.ts; chosen next to Custom settings, in the sandbox bar and the host's
+  lobby): **Normal** is the defaults. **Noob: new players** lowers the bank target to $9.5M per player
+  (which also lowers the automatic volume, capped at 80% of the target) and lets customers walk out only
+  after **3** missed requests. **Expert: no tutorials** plays like Normal with no tutorial checklists and no
+  heist panel. A mode's settings apply under any custom setting that is changed explicitly.
 
 - **Time of day** (`pacing.ts`): the day runs by share of the game elapsed. New client requests and
   automatic payments arrive at the phase's pace; busy is 4x slow and medium 2x slow, rescaled so the
@@ -104,8 +114,10 @@ Details:
   up to its end ("07:42 / 20:00"). Every time players see (logs, records, requests, the end screen) uses
   that same clock.
 - **The day starts empty:** nothing is waiting at the start. The first automatic payment arrives at
-  **10s** (`FIRST_PAYMENT_SEC`, bank.ts) and the first client request at **20s** (`FIRST_REQUEST_SEC`,
-  requests.ts); phishing messages start no earlier than 20s either.
+  **10s** (`FIRST_PAYMENT_SEC`, bank.ts). Each Personal Banker's **first request** arrives between 10s and
+  50s (spread evenly, `FIRST_REQUESTS_WINDOW`); the regular client requests start at **90s**
+  (`FIRST_REQUEST_SEC`, requests.ts), and phishing messages no earlier than 90s either, so bankers have
+  the slow morning to work on their first request.
 - **Request timing** (`scheduleRequest` in `requests.ts`): after the first, each gap is the average gap **±50% at random**
   (`REQUEST_JITTER`), then bent by the time of day, so arrivals are uneven but the total stays about the
   same. Each request comes from a random active customer, so one banker can get several in a row.
@@ -228,6 +240,9 @@ Roles are dealt over a shuffled seat order. Each role starts with one credential
 - Everyone the bank deals with is a **customer** (companies and people alike): **3 per Personal
   Banker** (`customersPerBanker`), drawn at random each game from a pool of 42 names and tagged CU1,
   CU2, ... (12 customers at 10 players, 42 at 30). Each starts with 1-3 accounts; one is **primary**.
+- **Typing a customer:** wherever a customer is asked for (Customer Records, Verification, Create payment,
+  the Social kit), either their tag ("CU7", or just "7") or their exact name works (any case, extra spaces
+  ignored; no partial matches). No customer name contains a digit, so a name is never read as a tag.
 - **Every account has a balance.** Only these accounts exist; any other number is refused wherever an
   account is typed ("There is no account ACC-12345."):
   - customer accounts;
@@ -273,7 +288,8 @@ Roles are dealt over a shuffled seat order. Each role starts with one credential
 ## Payment pipeline
 
 Every payment has an **originator**: the account it is paid from, typed by number (any existing account,
-including a floating one), and a **beneficiary**: a customer tag (CU7). The payment lands in the
+including a floating one), and a **beneficiary**: a customer, typed as their tag (CU7, or just 7) or their exact
+name (see Customers and accounts). The payment lands in the
 beneficiary's **primary account at settlement time**. The Payment Queue shows
 `CU5 ACC-13845 -> CU2 ACC-79039`: the originator's customer and the account used, then the beneficiary's
 current primary. A payment from a floating account shows `UNKNOWN ACC-...` as its originator.
@@ -324,7 +340,9 @@ Verification clears only the first flag.
 
 **Automation.** Each stage can handle routine payments by itself. Anyone with WRITE on the stage's module
 changes its setting; the change is logged under the credential owner, and the stage's queue view shows
-the current setting on its first line. Automation never touches a held payment, and its steps show as
+the current setting on its first line. Each stage page also has an **Auto badge** left of its bell
+("Auto: < $1,000,000", "Auto: Low", "Auto: Off") for anyone who can read the stage; tapping it opens the
+setting in words, with the form to change it (Save, or Cancel) under the credential row. Automation never touches a held payment, and its steps show as
 "Automation" in the stage views (SYSTEM in the history).
 
 | Stage | Setting | Default |
@@ -439,14 +457,30 @@ of "potential targets for fraudulent transactions").
 ## Client Requests
 
 - Each customer has an assigned personal banker (round-robin over Personal Bankers; shown in Customer
-  Records). Customers write to their banker: two requests at the start, then about one per banker every
+  Records). Customers write to their banker: a gentle first request each (below), then about one per banker every
   90 seconds on average (`requestEverySecPerBanker`; bank-wide that is `requestIntervalSec`, e.g. every
   23s at 10 players), faster or slower with the time of day, each from a random customer. 70% ask for a
   payment (sized to what the account holds, and to a payee picked by wealth; see Payment pipeline); 30%
   (`requestChangeShare`) ask to add an account, add one and make it primary, make an existing account
   primary, or remove an account.
+- **A gentle start:** every Personal Banker's first request of the game is an easy one, from one of their
+  own customers: a payment, not urgent, paid from the customer's main account, no larger than a large
+  payment ($3.5M, `largeAmount`), worded to say there is no rush ("no rush on this one, take your time").
+  Unlike other requests it spells everything out: the payee's customer tag and the account number to pay
+  from ("$1,626,000 to Keystone Plumbing (CU5), from our main account, 48213").
+  Its deadline is **3 minutes** (`firstRequestDeadlineSec`); otherwise it is a request like any other
+  (follow-up halfway, a strike and a complaint if it is missed).
 - Requests are written in words ("send $1.2M from our main account to Northwind Freight", or "from our
-  account 45515"), never customer codes: acting on one means looking up the account and the payee's tag.
+  account 45515"). A payment request **usually** gives the payee's tag too, "Northwind Freight (CU7)"
+  (75%, `requestTagShare`; always on a banker's first request). Whether it does is drawn per request number
+  from a side stream, so a scam payment request is tagged as often as a real one. Requests never give any
+  other customer code: the paying account (unless given by number) and, without a tag, the payee are
+  looked up in Customer Records.
+- The Client Requests page links to where requests get answered, by address, one per line: "Create a payment at
+  10.0.0.30/payment-queue" and "Modify accounts at 10.0.0.20/customer-records". Each link appears only with
+  write access to that page; clicking one brings up a window already showing it, or opens a new one.
+- Every form that can answer a request (Create payment, Add account, Set primary account, Remove account)
+  has the request id as its first field.
 - Client Data > Client Requests: **View** (Open / All) shows a Personal Banker the requests addressed to
   the **credential owner**, so a borrowed code shows its owner's inbox. Anyone else (the Bank Manager, or
   a whole-system Client Data credential) sees every banker's requests. **Archive** sets one aside without
@@ -465,8 +499,8 @@ of "potential targets for fraudulent transactions").
 
 ### Deadlines, follow-ups and complaints
 
-- Every request has a **deadline**: 2 minutes (`requestDeadlineSec`), or 1 minute (`urgentDeadlineSec`)
-  for an **urgent** payment request (25%, `urgentShare`; its wording says it is urgent). The view shows
+- Every request has a **deadline**: 2 minutes (`requestDeadlineSec`), 3 minutes for a banker's first
+  request (`firstRequestDeadlineSec`), or 1 minute (`urgentDeadlineSec`) for an **urgent** payment request (25%, `urgentShare`; its wording says it is urgent). The view shows
   URGENT and the time left.
 - **Halfway there**, if what was asked has not happened, the customer **follows up**. The follow-up is
   added to the same request (the original wording stays) and tagged REMINDER, and the request moves to
@@ -554,11 +588,97 @@ chases it.
 - **Some requests cannot be done as asked.** A customer who does not know an account was removed may ask
   to make it primary: that means adding the account back first. (Asking to remove it is already done.)
 
+## Tutorials
+
+Except in Expert mode, every regular employee role (Thieves in those jobs too) gets a checklist pinned to the top
+right of their screen, which stays there until it is over. Steps tick when the player does them **themselves**
+(automation and colleagues never tick them); the current step is highlighted. When it is over, the panel
+says so, with a Close button that removes it (remembered per game and seat in the browser; the engine keeps
+the result: `Player.tutorial`, tutorial.ts).
+
+**Personal Banker: "Your first payment"** follows their gentle first request (Client Requests) until its
+payment settles. A step also counts once any later one is done.
+
+1. Wait for a Client Request to come in (the first request arrives).
+2. Check the Client Request (REQ-n) in Client Data (a successful View on Client Requests since it arrived).
+3. Open the Payment Queue in Transaction Processing (opening the page, or any attempt on it).
+4. Enter the information to Create a Payment (a live payment answers the request: linked to it, or made
+   exactly as asked). If an attempt fails, or makes a payment that is not the one asked for, a highlighted
+   sub-step appears: "Check the Client Request and make sure everything is entered correctly".
+5. Wait for Risk Check to complete.
+6. Authorize manually if needed: crossed out when Authorization's automation approved it.
+7. Wait for the payment to be settled.
+
+When it settles: "Congratulations your first payment is complete!". If the request expires first: "Your
+request expired. Tutorial cannot be complete.", and the bank gets a Master Log entry and an alert (tier 2):
+"<name> failed their Personal Banker tutorial. Consider immediate termination for poor performance." The
+checklist follows the request's live payment, so a rejected payment takes it back to step 4 while the
+request is still open.
+
+**Accounts & Receivables: "Your first day: any order"** has three parts, done in any order; within a part
+the steps latch in order, so nothing done before its turn counts:
+
+| Part | 1. Wait (latches when, after automation, something is left for a person) | 2. Open | 3. Check | 4. Do |
+|---|---|---|---|---|
+| Risk score | a payment is QUEUED | Risk Check | Verification: Investigate changes (Customer Records also counts) | Score risk |
+| Settlement | a payment is AUTHORIZED | Settlement | Customer Records: View customers (Investigate changes also counts) | Settle |
+| Verification | an account change is unverified | Verification | Verification: Investigate changes | Verify change |
+
+To save space a part shows only its wait step until work comes in, then only the steps still to do: each
+line disappears once done. "Open" ticks on opening the page or using it, and is not required for the next
+step. A finished part folds to its title. With all three done: "Congratulations, now you know how to do your job!". There is no
+failure. With several A&Rs each has their own checklist; if a colleague takes the waiting item first, the
+part waits on for the next one.
+
+**IT Specialist: "Your first day: security"** shows its steps in stages, in two categories like A&R's parts:
+**Check the logs** (steps 1-4, the only one at the start) and **Check the firewall** (steps 5-6, appearing with
+step 5); a finished category folds to its title. Each step ticks only for its own action:
+
+1. Open the Master Log in Security Systems (opening the page, or using it).
+2. Switch on the Master Log's auto-update (its first automatic refresh).
+3. Trace an entry in the Master Log.
+4. View "Everything" in the Master Log (where the host's entries are; a view made after the first trace),
+   then find and trace an "Unknown server activity" entry. Both appear once step 3 is done, and neither is
+   shown (both counted as done) when the very first trace already was one. The hunt needs the Thieves to have
+   used their host; tracing one also ticks the "Everything" hint.
+5. Open a second Security Systems window (two windows on Security Systems at once). Appears once step 3 is
+   done. The engine never sees windows: the screen ticks it and keeps it in the browser.
+6. Check the Firewall status. Appears once step 5 is done, and counts only for a view made after it.
+
+With all of it done: "Congratulations, now you know how to do your job!". There is no failure.
+
+**Bank Manager: "Your job is to watch everything!"** Steps appear as there is something to see, and each
+ticks only for its own action:
+
+1. View all customers in Client Data → Customer Records (the All customers view).
+2. View all client requests in Client Data → Client Requests (All requests). Appears once two requests have
+   arrived, and counts only for a view made after that.
+3. View all payments in Transaction Processing → Payment Queue (All payments). Appears once three requests
+   have arrived, and counts only for a view made after that.
+4. Open the Master Log in Security Systems (opening the page, or using it).
+5. Trace an entry in the Master Log. Appears once step 4 is done.
+
+With all of it done: "Congratulations, now you know how to do your job!". There is no failure.
+
+**Thieves: "The heist"**, a second panel stacked under their cover job's, in the host's dark red, with a
+Hide/Show button. It is only ever in a Thief's view. Two categories:
+
+- **Personal tasks**, all shown from the start, each ticked by that Thief's own action, in any order: Open the
+  Unregistered host (the page, or any use of it); Say "hi" on Blacknet (any post); Check your mule account
+  numbers in the Target Ledger (View targets); Check your personal tool kit (its page, or any use of it).
+  Finished, the category folds to its title.
+- **The heist**, shared by the whole crew and read from the state of the bank, one step at a time: each shows
+  only until it is reached, then the next appears. Get a mule account onto a customer's file; Make a mule
+  account a primary account; Start earning money (stolen money in the Target Ledger); Reach your cash goal
+  ("$0 / $3,000,000", live); Hold it until close of business, or get out of there! Steps stay ticked once
+  reached, even if the bank undoes them (`GameState.heistProgress`).
+
 ## Notifications
 
 - Every page listed below has a **bell** at the right of its breadcrumb bar, showing **On** or **Off**.
   With it on, the page pops up a notification at the bottom right of the screen, above the taskbar. A
-  notification disappears after 5s or when tapped; nothing is kept.
+  notification disappears after 5s or when tapped; tapping it also opens its page (or brings forward a window
+  already showing it). Nothing is kept.
 - The bell can only be switched on, and only delivers, while the workstation holds an active **write**
   credential for that whole module (its own or one it knows the code of). Losing it silences the bell.
 - It never reports activity recorded under your own name. Using someone else's code counts as theirs, so

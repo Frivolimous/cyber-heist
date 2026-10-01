@@ -54,8 +54,8 @@ const JOBS: Record<RoleId, (c: GameConfig, n: number) => JobDescription> = {
     rules: [
       'You change only your own customers, and only read requests sent to you. You can view every customer in Customer Records.',
       'A payment you create counts toward the bank\'s target only if it pays the payee and amount a customer asked for. Put the request id on it; a payment made exactly as asked is matched to the request anyway.',
-      `Customers expect action within ${secs(c.requestDeadlineSec)} (${secs(c.urgentDeadlineSec)} when urgent). Halfway there they chase you in your messages, and an archived request comes back. When a deadline passes they complain to the Bank Manager, naming you; after ${c.strikesToSuspend} missed requests a customer stops doing business with the bank for the day.`,
-      'Requests are written in words. Look up account numbers and customer tags (CU3) in Customer Records.',
+      `Your first request of the day is an easy one with ${secs(c.firstRequestDeadlineSec)}: use it to learn the ropes. After that, customers expect action within ${secs(c.requestDeadlineSec)} (${secs(c.urgentDeadlineSec)} when urgent). Halfway there they chase you in your messages, and an archived request comes back. When a deadline passes they complain to the Bank Manager, naming you; after ${c.strikesToSuspend} missed requests a customer stops doing business with the bank for the day.`,
+      'Requests are written in words, usually with the payee\'s tag (CU3). Look up account numbers, and any tag not given, in Customer Records. Wherever a customer is asked for you can type their tag or their exact name.',
       'Not every request is genuine. Phishing messages claim customer tags and accounts that do not exist: archive them.',
       'Every account change waits in Verification until Accounts & Receivables or the Bank Manager verifies it. You cannot see that queue, or the Risk Check queue.',
       'A payment is paid into the payee\'s primary account at the moment it settles, not when it was created. Changing a primary account redirects payments already on their way.',

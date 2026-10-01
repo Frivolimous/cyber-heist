@@ -16,6 +16,7 @@ import {
   nameOf,
   nextId,
   normAccount,
+  findCustomer,
   normCust,
   normChange,
   accountOwner,
@@ -657,11 +658,11 @@ H['SECURITY.PERMISSIONS.CANCEL_REVOKE'] = (c, q) => {
 // account on no customer: a "floating" one), made primary, or removed (never the primary; it floats away with
 // its money). Every change gets an id and waits in the Verification queue.
 
-const findCustomer = (c: Ctx, q: Params): Customer | undefined => c.s.customers.find((x) => x.id === normCust(str(q, 'customerId')));
+const customerParam = (c: Ctx, q: Params): Customer | undefined => findCustomer(c.s, str(q, 'customerId'));
 
 /** Customer for a change command: a Personal Banker's credential only reaches that banker's own customers. */
 function ownCustomer(c: Ctx, q: Params): Customer | string {
-  const x = findCustomer(c, q);
+  const x = customerParam(c, q);
   if (!x) return 'No such customer.';
   if (!seesAllCustomers(c) && x.bankerId !== c.owner.id) return `${x.id} is not one of ${c.owner.name}'s customers.`;
   return x;
@@ -859,8 +860,8 @@ H['CLIENT_DATA.VERIFICATION.INVESTIGATE_CHANGES'] = (c, q) => {
     };
     return page(`${acc}: now ${now}, balance ${money(balanceOf(c.s, acc))}. ${rows.length} change${rows.length === 1 ? '' : 's'}.`, rows.map((h) => changeLine(c, h)), data, `investigated changes to account ${acc}`);
   }
-  const x = c.s.customers.find((y) => y.id === normCust(raw));
-  if (!x) return bad('Enter a customer (CU3) or a 5-digit account.');
+  const x = findCustomer(c.s, raw);
+  if (!x) return bad('Enter a customer (their name, or tag: CU3) or a 5-digit account.');
   const n = x.history.length;
   const data: PageData = {
     page: 'INVESTIGATE',
@@ -938,8 +939,9 @@ H['TRANSACTIONS.PAYMENT_QUEUE.CREATE_TRANSACTION'] = (c, q) => {
   const acc = normAccount(str(q, 'originAccount'));
   if (!acc || !accountExists(c.s, acc)) return bad('There is no account with that number.');
   const origin = accountOwner(c.s, acc);
-  const b = c.s.customers.find((x) => x.id === normCust(str(q, 'beneficiaryId')));
-  if (!b) return bad('No such customer to pay.');
+  const typed = str(q, 'beneficiaryId').trim();
+  const b = findCustomer(c.s, typed);
+  if (!b) return bad(typed ? `No customer "${typed}" to pay. Type the name exactly as in Customer Records, or their tag (CU7).` : 'Enter who to pay: their name, or tag (CU7).');
   const amount = Math.round(Number(str(q, 'amount')));
   if (!Number.isFinite(amount) || amount <= 0) return bad('Enter a positive amount.');
   if (amount > c.s.config.maxManualAmount) return bad(`Manual payments are capped at ${money(c.s.config.maxManualAmount)}.`);
@@ -1478,12 +1480,6 @@ const findPlayerByName = (s: GameState, name: string): Player | undefined => {
   const n = name.trim().toLowerCase();
   return n ? s.playerOrder.map((id) => s.players[id]).find((p) => p.name.toLowerCase() === n) : undefined;
 };
-const findCustomerByRef = (s: GameState, ref: string): Customer | undefined => {
-  const byId = s.customers.find((x) => x.id === normCust(ref));
-  if (byId) return byId;
-  const n = ref.trim().toLowerCase();
-  return n ? s.customers.find((x) => x.name.toLowerCase() === n) : undefined;
-};
 
 H['HIDDEN_HOST.SOCIAL.SPOOFED_MESSAGE'] = (c, q) => {
   const recipient = findPlayerByName(c.s, str(q, 'to'));
@@ -1503,7 +1499,7 @@ H['HIDDEN_HOST.SOCIAL.SPOOFED_MESSAGE'] = (c, q) => {
 };
 
 H['HIDDEN_HOST.SOCIAL.SCAM_REQUEST'] = (c, q) => {
-  const cust = findCustomerByRef(c.s, str(q, 'customer'));
+  const cust = findCustomer(c.s, str(q, 'customer'));
   if (!cust) return bad('No customer by that name or id.');
   const kind = str(q, 'kind').toUpperCase() as RequestKind;
   if (!(['PAYMENT', 'SET_PRIMARY', 'ADD_AND_PRIMARY', 'ADD_ACCOUNT', 'REMOVE_ACCOUNT'] as RequestKind[]).includes(kind)) return bad('Pick what the request asks for.');
@@ -1513,7 +1509,7 @@ H['HIDDEN_HOST.SOCIAL.SCAM_REQUEST'] = (c, q) => {
   let account: string | null = null;
   let urgent = false;
   if (kind === 'PAYMENT') {
-    payee = findCustomerByRef(c.s, str(q, 'payee'));
+    payee = findCustomer(c.s, str(q, 'payee'));
     if (!payee) return bad('No payee by that name or id.');
     if (payee.id === cust.id) return bad('A customer cannot ask to pay themselves.');
     amount = Math.round(Number(str(q, 'amount').replace(/[$,]/g, '')));
@@ -1525,9 +1521,10 @@ H['HIDDEN_HOST.SOCIAL.SCAM_REQUEST'] = (c, q) => {
     if (!account) return bad('Enter a 5-digit account number.');
   }
   // Worded from the same forms as real requests.
-  const text = payee && amount !== null ? paymentRequestText(c.s, cust, payee, amount, urgent) : accountRequestText(c.s, cust, kind as Exclude<RequestKind, 'PAYMENT'>, account!);
+  const id = nextId(c.s, 'req', 'REQ-');
+  const text = payee && amount !== null ? paymentRequestText(c.s, cust, payee, amount, urgent, id) : accountRequestText(c.s, cust, kind as Exclude<RequestKind, 'PAYMENT'>, account!);
   const req: ClientRequest = {
-    id: nextId(c.s, 'req', 'REQ-'),
+    id,
     t: c.t,
     customerId: cust.id,
     bankerId: cust.bankerId,

@@ -1,7 +1,7 @@
 // Data-driven definition of the bank network: systems > modules > functions,
 // plus roles and default tuning. Add mechanics here first, then add a handler.
 
-import type { GameConfig, Permission, RoleId, SystemId } from './types';
+import type { GameConfig, GameMode, Permission, RoleId, SystemId } from './types';
 
 export type ParamKind = 'text' | 'number' | 'player' | 'module' | 'scope' | 'select';
 
@@ -50,8 +50,8 @@ const code4: ParamSpec = { name: 'code', label: '4-digit layer code', kind: 'tex
 const limit: ParamSpec = { name: 'limit', label: 'Rows', kind: 'number', optional: true, placeholder: '25' };
 const tx: ParamSpec = { name: 'txId', label: 'Transaction', kind: 'text', placeholder: 'TX-0001 or 1' };
 /** The customer being paid. Payments land in that customer's primary account. */
-const ben: ParamSpec = { name: 'beneficiaryId', label: 'Beneficiary', kind: 'text', placeholder: 'CU1' };
-const cust: ParamSpec = { name: 'customerId', label: 'Customer', kind: 'text', placeholder: 'CU1' };
+const ben: ParamSpec = { name: 'beneficiaryId', label: 'Beneficiary', kind: 'text', placeholder: 'CU1 or 1' };
+const cust: ParamSpec = { name: 'customerId', label: 'Customer', kind: 'text', placeholder: 'CU1 or 1' };
 const account: ParamSpec = { name: 'account', label: 'Account (5 digits)', kind: 'text', placeholder: '12345' };
 /** Stage inboxes: PENDING = waiting for this stage, ALL = also what this stage recently handled. */
 const reason: ParamSpec = { name: 'reason', label: 'Reason', kind: 'text', placeholder: 'why?' };
@@ -162,20 +162,20 @@ export const SYSTEMS: SystemDef[] = [
             { name: 'show', label: 'Show', kind: 'select', options: ['MINE', 'ALL'], optional: true },
           ]),
           fn('ADD_ACCOUNT', 'Add account', 'WRITE', 'Attach an account number to a customer, optionally as their primary.', [
+            { ...requestParam, optional: true },
             cust,
             account,
             { name: 'makePrimary', label: 'Make it primary', kind: 'select', options: ['NO', 'YES'], optional: true },
-            { ...requestParam, optional: true },
           ]),
           fn('REMOVE_ACCOUNT', 'Remove account', 'WRITE', 'Detach an account from a customer. Not their primary, and not their last one.', [
+            { ...requestParam, optional: true },
             cust,
             account,
-            { ...requestParam, optional: true },
           ]),
           fn('SET_PRIMARY', 'Set primary account', 'WRITE', 'Choose which of a customer\'s accounts receives their payments.', [
+            { ...requestParam, optional: true },
             cust,
             account,
-            { ...requestParam, optional: true },
           ]),
         ],
       },
@@ -219,10 +219,10 @@ export const SYSTEMS: SystemDef[] = [
             { name: 'show', label: 'Show', kind: 'select', options: ['ACTIVE', 'ALL'], optional: true },
           ]),
           fn('CREATE_TRANSACTION', 'Create payment', 'WRITE', 'Queue a manual payment from a customer account.', [
+            { ...requestParam, optional: true },
             { name: 'originAccount', label: 'Originator account (5 digits)', kind: 'text', placeholder: '12345' },
             ben,
             { name: 'amount', label: 'Amount', kind: 'number', placeholder: '1000000' },
-            { ...requestParam, optional: true },
           ]),
         ],
       },
@@ -539,9 +539,20 @@ export function roleCreds(role: RoleId, n: number): CredTemplate[] {
 /** How many Thieves a game of `n` players gets (unless the config fixes it). */
 export const thiefCountFor = (n: number): number => Math.floor(n / 3);
 
+/**
+ * Game modes: settings each one changes from DEFAULT_CONFIG (Normal), and whether the tutorial checklists run.
+ * A setting the game's config sets explicitly wins over the mode's.
+ */
+export const MODES: Record<GameMode, { label: string; config: Partial<GameConfig>; tutorials: boolean }> = {
+  NOOB: { label: 'Noob: new players', config: { whiteTargetPerPlayer: 9_500_000, strikesToSuspend: 3 }, tutorials: true },
+  NORMAL: { label: 'Normal', config: {}, tutorials: true },
+  EXPERT: { label: 'Expert: no tutorials', config: {}, tutorials: false },
+};
+
 export const DEFAULT_CONFIG: GameConfig = {
+  mode: 'NORMAL',
   durationSec: 20 * 60,
-  whiteTargetPerPlayer: 15_000_000,
+  whiteTargetPerPlayer: 13_000_000,
   blackTargetPerThief: 1_000_000,
   volumePerPlayer: 17_400_000, // 1.16x the target: room for held, rejected and missed payments
   requestEverySecPerBanker: 90,
@@ -567,8 +578,10 @@ export const DEFAULT_CONFIG: GameConfig = {
   automation: { scoreMax: 1_000_000, scoreSource: 'AUTOMATIC', scoreOrigin: 'CUSTOMER', scorePayee: 'VERIFIED', approveUpTo: 'LOW', settleMax: 1_000_000 },
   requestIntervalSec: 22.5, // derived
   requestChangeShare: 0.3,
+  requestTagShare: 0.75,
   requestDeadlineSec: 120,
   urgentDeadlineSec: 60,
+  firstRequestDeadlineSec: 180,
   urgentShare: 0.25,
   strikesToSuspend: 2,
   phishPerBankerMin: 1,

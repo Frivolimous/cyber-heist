@@ -193,6 +193,12 @@ Candidate actions come from four sources:
 | IT Specialist | Watch Employee Records and the Master Log; reset lockouts | Trace; block an IP; revoke credentials; reissue credentials to bots whose codes leaked; Connect to the host once its address is known; "revoke all access" on an IP or the host |
 | Bank Manager | Read complaints and reports; verify changes; settle | Revoke credentials; reassign trust; order or perform "revoke all access" (holds Master Log and Permissions write; Firewall write at 6 seats) |
 
+Reading requests: a payment request usually gives the payee's tag ("Keystone Plumbing (CU7)", 75%, always
+on a banker's first request, which also gives the paying account's number); otherwise the payee is looked
+up by name in Customer Records. Every customer field accepts a tag or an exact name, so a bot can also type
+the name as written. The tutorial checklists and the heist panel are for people: bots ignore them, and a bot
+seat gets no tutorial-failure alert worth acting on beyond what any alert means.
+
 ## The symptom table
 
 Bots react to **symptoms**, never to attacks: they don't know which attack happened, only what they can

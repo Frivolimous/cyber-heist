@@ -56,8 +56,8 @@ export function addAlert(s: GameState, kind: string, message: string, logId: str
   return a;
 }
 
-export function note(p: Player, t: number, text: string): void {
-  p.activity.push({ t, text });
+export function note(p: Player, t: number, text: string, typed?: Record<string, string>): void {
+  p.activity.push(typed ? { t, text, typed } : { t, text });
 }
 
 export function targetLabel(system: string, module: string): string {
@@ -95,6 +95,15 @@ export const normCust = (v: string): string => {
   const d = digits(v);
   return d ? `CU${Number(d)}` : v.trim().toUpperCase();
 };
+/**
+ * The customer a player typed: their exact name (any case, extra spaces ignored) or their tag ("CU7", "7").
+ * Names never contain digits, so a name is never mistaken for a tag.
+ */
+export function findCustomer(s: GameState, ref: string): Customer | undefined {
+  const name = ref.trim().replace(/\s+/g, ' ').toLowerCase();
+  if (!name) return undefined;
+  return s.customers.find((x) => x.name.toLowerCase() === name) ?? s.customers.find((x) => x.id === normCust(ref));
+}
 export const normLog = (v: string): string => {
   const d = digits(v);
   return d ? `L${Number(d)}` : v.trim().toUpperCase();

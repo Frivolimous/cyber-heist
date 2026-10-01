@@ -1,14 +1,15 @@
 export * from './types';
 export * from './catalog';
 export { applyAction, tick, advanceState, checkWin } from './engine';
-export { createGame, grantMasterAccess } from './setup';
+export { createGame, CUSTOMER_NAMES, grantMasterAccess } from './setup';
 export type { NewGameOptions } from './setup';
 export { getPlayerView } from './views';
-export type { PlayerView, WorkstationView } from './views';
+export type { PlayerView, StageAutomation, WorkstationView } from './views';
+export type { HeistView, TutorialView } from './tutorial';
 export type { JobDescription } from './jobs';
 export { DAY_PHASES, dayPhaseAt, nextArrival, paceMultiplier } from './pacing';
 export type { DayPhase, Pace } from './pacing';
-export { accountVerified, fmtClock, gameTime, money } from './core';
+export { accountVerified, findCustomer, fmtClock, gameTime, money } from './core';
 export { CHANNELS } from './bank';
 export { WATCHABLE } from './notify';
 export { embezzledBy, endSummary, TERMINATED_TEXT } from './ending';

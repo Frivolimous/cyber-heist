@@ -1,11 +1,12 @@
 // Builds a fresh game: roles, allegiances, credentials and bank data.
 
-import { DEFAULT_CONFIG, thiefCountFor, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, roleCreds, ROLES, ROLE_ORDER, SHARED_SECURITY_TABLE, SYSTEMS } from './catalog';
+import { DEFAULT_CONFIG, MODES, thiefCountFor, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, roleCreds, ROLES, ROLE_ORDER, SHARED_SECURITY_TABLE, SYSTEMS } from './catalog';
 import { addLog, BLACKNET_ALIASES, keyOf, money } from './core';
 import { createCredential, createWorkstationCredential } from './credentials';
 import { FIRST_PAYMENT_SEC } from './bank';
 import { HOST_WATCH_DEFAULT, WATCHABLE } from './notify';
-import { assignBankers, assignContacts, FIRST_REQUEST_SEC, schedulePhishing } from './requests';
+import { startTutorials } from './tutorial';
+import { assignBankers, assignContacts, FIRST_REQUEST_SEC, scheduleFirstRequests, schedulePhishing } from './requests';
 import { pick, rand, randInt, shuffle } from './rng';
 import type { GameConfig, GameState, Player, RoleId, ScenarioKind, WealthTier } from './types';
 
@@ -137,7 +138,7 @@ export function createGame(o: NewGameOptions): GameState {
   if (n > MAX_PLAYERS) throw new Error(`Cyber-Heist allows at most ${MAX_PLAYERS} players (got ${n}).`);
   // Scaled values are derived from the per-player settings; anything the caller sets explicitly wins.
   // A scenario scales its economy as SCENARIO_SCALE players, with the bankers it really has.
-  const base: GameConfig = { ...DEFAULT_CONFIG, ...o.config };
+  const base: GameConfig = { ...DEFAULT_CONFIG, ...MODES[o.config?.mode ?? DEFAULT_CONFIG.mode].config, ...o.config };
   const blackCount = scenario === 'DUO' ? 0 : scenario === 'SOLO' ? 1 : Math.min(n - 1, Math.max(1, base.thiefCount ?? thiefCountFor(n)));
   const counts = scenario === 'DUO' ? { BANK_MANAGER: 0, IT_SPECIALIST: 0, PERSONAL_BANKER: 1, ACCOUNTS_RECEIVABLES: 1 } : roleCounts(n);
   const scaled = scenario
@@ -177,6 +178,7 @@ export function createGame(o: NewGameOptions): GameState {
     revocations: [],
     nextRequestAt: 0, // scheduled below
     phishSchedule: [],
+    firstRequests: [],
     transactions: [],
     balances: {},
     targets: [],
@@ -305,6 +307,8 @@ export function createGame(o: NewGameOptions): GameState {
   addLog(s, { actor: 'SYSTEM', kind: 'BOOT', message: 'Bank network online. Shift started.', sourceIp: null, actualPlayerId: null });
   assignContacts(s, PERSON_CUSTOMERS);
   schedulePhishing(s);
+  scheduleFirstRequests(s);
+  startTutorials(s);
   // Every workstation's own login, drawn from a side stream so the game's main random sequence is unchanged.
   const side = { rngState: (s.rngState ^ 0x2545f491) | 0 };
   for (const id of s.playerOrder) s.players[id].heldCredentialIds.unshift(createWorkstationCredential(s, id, side).id);

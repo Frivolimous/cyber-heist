@@ -25,7 +25,8 @@ import {
   TERMINATED_TEXT,
   WATCHABLE,
 } from '../engine';
-import type { Action, ActionResult, EndMember, EndTeam, GameState, Pace, PlayerId, PlayerView, ScenarioKind, SystemId, WorkstationView } from '../engine';
+import type { Action, ActionResult, EndMember, EndTeam, GameState, Pace, PlayerId, PlayerView, ScenarioKind, StageAutomation, SystemId, TutorialView, WorkstationView } from '../engine';
+import type { ArPart } from '../engine/tutorial';
 import { downloadState } from './dump';
 import { mountSettings } from './settings';
 import { boot } from './mode';
@@ -124,6 +125,7 @@ app.innerHTML = `
           <div id="snap" class="snap-preview" hidden></div>
           <div id="wins"></div>
           <footer id="taskbar" class="taskbar"></footer>
+          <div id="tutorial"></div>
           <div id="toasts" class="toasts" aria-live="polite"></div>
           <div id="endscreen" class="endscreen" hidden></div>
         </div>
@@ -199,6 +201,7 @@ function newGame(seed: number): void {
   desks = {};
   deskShown.clear();
   endHidden = false;
+  resetTutorials(game.id);
   for (const id of game.playerOrder) {
     seenMessages[id] = 0;
     seenNotices[id] = 0;
@@ -732,6 +735,8 @@ function showRoute(w: Win): void {
     w.out = [{ cls: 'hs', text: `[${fmtClock(view().t)}] Logged in to ${sys.label} (${sysAddress(sys.id)})` }];
   }
   delete w.form.credSel;
+  delete w.form.autoOpen;
+  noteTutorialRoute(r);
   renderWin(w);
   fitWin(w);
   renderTaskbar();
@@ -864,7 +869,7 @@ function browserHtml(w: Win): string {
       const mod = findModule(r.system, r.module)!;
       parts.push(crumb(mod.label, null));
     }
-    crumbs = `<div class="crumbs">${parts.join('<i>/</i>')}${r.kind === 'module' ? bellHtml(`${r.system}.${r.module}`) : ''}</div>`;
+    crumbs = `<div class="crumbs">${parts.join('<i>/</i>')}${r.kind === 'module' ? autoBadgeHtml(w, r) + bellHtml(`${r.system}.${r.module}`) : ''}</div>`;
     if (r.kind === 'system') {
       // On the unregistered host, the tool kits you can use (read & write) come first; the rest keep their order.
       const rank = (id: string): number => (sys.id === 'HIDDEN_HOST' && HOST_KITS.includes(id) ? 1 + ['WRITE', 'READ', 'NONE'].indexOf(moduleAccess(view(), sys.id, id)) : 0);
@@ -1066,6 +1071,19 @@ async function runFresh(w: Win, system: SystemId, module: string, fn: string, pa
   }
 }
 const txParam = (w: Win): Record<string, string> => ({ txId: w.form['p:txId'] ?? '' });
+/** A link to a module page by its address ("10.0.0.30/payment-queue"): brings up a window showing it, or opens one. */
+const pageLink = (system: SystemId, module: string): string =>
+  `<button type="button" class="page-link" data-act="page:${system}:${module}">${esc(`${sysAddress(system)}/${slug(module)}`)}</button>`;
+
+/** Client Requests: where requests get answered, for the pages this seat can write. */
+function requestLinks(): string {
+  const v = view();
+  const lines: string[] = [];
+  if (moduleAccess(v, 'TRANSACTIONS', 'PAYMENT_QUEUE') === 'WRITE') lines.push(`Create a payment at ${pageLink('TRANSACTIONS', 'PAYMENT_QUEUE')}`);
+  if (moduleAccess(v, 'CLIENT_DATA', 'CUSTOMER_RECORDS') === 'WRITE') lines.push(`Modify accounts at ${pageLink('CLIENT_DATA', 'CUSTOMER_RECORDS')}`);
+  return lines.length ? `<p class="cmd-hint">${lines.join('<br>')}</p>` : '';
+}
+
 /** Read card for a stage: "what's waiting for me?" and "what did I just do?". */
 const viewCard = (w: Win, title: string, pendingLabel: string): string =>
   card(title, 'READ', btn(w, 'view:PENDING', pendingLabel) + btn(w, 'view:ALL', 'All', 'alt'));
@@ -1322,7 +1340,10 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       card(
         'View log',
         'READ',
-        btn(w, 'view:PLAYERS', 'Player activity') + btn(w, 'view:ALL', 'Everything', 'alt') + btn(w, 'view:ALERTS', 'Alerts', 'alt') + checkbox(w, 'monitor', 'Auto-update every second (only opening the view is logged)'),
+        // All white; the last one pressed (the one the auto-update keeps refreshing) is blue.
+        ([['PLAYERS', 'Player activity'], ['ALL', 'Everything'], ['ALERTS', 'Alerts']] as const)
+          .map(([show, label]) => btn(w, `view:${show}`, label, w.form['p:logFilter'] === show ? '' : 'alt'))
+          .join('') + checkbox(w, 'monitor', 'Auto-update every second (only opening the view is logged)'),
       ) +
       card('Trace a log entry', 'WRITE', input(w, 'logId', 'Log entry', 'L12 or 12', true, true) + btns(btn(w, 'trace', 'Trace', '', true)), `${w.id}:trace`),
     run: (w, cmd, arg) => {
@@ -1396,9 +1417,9 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       card(
         'Add account',
         'WRITE',
-        input(w, 'addCust', 'Customer', 'CU1') +
+        input(w, 'addReq', 'Request (optional)', 'REQ-1 or 1') +
+          input(w, 'addCust', 'Customer', 'CU1 or 1') +
           input(w, 'addAcct', 'Account', '12345', true) +
-          input(w, 'addReq', 'Request (optional)', 'REQ-1') +
           checkbox(w, 'addPrimary', 'Make it their primary account') +
           btns(btn(w, 'add', 'Add account', '', true)),
         `${w.id}:add`,
@@ -1406,18 +1427,18 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       card(
         'Set primary account',
         'WRITE',
-        input(w, 'priCust', 'Customer', 'CU1') +
+        input(w, 'priReq', 'Request (optional)', 'REQ-1 or 1') +
+          input(w, 'priCust', 'Customer', 'CU1 or 1') +
           input(w, 'priAcct', 'Account', '12345', true) +
-          input(w, 'priReq', 'Request (optional)', 'REQ-1') +
           btns(btn(w, 'primary', 'Set primary', '', true)),
         `${w.id}:primary`,
       ) +
       card(
         'Remove account',
         'WRITE',
-        input(w, 'remCust', 'Customer', 'CU1') +
+        input(w, 'remReq', 'Request (optional)', 'REQ-1 or 1') +
+          input(w, 'remCust', 'Customer', 'CU1 or 1') +
           input(w, 'remAcct', 'Account', '12345', true) +
-          input(w, 'remReq', 'Request (optional)', 'REQ-1') +
           btns(btn(w, 'remove', 'Remove account', 'danger', true)),
         `${w.id}:remove`,
       ),
@@ -1434,13 +1455,13 @@ const MODULE_PAGES: Record<string, ModulePage> = {
   'CLIENT_DATA.VERIFICATION': {
     commands: (w) =>
       card('View verification queue', 'READ', btn(w, 'view:PENDING', 'Pending verification') + btn(w, 'view:ALL', 'All', 'alt')) +
+      card('Verify a change', 'WRITE', input(w, 'changeId', 'Change', 'CH-1 or 1', true, true) + btns(btn(w, 'verify', 'Verify', '', true)), `${w.id}:verify`) +
       card(
         'Investigate changes',
         'READ',
         input(w, 'target', 'Customer or account', 'CU3 or 12345', true, true) + btns(btn(w, 'investigate', 'Show change history', 'alt', true)),
         `${w.id}:investigate`,
-      ) +
-      card('Verify a change', 'WRITE', input(w, 'changeId', 'Change', 'CH-1 or 1', true, true) + btns(btn(w, 'verify', 'Verify', '', true)), `${w.id}:verify`),
+      ),
     run: (w, cmd, arg) => {
       if (cmd === 'view') execute(w, 'CLIENT_DATA', 'VERIFICATION', 'VIEW_VERIFICATION', { show: arg ?? 'PENDING' });
       else if (cmd === 'investigate') runFresh(w, 'CLIENT_DATA', 'VERIFICATION', 'INVESTIGATE_CHANGES', { target: w.form['p:target'] ?? '' }, ['target']);
@@ -1449,7 +1470,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
   },
   'CLIENT_DATA.CLIENT_REQUESTS': {
     commands: (w) =>
-      card('View requests', 'READ', btn(w, 'view:OPEN', 'Open requests') + btn(w, 'view:ALL', 'All requests', 'alt')) +
+      card('View requests', 'READ', btn(w, 'view:OPEN', 'Open requests') + btn(w, 'view:ALL', 'All requests', 'alt') + requestLinks()) +
       card(
         'Archive a request',
         'WRITE',
@@ -1469,10 +1490,10 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       card(
         'Create payment',
         'WRITE',
-        input(w, 'originAccount', 'Originator account', '12345') +
-          input(w, 'beneficiaryId', 'Beneficiary', 'CU1') +
+        input(w, 'requestId', 'Request (optional)', 'REQ-1 or 1') +
+          input(w, 'originAccount', 'Originator account', '12345') +
+          input(w, 'beneficiaryId', 'Beneficiary', 'CU1 or 1') +
           input(w, 'amount', 'Amount', '1,000,000 or 1m', true) +
-          input(w, 'requestId', 'Request (optional)', 'REQ-1') +
           btn(w, 'create', 'Create', '', true),
         `${w.id}:create`,
       ),
@@ -1496,20 +1517,10 @@ const MODULE_PAGES: Record<string, ModulePage> = {
           input(w, 'reason', 'Reason (optional)', 'Why this score?', true, true) +
           btns(btn(w, 'check', 'Submit score', '', true)),
         `${w.id}:check`,
-      ) +
-      card(
-        'Automatic scoring (LOW)',
-        'WRITE',
-        input(w, 'maxAmount', 'Max amount (0 = off)', '1,000,000 or 1m', true, true) +
-          select(w, 'source', 'Payments', [{ value: 'AUTOMATIC', label: 'Automatic only' }, { value: 'ALL', label: 'Also manual' }]) +
-          select(w, 'origin', 'Paid from', [{ value: 'CUSTOMER', label: 'Customers only' }, { value: 'ANY', label: 'Also floating' }]) +
-          select(w, 'payee', 'Payee primary', [{ value: 'VERIFIED', label: 'Verified only' }, { value: 'ANY', label: 'Also unverified' }]) +
-          btns(btn(w, 'auto', 'Save', 'alt', true)),
-        `${w.id}:auto`,
       ),
     run: (w, cmd, arg) => {
       if (cmd === 'view') execute(w, 'TRANSACTIONS', 'RISK_CHECK', 'VIEW_RISK_QUEUE', { show: arg ?? 'PENDING' });
-      else if (cmd === 'auto') runFresh(w, 'TRANSACTIONS', 'RISK_CHECK', 'SET_AUTO_SCORE', { maxAmount: thresholdParam(w), source: w.form['p:source'] ?? '', origin: w.form['p:origin'] ?? '', payee: w.form['p:payee'] ?? '' }, ['maxAmount']);
+      else if (cmd === 'auto') void saveAuto(w, 'SET_AUTO_SCORE', { maxAmount: thresholdParam(w), source: w.form['p:source'] ?? '', origin: w.form['p:origin'] ?? '', payee: w.form['p:payee'] ?? '' });
       else runFresh(w, 'TRANSACTIONS', 'RISK_CHECK', 'RUN_RISK_CHECK', { ...txParam(w), score: w.form['p:score'] ?? '', reason: w.form['p:reason'] ?? '' }, ['txId', 'score', 'reason']);
     },
   },
@@ -1523,16 +1534,10 @@ const MODULE_PAGES: Record<string, ModulePage> = {
           input(w, 'reason', 'Reason', 'Required to hold or reject', true, true) +
           btns(btn(w, 'APPROVE', 'Approve', '', true) + btn(w, 'HOLD', 'Hold', 'alt', true) + btn(w, 'REJECT', 'Reject', 'danger', true)),
         `${w.id}:APPROVE`,
-      ) +
-      card(
-        'Automatic approval',
-        'WRITE',
-        segPicker(w, 'level', 'Approve automatically up to', ['NONE', 'LOW', 'MEDIUM', 'HIGH']) + btns(btn(w, 'auto', 'Save', 'alt', true)),
-        `${w.id}:auto`,
       ),
     run: (w, cmd, arg) => {
       if (cmd === 'view') execute(w, 'TRANSACTIONS', 'AUTHORIZATION', 'VIEW_AUTH_QUEUE', { show: arg ?? 'PENDING' });
-      else if (cmd === 'auto') runFresh(w, 'TRANSACTIONS', 'AUTHORIZATION', 'SET_AUTO_APPROVE', { level: w.form['p:level'] ?? '' }, ['level']);
+      else if (cmd === 'auto') void saveAuto(w, 'SET_AUTO_APPROVE', { level: w.form['p:level'] ?? '' });
       else runFresh(w, 'TRANSACTIONS', 'AUTHORIZATION', cmd, { ...txParam(w), reason: w.form['p:reason'] ?? '' }, ['txId', 'reason']);
     },
   },
@@ -1545,16 +1550,10 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         input(w, 'txId', 'Transaction', 'TX-0001 or 1', true, true) +
           btns(btn(w, 'SETTLE', 'Settle', '', true) + btn(w, 'REVERSE', 'Reverse', 'danger', true)),
         `${w.id}:SETTLE`,
-      ) +
-      card(
-        'Automatic settlement',
-        'WRITE',
-        input(w, 'maxAmount', 'Max amount (0 = off)', '1,000,000 or 1m', true, true) + btns(btn(w, 'auto', 'Save', 'alt', true)),
-        `${w.id}:auto`,
       ),
     run: (w, cmd, arg) => {
       if (cmd === 'view') execute(w, 'TRANSACTIONS', 'SETTLEMENT', 'VIEW_SETTLEMENT', { show: arg ?? 'PENDING' });
-      else if (cmd === 'auto') runFresh(w, 'TRANSACTIONS', 'SETTLEMENT', 'SET_AUTO_SETTLE', { maxAmount: thresholdParam(w) }, ['maxAmount']);
+      else if (cmd === 'auto') void saveAuto(w, 'SET_AUTO_SETTLE', { maxAmount: thresholdParam(w) });
       else runFresh(w, 'TRANSACTIONS', 'SETTLEMENT', cmd, txParam(w), ['txId']);
     },
   },
@@ -1579,7 +1578,7 @@ function modulePageHtml(w: Win, r: ModuleRoute): string {
     (c) => c.permission === 'WRITE' && c.fn === null,
     `${r.system}.${r.module}`,
   )}</section>`;
-  return splitBody(w, cred, `<div class="cmds">${page.commands(w)}</div>`);
+  return splitBody(w, cred + autoPanelHtml(w, r), `<div class="cmds">${page.commands(w)}</div>`);
 }
 
 /**
@@ -1757,6 +1756,103 @@ function bellHtml(key: string): string {
   return `<button class="bell ${on ? 'on' : ''}" data-act="watch:${key}" title="Notify me when ${esc(what)}" aria-pressed="${on}">${BELL_SVG}<span>${on ? 'On' : 'Off'}</span></button>`;
 }
 
+// ---- Automation badge: each payment stage's setting at a glance; tap it for the details and to change it ----
+const GEAR_SVG = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
+type AutoStage = keyof StageAutomation;
+const AUTO_STAGES: AutoStage[] = ['RISK_CHECK', 'AUTHORIZATION', 'SETTLEMENT'];
+const autoStage = (r: Route): AutoStage | null =>
+  r.kind === 'module' && r.system === 'TRANSACTIONS' && (AUTO_STAGES as string[]).includes(r.module) ? (r.module as AutoStage) : null;
+
+/** The badge's text ("< $1,000,000", "Low", "Off") and the details' sentence. Null when this seat cannot read the stage. */
+function autoText(stage: AutoStage): { short: string; long: string; on: boolean } | null {
+  const a = view().automation;
+  if (stage === 'RISK_CHECK' && a.RISK_CHECK) {
+    const x = a.RISK_CHECK;
+    if (x.maxAmount <= 0) return { short: 'Off', long: 'Automatic scoring is off: every payment waits for someone to score it.', on: false };
+    const source = x.source === 'AUTOMATIC' ? 'automatic payments' : 'automatic and manual payments';
+    const origin = x.origin === 'CUSTOMER' ? 'paid from a customer account' : 'paid from any account, floating ones too';
+    const payee = x.payee === 'VERIFIED' ? 'to a verified primary' : 'to any primary, verified or not';
+    return {
+      short: `< ${money(x.maxAmount)}`,
+      long: `Scores LOW by itself: ${source} up to ${money(x.maxAmount)}, ${origin}, ${payee}. Anything else waits for someone to score it.`,
+      on: true,
+    };
+  }
+  if (stage === 'AUTHORIZATION' && a.AUTHORIZATION) {
+    const up = a.AUTHORIZATION.upTo;
+    if (up === 'NONE') return { short: 'Off', long: 'Automatic approval is off: every risk-checked payment waits for someone to approve it.', on: false };
+    const which = up === 'LOW' ? 'LOW' : `${up} or lower`;
+    return { short: up[0] + up.slice(1).toLowerCase(), long: `Approves by itself: risk-checked payments scored ${which}. Anything scored higher waits for someone to decide.`, on: true };
+  }
+  if (stage === 'SETTLEMENT' && a.SETTLEMENT) {
+    const max = a.SETTLEMENT.maxAmount;
+    if (max <= 0) return { short: 'Off', long: 'Automatic settlement is off: every approved payment waits for someone to settle it.', on: false };
+    return { short: `< ${money(max)}`, long: `Settles by itself: approved payments up to ${money(max)}. Larger ones wait for someone to settle them.`, on: true };
+  }
+  return null;
+}
+
+function autoBadgeHtml(w: Win, r: Route): string {
+  const stage = autoStage(r);
+  const t = stage && autoText(stage);
+  if (!t) return '';
+  const open = w.form.autoOpen === 'YES';
+  return `<button class="auto-badge ${t.on ? 'on' : ''}" data-act="autoedit:${w.id}" title="Automation: tap for details" aria-expanded="${open}">${GEAR_SVG}<span>Auto: ${esc(t.short)}</span></button>`;
+}
+
+/** Opens or closes the details; opening starts the form on the current setting. */
+function toggleAutoPanel(w: Win): void {
+  const r = route(w);
+  const stage = r && autoStage(r);
+  if (!stage) return;
+  if (w.form.autoOpen === 'YES') delete w.form.autoOpen;
+  else {
+    w.form.autoOpen = 'YES';
+    const a = view().automation;
+    if (stage === 'RISK_CHECK' && a.RISK_CHECK) {
+      w.form['p:maxAmount'] = a.RISK_CHECK.maxAmount.toLocaleString('en-US');
+      w.form['p:source'] = a.RISK_CHECK.source;
+      w.form['p:origin'] = a.RISK_CHECK.origin;
+      w.form['p:payee'] = a.RISK_CHECK.payee;
+    } else if (stage === 'AUTHORIZATION' && a.AUTHORIZATION) w.form['p:level'] = a.AUTHORIZATION.upTo;
+    else if (stage === 'SETTLEMENT' && a.SETTLEMENT) w.form['p:maxAmount'] = a.SETTLEMENT.maxAmount.toLocaleString('en-US');
+  }
+  renderWin(w);
+}
+
+/** The details, under the credential row: what the stage does by itself now, and the form to change it. */
+function autoPanelHtml(w: Win, r: ModuleRoute): string {
+  const stage = autoStage(r);
+  const t = stage && w.form.autoOpen === 'YES' ? autoText(stage) : null;
+  if (!stage || !t) return '';
+  const fields =
+    stage === 'RISK_CHECK'
+      ? input(w, 'maxAmount', 'Up to (0 = off)', '1,000,000 or 1m', true, true) +
+        select(w, 'source', 'Payments', [{ value: 'AUTOMATIC', label: 'Automatic only' }, { value: 'ALL', label: 'Also manual' }]) +
+        select(w, 'origin', 'Paid from', [{ value: 'CUSTOMER', label: 'Customers only' }, { value: 'ANY', label: 'Also floating' }]) +
+        select(w, 'payee', 'Payee primary', [{ value: 'VERIFIED', label: 'Verified only' }, { value: 'ANY', label: 'Also unverified' }])
+      : stage === 'AUTHORIZATION'
+        ? segPicker(w, 'level', 'Approve by itself up to', ['NONE', 'LOW', 'MEDIUM', 'HIGH'])
+        : input(w, 'maxAmount', 'Up to (0 = off)', '1,000,000 or 1m', true, true);
+  const readOnly = moduleAccess(view(), r.system, r.module) !== 'WRITE';
+  return `<form class="auto-panel" data-mform="${w.id}:auto">
+    <div class="cmd-head"><b>Automation</b><i class="perm WRITE">Write</i></div>
+    <p class="auto-now">${esc(t.long)}</p>
+    <div class="cmd-row">${fields}${btns(btn(w, 'auto', 'Save', '', true) + `<button class="cmd-btn alt" type="button" data-act="autoedit:${w.id}">Cancel</button>`)}</div>
+    ${readOnly ? '<p class="hint">Changing it needs write access to this page.</p>' : ''}
+  </form>`;
+}
+
+/** Saves a stage's automation with the page's credential; the details close once it worked. */
+async function saveAuto(w: Win, fn: string, params: Record<string, string>): Promise<void> {
+  const r = route(w);
+  if (r?.kind !== 'module') return;
+  if (await execute(w, r.system, r.module, fn, params)) {
+    delete w.form.autoOpen;
+    renderWin(w);
+  }
+}
+
 async function toggleWatch(w: Win | undefined, key: string): Promise<void> {
   const [system, module] = key.split('.') as [SystemId, string];
   const on = !view().watching.includes(key);
@@ -1775,13 +1871,25 @@ function pollNotices(skip = false): void {
   const seen = seenNotices[selected] ?? 0;
   const fresh = list.filter((n) => noticeNum(n.id) > seen);
   if (fresh.length) seenNotices[selected] = noticeNum(fresh[fresh.length - 1].id);
-  if (!skip) for (const n of fresh.slice(-4)) toast(n.text, n.page, false, HOST_PAGES.has(n.page));
+  if (!skip)
+    for (const n of fresh.slice(-4)) toast(n.text, n.page, false, HOST_PAGES.has(n.page), { kind: 'module', system: n.system as SystemId, module: n.module });
+}
+
+/** Brings up a page: the window already showing it, or a new one. */
+function openPage(r: Extract<Route, { kind: 'module' }>): void {
+  const open = wins().find((w) => {
+    const at = route(w);
+    return w.kind === 'browser' && at?.kind === 'module' && at.system === r.system && at.module === r.module;
+  });
+  if (open) focusWin(open);
+  else openWindow('browser', r);
 }
 
 /** The hidden host's page labels: their pop-ups get the host's look, so an operative spots them at once. */
 const HOST_PAGES = new Set(findSystem('HIDDEN_HOST')!.modules.map((m) => m.label));
 
-function toast(text: string, page: string, error = false, host = false): void {
+/** A pop-up. With `go`, clicking it opens that page; any click dismisses it. */
+function toast(text: string, page: string, error = false, host = false, go?: Extract<Route, { kind: 'module' }>): void {
   const box = document.getElementById('toasts');
   if (!box) return;
   const el = document.createElement('button');
@@ -1791,9 +1899,299 @@ function toast(text: string, page: string, error = false, host = false): void {
     el.classList.add('out');
     setTimeout(() => el.remove(), 200);
   };
-  el.addEventListener('click', close);
+  el.addEventListener('click', () => {
+    if (go) openPage(go);
+    close();
+  });
+  if (go) el.title = `Open ${page}`;
   box.appendChild(el);
   setTimeout(close, TOAST_MS);
+}
+
+// ---- Tutorial: a Personal Banker's checklist for their first request, pinned to the desktop ----------------
+/** Pages ("game:seat:SYSTEM.MODULE") opened while their tutorial step was due: the engine only sees actions. */
+const tutorialPagesSeen = new Set<string>();
+const tutorialKey = (): string => `${view().gameId}:${selected}`;
+const TUTORIAL_CLOSED = 'cyberHeist.tutorialClosed';
+const tutorialClosedHere = new Set<string>();
+function tutorialClosed(): boolean {
+  if (tutorialClosedHere.has(tutorialKey())) return true;
+  try {
+    return (JSON.parse(localStorage.getItem(TUTORIAL_CLOSED) ?? '[]') as string[]).includes(tutorialKey());
+  } catch {
+    return false;
+  }
+}
+function closeTutorial(): void {
+  tutorialClosedHere.add(tutorialKey());
+  try {
+    const list = JSON.parse(localStorage.getItem(TUTORIAL_CLOSED) ?? '[]') as string[];
+    localStorage.setItem(TUTORIAL_CLOSED, JSON.stringify([...list, tutorialKey()].slice(-50)));
+  } catch {
+    // private window or blocked storage: closed for this page load only
+  }
+  renderTutorial();
+}
+let lastTutorialHtml: string | null = '';
+
+/**
+ * A new game forgets the screen's tutorial marks for its id (offline the id comes from the seed, so the same seed
+ * would otherwise inherit the last game's closed panel and second window).
+ */
+function resetTutorials(gameId: string): void {
+  const mine = (key: string): boolean => key.startsWith(`${gameId}:`);
+  for (const key of [...tutorialClosedHere]) if (mine(key)) tutorialClosedHere.delete(key);
+  for (const key of [...tutorialPagesSeen]) if (mine(key)) tutorialPagesSeen.delete(key);
+  for (const key of Object.keys(tutorialMarksHere)) if (mine(key)) delete tutorialMarksHere[key];
+  try {
+    const closed = JSON.parse(localStorage.getItem(TUTORIAL_CLOSED) ?? '[]') as string[];
+    localStorage.setItem(TUTORIAL_CLOSED, JSON.stringify(closed.filter((key) => !mine(key))));
+    const marks = JSON.parse(localStorage.getItem(TUTORIAL_MARKS) ?? '{}') as Record<string, number>;
+    localStorage.setItem(TUTORIAL_MARKS, JSON.stringify(Object.fromEntries(Object.entries(marks).filter(([key]) => !mine(key)))));
+  } catch {
+    // private window or blocked storage: nothing was kept there
+  }
+  lastTutorialHtml = null; // the next render always draws, even an empty panel
+}
+
+/** Each A&R part's page. */
+const AR_PAGES: Record<ArPart, string> = { RISK: 'TRANSACTIONS.RISK_CHECK', SETTLE: 'TRANSACTIONS.SETTLEMENT', VERIFY: 'CLIENT_DATA.VERIFICATION' };
+
+/** Screen-only tutorial marks ("game:seat:MARK" -> game seconds), kept in the browser: the engine never sees windows. */
+const TUTORIAL_MARKS = 'cyberHeist.tutorialMarks';
+const tutorialMarksHere: Record<string, number> = {};
+function tutorialMark(mark: string): number | null {
+  const key = `${tutorialKey()}:${mark}`;
+  if (key in tutorialMarksHere) return tutorialMarksHere[key];
+  try {
+    return (JSON.parse(localStorage.getItem(TUTORIAL_MARKS) ?? '{}') as Record<string, number>)[key] ?? null;
+  } catch {
+    return null;
+  }
+}
+function setTutorialMark(mark: string, t: number): void {
+  const key = `${tutorialKey()}:${mark}`;
+  tutorialMarksHere[key] = t;
+  try {
+    const all = JSON.parse(localStorage.getItem(TUTORIAL_MARKS) ?? '{}') as Record<string, number>;
+    localStorage.setItem(TUTORIAL_MARKS, JSON.stringify(Object.fromEntries(Object.entries({ ...all, [key]: t }).slice(-100))));
+  } catch {
+    // private window or blocked storage: kept for this page load only
+  }
+}
+
+/** Opening a page (or a window) its tutorial step is waiting for ticks that step. */
+function noteTutorialRoute(r: Route | undefined): void {
+  noteHeistRoute(r);
+  const tu = view().tutorial;
+  if (!r || !tu || tu.result) return;
+  if (tu.kind === 'IT') renderTutorial(); // a second Security Systems window? (noteSecondWindow)
+  if (r.kind !== 'module') return;
+  const page = `${r.system}.${r.module}`;
+  const due =
+    tu.kind === 'BANKER'
+      ? page === 'TRANSACTIONS.PAYMENT_QUEUE' && !!tu.requestId
+      : tu.kind === 'IT' || tu.kind === 'MANAGER'
+        ? page === 'SECURITY.MASTER_LOG'
+        : (Object.keys(AR_PAGES) as ArPart[]).some((id) => AR_PAGES[id] === page && tu.parts[id].waited);
+  if (!due) return;
+  tutorialPagesSeen.add(`${tutorialKey()}:${page}`);
+  renderTutorial();
+}
+const pageSeen = (page: string): boolean => tutorialPagesSeen.has(`${tutorialKey()}:${page}`);
+
+type Step = { text: string; done: boolean; skipped?: boolean; sub?: boolean };
+/** A category of steps; a finished one folds to its title. */
+type StepGroup = { title: string; steps: Step[]; done: boolean };
+const groupsHtml = (groups: StepGroup[]): string =>
+  `<ol class="parts">${groups.map((g) => `<li class="part ${g.done ? 'done' : ''}"><b>${g.done ? '✓ ' : ''}${esc(g.title)}</b><ol>${g.done ? '' : stepsHtml(g.steps)}</ol></li>`).join('')}</ol>`;
+
+/** Steps as list items; the first one not done is the current one. */
+function stepsHtml(steps: Step[]): string {
+  const now = steps.findIndex((x) => !x.done && !x.sub);
+  return steps
+    .map((x, i) => {
+      const state = x.skipped ? 'skipped' : x.done ? 'done' : i === now ? 'now' : 'todo';
+      return `<li class="${state}${x.sub ? ' sub' : ''}"><span class="tick" aria-hidden="true">${x.done ? '✓' : x.sub ? '!' : ''}</span><span>${esc(x.text)}</span></li>`;
+    })
+    .join('');
+}
+
+function bankerSteps(tu: Extract<TutorialView, { kind: 'BANKER' }>): Step[] {
+  const raw: Step[] = [
+    { text: 'Wait for a Client Request to come in', done: !!tu.requestId },
+    { text: `Check the Client Request${tu.requestId ? ` (${tu.requestId})` : ''} in Client Data`, done: tu.viewed },
+    { text: 'Open the Payment Queue in Transaction Processing', done: tu.openedQueue || pageSeen('TRANSACTIONS.PAYMENT_QUEUE') },
+    { text: 'Enter the information to Create a Payment', done: tu.created },
+    ...(tu.retry ? [{ text: 'Check the Client Request and make sure everything is entered correctly', done: false, sub: true }] : []),
+    { text: 'Wait for Risk Check to complete', done: tu.riskChecked },
+    { text: 'Authorize manually if needed', done: tu.approval !== null, skipped: tu.approval === 'AUTO' },
+    { text: 'Wait for the payment to be settled', done: tu.settled },
+  ];
+  // A step counts as done once it, or any step after it, is done.
+  const main = raw.filter((x) => !x.sub);
+  return raw.map((x) => (x.sub ? x : { ...x, done: main.slice(main.indexOf(x)).some((y) => y.done) }));
+}
+
+const AR_TEXT: Record<ArPart, { title: string; steps: [string, string, string, string] }> = {
+  RISK: {
+    title: 'Risk score',
+    steps: ['Wait for a payment to need a risk score', 'Open Risk Check in Transaction Processing', "Check the payee's account history in Client Data → Verification (Investigate changes)", 'Score the payment'],
+  },
+  SETTLE: {
+    title: 'Settlement',
+    steps: ['Wait for a payment to need settling', 'Open Settlement in Transaction Processing', "Check the payee's primary account in Client Data → Customer Records", 'Settle the payment'],
+  },
+  VERIFY: {
+    title: 'Verification',
+    steps: ['Wait for an account change to need verifying', 'Open Verification in Client Data', "Investigate the change's customer or account (Investigate changes)", 'Verify the change'],
+  },
+};
+
+function arHtml(tu: Extract<TutorialView, { kind: 'AR' }>): string {
+  return (['RISK', 'SETTLE', 'VERIFY'] as ArPart[])
+    .map((id) => {
+      const p = tu.parts[id];
+      const t = AR_TEXT[id];
+      const opened = p.waited && (p.opened || pageSeen(AR_PAGES[id]) || p.checked || p.done);
+      // To save space: only the wait until work comes in, then only the steps still to do.
+      const steps: Step[] = (
+        p.waited
+          ? [
+              { text: t.steps[1], done: opened },
+              { text: t.steps[2], done: p.checked || p.done },
+              { text: t.steps[3], done: p.done },
+            ]
+          : [{ text: t.steps[0], done: false }]
+      ).filter((x) => !x.done);
+      return `<li class="part ${p.done ? 'done' : ''}"><b>${p.done ? '✓ ' : ''}${t.title}</b><ol>${p.done ? '' : stepsHtml(steps)}</ol></li>`;
+    })
+    .join('');
+}
+
+/**
+ * IT: the steps shown so far, in stages (the hunt and the second window once a trace is done, the Firewall once
+ * the second window is open), and whether all of it is done. The screen decides: the engine never sees windows.
+ */
+function itSteps(tu: Extract<TutorialView, { kind: 'IT' }>): { steps: Step[]; groups: StepGroup[]; done: boolean } {
+  const st = tu.steps;
+  const second = tutorialMark('SECOND_SECURITY');
+  const firewall = second !== null && st.firewallAt !== null && st.firewallAt >= second;
+  const logs: Step[] = [
+    { text: 'Open the Master Log in Security Systems', done: st.openedLog || pageSeen('SECURITY.MASTER_LOG') },
+    { text: "Switch on the Master Log's auto-update", done: st.autoUpdate },
+    { text: 'Trace an entry in the Master Log', done: st.traced },
+  ];
+  if (st.traced && !st.firstTraceHidden) {
+    // A hint first: the host's entries are only in the "Everything" view.
+    logs.push({ text: 'View "Everything" in the Master Log', done: st.viewedEverything || st.tracedHidden });
+    logs.push({ text: 'Find and trace an "Unknown server activity" entry', done: st.tracedHidden });
+  }
+  // The Firewall category appears with its first step, once a trace is done.
+  const fw: Step[] = st.traced ? [{ text: 'Open a second Security Systems window', done: second !== null }] : [];
+  if (second !== null) fw.push({ text: 'Check the Firewall status', done: firewall });
+  const groups: StepGroup[] = [{ title: 'Check the logs', steps: logs, done: st.traced && logs.every((x) => x.done) }];
+  if (fw.length) groups.push({ title: 'Check the firewall', steps: fw, done: firewall });
+  return { steps: [...logs, ...fw], groups, done: groups.length === 2 && groups.every((g) => g.done) };
+}
+
+/** Bank Manager: steps appear as there is something to see; an "all" view counts only once its step is shown. */
+function managerSteps(tu: Extract<TutorialView, { kind: 'MANAGER' }>): { steps: Step[]; done: boolean } {
+  const st = tu.steps;
+  const after = (at: number | null, from: number | null): boolean => at !== null && from !== null && at >= from;
+  const opened = st.openedLog || pageSeen('SECURITY.MASTER_LOG') || st.traced;
+  const all: (Step & { shown: boolean })[] = [
+    { text: 'View all customers in Client Data → Customer Records', done: st.customersAll, shown: true },
+    { text: 'View all client requests in Client Data → Client Requests', done: after(st.requestsAllAt, tu.requestsFrom), shown: tu.requestsFrom !== null },
+    { text: 'View all payments in Transaction Processing → Payment Queue', done: after(st.paymentsAllAt, tu.paymentsFrom), shown: tu.paymentsFrom !== null },
+    { text: 'Open the Master Log in Security Systems', done: opened, shown: true },
+    { text: 'Trace an entry in the Master Log', done: st.traced, shown: opened },
+  ];
+  return { steps: all.filter((x) => x.shown), done: all.every((x) => x.shown && x.done) };
+}
+
+function tutorialHtml(): string {
+  const tu = view().tutorial;
+  if (!tu || tutorialClosed()) return '';
+  const title =
+    tu.kind === 'BANKER' ? 'Your first payment' : tu.kind === 'IT' ? 'Your first day: security' : tu.kind === 'MANAGER' ? 'Your job is to watch everything!' : 'Your first day: any order';
+  const it = tu.kind === 'IT' ? itSteps(tu) : tu.kind === 'MANAGER' ? managerSteps(tu) : null;
+  let body: string;
+  if (tu.result || it?.done) {
+    const text =
+      tu.result === 'FAILED'
+        ? 'Your request expired. Tutorial cannot be complete.'
+        : tu.kind === 'BANKER'
+          ? 'Congratulations your first payment is complete!'
+          : "Congratulations, now you know how to do your job!";
+    body = `<div class="tutorial-result ${tu.result ?? 'DONE'}"><p>${text}</p><button class="cmd-btn" data-act="tutclose">Close</button></div>`;
+  } else if (it) body = tu.kind === 'IT' ? groupsHtml(itSteps(tu).groups) : `<ol>${stepsHtml(it.steps)}</ol>`;
+  else body = tu.kind === 'BANKER' ? `<ol>${stepsHtml(bankerSteps(tu))}</ol>` : `<ol class="parts">${arHtml(tu as Extract<TutorialView, { kind: 'AR' }>)}</ol>`;
+  // It stays on screen until the player closes it at the end.
+  return `<aside class="tutorial" aria-label="Tutorial">
+    <h3 class="tutorial-head">${title}</h3>
+    ${body}
+  </aside>`;
+}
+
+/** IT: two Security Systems windows open at once, once a trace is done, ticks "Open a second Security Systems window". */
+function noteSecondWindow(): void {
+  const tu = view().tutorial;
+  if (tu?.kind !== 'IT' || !tu.steps.traced || tutorialMark('SECOND_SECURITY') !== null) return;
+  const security = wins().filter((w) => {
+    const r = w.kind === 'browser' ? route(w) : undefined;
+    return (r?.kind === 'system' || r?.kind === 'module') && r.system === 'SECURITY';
+  });
+  if (security.length >= 2) setTutorialMark('SECOND_SECURITY', view().t);
+}
+
+// ---- The heist: a Thief's second panel, under their cover job's ----------------------------------
+let heistFolded = false;
+
+/** Opening the host, or a tool kit's page, ticks its personal task (the engine only sees actions). */
+function noteHeistRoute(r: Route | undefined): void {
+  if (!view().heist || !r || (r.kind !== 'system' && r.kind !== 'module') || r.system !== 'HIDDEN_HOST') return;
+  const marks = ['HOST_OPENED', ...(r.kind === 'module' && HOST_KITS.includes(r.module) ? ['KIT_OPENED'] : [])].filter((m) => tutorialMark(m) === null);
+  for (const m of marks) setTutorialMark(m, view().t);
+  if (marks.length) renderTutorial();
+}
+
+function heistHtml(): string {
+  const h = view().heist;
+  if (!h) return '';
+  const t = h.tasks;
+  const personal: Step[] = [
+    { text: 'Open the Unregistered host', done: t.openedHost || tutorialMark('HOST_OPENED') !== null },
+    { text: 'Say "hi" on Blacknet', done: t.posted },
+    { text: 'Check your mule account numbers in the Target Ledger', done: t.ledger },
+    { text: 'Check your personal tool kit', done: t.kit || tutorialMark('KIT_OPENED') !== null },
+  ];
+  // The heist: one step at a time, each gone once done (and done for good).
+  const p = h.progress;
+  const heist: Step[] = [
+    { text: "Get a mule account onto a customer's file", done: p.onFile },
+    { text: 'Make a mule account a primary account', done: p.primary },
+    { text: 'Start earning money', done: p.earning },
+    { text: `Reach your cash goal: ${money(h.stolen)} / ${money(h.goal)}`, done: p.goalMet },
+    { text: 'Hold it until close of business, or get out of there!', done: false },
+  ];
+  const now = heist.find((x) => !x.done)!;
+  const groups: StepGroup[] = [
+    { title: 'Personal tasks', steps: personal, done: personal.every((x) => x.done) },
+    { title: 'The heist', steps: [now], done: false },
+  ];
+  return `<aside class="tutorial heist" aria-label="The heist">
+    <div class="tutorial-head"><span>The heist</span><button data-act="heistfold" aria-expanded="${!heistFolded}">${heistFolded ? 'Show' : 'Hide'}</button></div>
+    ${heistFolded ? '' : groupsHtml(groups)}
+  </aside>`;
+}
+
+function renderTutorial(): void {
+  noteSecondWindow();
+  const html = tutorialHtml() + heistHtml();
+  if (html === lastTutorialHtml) return;
+  lastTutorialHtml = html;
+  $('tutorial').innerHTML = html;
 }
 
 // ---- Taskbar ----------------------------------------------------------------------------------
@@ -1818,6 +2216,7 @@ function renderAll(): void {
   renderWins();
   renderTaskbar();
   renderTruth();
+  renderTutorial();
 }
 
 /** After any game action: everything that can change except browser windows the player is using. */
@@ -1830,6 +2229,7 @@ function refresh(): void {
   renderTruth();
   renderScenario();
   renderPersonal();
+  renderTutorial();
 }
 
 // ---- Events ---------------------------------------------------------------------------------
@@ -1926,6 +2326,19 @@ app.addEventListener('click', (e) => {
         w.out = [];
         renderWin(w);
       }
+      break;
+    case 'heistfold':
+      heistFolded = !heistFolded;
+      renderTutorial();
+      break;
+    case 'tutclose':
+      closeTutorial();
+      break;
+    case 'page':
+      openPage({ kind: 'module', system: args[0] as SystemId, module: args[1] });
+      break;
+    case 'autoedit':
+      if (w) toggleAutoPanel(w);
       break;
     case 'mcmd': {
       const r = w && route(w);
@@ -2204,6 +2617,7 @@ function tickClock(): void {
   }
   updateClock();
   pollNotices();
+  renderTutorial();
   if (tickCount % 8 === 0) {
     renderTruth();
     renderScenario();

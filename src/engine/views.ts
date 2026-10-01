@@ -8,9 +8,11 @@ import { jobDescription } from './jobs';
 import { endSummary } from './ending';
 import type { EndSummary } from './ending';
 import { dayPhaseAt } from './pacing';
+import { heistView, tutorialView } from './tutorial';
+import type { HeistView, TutorialView } from './tutorial';
 import type { Pace } from './pacing';
 import type { JobDescription } from './jobs';
-import type { Allegiance, GameState, Notice, Player, PlayerId, RoleId, SystemId, Winner } from './types';
+import type { Allegiance, Automation, GameState, Notice, Player, PlayerId, RoleId, SystemId, Winner } from './types';
 
 /** Everything on one workstation: the owner's own screen, or someone else's once logged in to it. */
 export interface WorkstationView {
@@ -85,6 +87,19 @@ export interface PlayerView {
   notifications: Notice[];
   /** Infiltration proxies (only for a player holding Infiltration access), with why each is unavailable. */
   proxies: { ip: string; unavailable: string | null }[];
+  /** Their job's tutorial checklist. */
+  tutorial: TutorialView | null;
+  /** A Thief's heist checklist (personal tasks and the crew's heist); null for everyone else. */
+  heist: HeistView | null;
+  /** Each payment stage's automation (its page's badge), only for stages this player can read. */
+  automation: StageAutomation;
+}
+
+/** The automation settings by stage page; a stage is missing when the player cannot read it. */
+export interface StageAutomation {
+  RISK_CHECK?: { maxAmount: number; source: Automation['scoreSource']; origin: Automation['scoreOrigin']; payee: Automation['scorePayee'] };
+  AUTHORIZATION?: { upTo: Automation['approveUpTo'] };
+  SETTLEMENT?: { maxAmount: number };
 }
 
 /** `visitor`: someone else logged in to this workstation, who sees nothing that gives its side away (see WorkstationView). */
@@ -141,6 +156,23 @@ const holdsInfiltration = (s: GameState, p: Player): boolean =>
     return cr.status === 'ACTIVE' && cr.system === 'HIDDEN_HOST' && (cr.module === null || cr.module === 'INFILTRATION');
   });
 
+/** Can read this bank module: security off, or an active credential of theirs covers it. */
+const canReadModule = (s: GameState, p: Player, system: SystemId, module: string): boolean =>
+  !!s.modules[`${system}.${module}`]?.open ||
+  p.heldCredentialIds.some((id) => {
+    const cr = s.credentials[id];
+    return cr.status === 'ACTIVE' && cr.system === system && (cr.module === null || cr.module === module) && cr.fn === null;
+  });
+
+function stageAutomation(s: GameState, p: Player): StageAutomation {
+  const a = s.automation;
+  const out: StageAutomation = {};
+  if (canReadModule(s, p, 'TRANSACTIONS', 'RISK_CHECK')) out.RISK_CHECK = { maxAmount: a.scoreMax, source: a.scoreSource, origin: a.scoreOrigin, payee: a.scorePayee };
+  if (canReadModule(s, p, 'TRANSACTIONS', 'AUTHORIZATION')) out.AUTHORIZATION = { upTo: a.approveUpTo };
+  if (canReadModule(s, p, 'TRANSACTIONS', 'SETTLEMENT')) out.SETTLEMENT = { maxAmount: a.settleMax };
+  return out;
+}
+
 export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
   const p = s.players[playerId];
   const t = gameTime(s);
@@ -172,5 +204,8 @@ export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
     watching: [...p.watching],
     notifications: p.notifications.map((n) => ({ ...n })),
     proxies: holdsInfiltration(s, p) ? s.proxies.map((x) => ({ ip: x.ip, unavailable: proxyUnavailable(s, x.ip, t, p.id) })) : [],
+    automation: stageAutomation(s, p),
+    tutorial: tutorialView(s, p),
+    heist: heistView(s, p),
   };
 }

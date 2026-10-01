@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { accountVerified, applyAction, CHANNELS, createGame, CREDENTIAL_SHARING_ENABLED, DAY_PHASES, dayPhaseAt, nextArrival, paceMultiplier, ENCRYPTION_ENABLED, getPlayerView, grantMasterAccess, thiefCountFor, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, SYSTEMS, tick } from './index';
+import type { TutorialView } from './tutorial';
+import { accountVerified, applyAction, DEFAULT_CONFIG, CHANNELS, createGame, CREDENTIAL_SHARING_ENABLED, CUSTOMER_NAMES, findCustomer, DAY_PHASES, dayPhaseAt, nextArrival, paceMultiplier, ENCRYPTION_ENABLED, getPlayerView, grantMasterAccess, thiefCountFor, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, SYSTEMS, tick } from './index';
 import type { Action, ActionResult, GameConfig, GameState, Player, RoleId, SystemId } from './index';
 import { NPC_AMOUNT_FACTOR, REQUEST_AMOUNT_FACTOR } from './setup';
 import { committedFrom, spawnNpc } from './bank';
@@ -180,7 +181,7 @@ test('the economy scales with the table: targets, customers, requests and automa
     const c = s.config;
     const bankers = roleCounts(n).PERSONAL_BANKER;
     assert.equal(c.durationSec, 20 * 60);
-    assert.equal(c.whiteTarget, 15_000_000 * n, `n=${n} bank target`);
+    assert.equal(c.whiteTarget, DEFAULT_CONFIG.whiteTargetPerPlayer * n, `n=${n} bank target`);
     assert.equal(c.blackTarget, 1_000_000 * thiefCountFor(n), `n=${n} thief target`);
     assert.equal(s.customers.length, 3 * bankers, `n=${n} customers`);
     assert.ok(new Set(s.customers.map((x) => x.name)).size === s.customers.length, 'no duplicate customers');
@@ -553,7 +554,7 @@ test('with the Thieves\' goal met, every ending goes to the Thieves; the check i
   assert.match(term.s.endReason!, /the money left with them/);
 
   // Close of business with both goals met: the Thieves still win.
-  const both = new Sim();
+  const both = new Sim({ strikesToSuspend: 999 }); // nobody walks out before close of business
   fillLedger(both);
   both.s.totals.processed = both.s.config.whiteTarget;
   both.at(both.s.config.durationSec + 1);
@@ -650,7 +651,7 @@ test('players see every settled payment as one total and the bank\'s goal, never
   assert.ok(settled > 0);
   assert.equal(v.settled, settled);
   assert.ok(!('processed' in v));
-  assert.ok(getPlayerView(sim.s, 'p0').me.objective!.includes('$150,000,000'), 'the goal itself is known');
+  assert.ok(getPlayerView(sim.s, 'p0').me.objective!.includes(money(sim.s.config.whiteTarget)), 'the goal itself is known');
 });
 
 test('NPC traffic arrives on a schedule, and the bank wins at close of business once enough is settled', () => {
@@ -1205,12 +1206,15 @@ test('client requests: bankers are assigned, requests arrive over time, and each
   const bankers = sim.byRole('PERSONAL_BANKER');
   assert.ok(sim.s.customers.every((c) => bankers.some((b) => b.id === c.bankerId)), 'every customer has a personal banker');
   assert.equal(sim.s.requests.length, 0, 'none waiting at the start');
-  sim.at(240); // they arrive over the morning (phishing too, from 20s)
+  sim.at(240); // they arrive over the morning (phishing too, from 90s)
   assert.ok(sim.s.requests.filter((r) => !r.phish).length >= 3, `${sim.s.requests.length} requests`);
   for (const r of sim.s.requests.filter((x) => !x.phish)) {
     const cust = sim.s.customers.find((c) => c.id === r.customerId)!;
     assert.ok(r.text.includes(cust.name), 'signed with the customer name');
-    assert.ok(!/CU[0-9]/.test(r.text), 'never uses customer codes');
+    // The only customer code a request may give is its payee's, as "Name (CU7)".
+    const payee = sim.s.customers.find((c) => c.id === r.payeeId);
+    const rest = payee ? r.text.replace(`${payee.name} (${payee.id})`, payee.name) : r.text;
+    assert.ok(!/CU[0-9]/.test(rest), 'no other customer codes');
     if (r.kind === 'PAYMENT') assert.ok(r.text.includes(sim.s.customers.find((c) => c.id === r.payeeId)!.name), 'names who to pay');
   }
 
@@ -2220,16 +2224,16 @@ test('request deadlines: a scam request is never chased and expires without a co
   const sim = new Sim({ requestIntervalSec: 99999, npcIntervalSec: 99999 });
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
   grantMasterAccess(sim.s, black.id);
-  // A customer with no real request of their own, so no strike can come from elsewhere.
+  // After the bankers' first requests: a customer with no real request of their own, so no strike can come from elsewhere.
+  sim.at(60);
   const cust = sim.s.customers.find((c) => !sim.s.requests.some((r) => r.customerId === c.id))!;
-  sim.at(1);
   const made = sim.run(black.id, sim.code(black.id, 'HIDDEN_HOST', null), 'HIDDEN_HOST', 'SOCIAL', 'SCAM_REQUEST', { customer: cust.id, kind: 'SET_PRIMARY', account: sim.s.targets[0].account });
   assert.ok(made.ok, made.message);
   const scam = sim.s.requests.at(-1)!;
-  assert.equal(scam.dueAt, 121, 'it shows a deadline like any other request');
+  assert.equal(scam.dueAt, 180, 'it shows a deadline like any other request');
   const [manager] = sim.byRole('BANK_MANAGER');
   const managerMail = sim.s.players[manager.id].messages.length;
-  sim.at(200);
+  sim.at(260);
   const now = sim.s.requests.find((r) => r.id === scam.id)!;
   assert.equal(now.reminders.length, 0);
   assert.equal(now.status, 'EXPIRED');
@@ -2688,7 +2692,7 @@ test('two-player test: one Personal Banker and one A&R, no Thieves, a 3-player e
   const s = createGame({ seed: 3, players: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }], now: T0, scenario: 'DUO' });
   assert.deepEqual(Object.values(s.players).map((p) => p.role).sort(), ['ACCOUNTS_RECEIVABLES', 'PERSONAL_BANKER']);
   assert.ok(Object.values(s.players).every((p) => p.allegiance === 'WHITE'));
-  assert.equal(s.config.whiteTarget, 15_000_000 * 3);
+  assert.equal(s.config.whiteTarget, DEFAULT_CONFIG.whiteTargetPerPlayer * 3);
   assert.equal(s.customers.length, 3);
   assert.equal(s.config.requestIntervalSec, 90);
   // With no Thieves there is no heist to win or stop: the game runs to close of business.
@@ -2702,7 +2706,7 @@ test('solo test: scripted regular employees work the bank, and the IT bot traces
   assert.equal(me.allegiance, 'BLACK');
   assert.equal(me.role, 'ACCOUNTS_RECEIVABLES');
   assert.equal(Object.values(s.players).filter((p) => p.bot && p.allegiance === 'WHITE').length, 5);
-  assert.equal(s.config.whiteTarget, 15_000_000 * 6);
+  assert.equal(s.config.whiteTarget, DEFAULT_CONFIG.whiteTargetPerPlayer * 6);
   // A wrong code raises an alert; the IT bot traces it and finds the human's workstation.
   const r = applyAction(s, { type: 'EXECUTE', playerId: 'me', code: '0000', system: 'CLIENT_DATA', module: 'CUSTOMER_RECORDS', fn: 'VIEW_CUSTOMERS' }, T0 + 1000);
   s = tick(r.state, T0 + 2000);
@@ -2723,7 +2727,7 @@ test('solo test: scripted regular employees work the bank, and the IT bot traces
   for (const kit of ['INFILTRATION', 'SOCIAL', 'CLEANUP', 'ACCESS']) assert.ok(kits.includes(kit), kit);
 });
 
-test('the day starts empty: the first automatic payment at 10s, the first client request at 20s', () => {
+test('the day starts empty: the first automatic payment at 10s, then a gentle first request for each banker, regular requests and phishing from 90s', () => {
   let s = createGame({ seed: 8, players: PLAYERS, now: T0 });
   assert.equal(s.transactions.length + s.requests.length, 0, 'nothing waiting at the start');
   s = tick(s, T0 + 9_900);
@@ -2731,11 +2735,24 @@ test('the day starts empty: the first automatic payment at 10s, the first client
   s = tick(s, T0 + 10_000);
   assert.equal(s.transactions.length, 1, 'the first payment at 10s');
   assert.equal(s.transactions[0].createdAt, 10);
-  s = tick(s, T0 + 19_900);
-  assert.equal(s.requests.length, 0);
-  s = tick(s, T0 + 20_000);
-  assert.equal(s.requests.filter((r) => !r.phish).length, 1, 'the first request at 20s');
-  assert.equal(s.requests[0].t, 20);
+  const bankers = s.playerOrder.filter((id) => s.players[id].role === 'PERSONAL_BANKER');
+  assert.equal(s.requests.length, 1, "the first banker's first request at 10s");
+  s = tick(s, T0 + 89_900);
+  // Every banker gets exactly one, by 50s, and nothing else arrives before 90s (phishing included).
+  assert.deepEqual(s.requests.map((r) => r.bankerId), bankers);
+  for (const r of s.requests) {
+    assert.ok(r.first && r.kind === 'PAYMENT' && !r.urgent && r.t <= 50);
+    assert.equal(r.dueAt - r.t, s.config.firstRequestDeadlineSec);
+    assert.equal(r.originAccount, s.customers.find((c) => c.id === r.customerId)!.primary, 'paid from the main account');
+    assert.equal(s.customers.find((c) => c.id === r.customerId)!.bankerId, r.bankerId);
+    assert.ok(r.amount! <= s.config.largeAmount);
+    assert.match(r.text, /rush|hurry|take your time|nothing urgent/i);
+    assert.ok(r.text.includes(`(${r.payeeId})`) && r.text.includes(r.originAccount!.slice(4)), "names the payee's tag and the account number");
+  }
+  s = tick(s, T0 + 90_000);
+  assert.equal(s.requests.length, bankers.length + 1, 'the first regular request at 90s');
+  assert.equal(s.requests.at(-1)!.t, 90);
+  assert.ok(!s.requests.at(-1)!.first);
 });
 
 test('client requests arrive at uneven gaps around the average', () => {
@@ -2843,4 +2860,278 @@ test('tracing a Blacknet entry leaks a message: the one posted, or the newest on
   sim.at(4 + sim.s.config.traceCooldownSec);
   assert.match(trace(read.id), new RegExp(`The newest message on the board then, by ${black.alias}: "second"`));
   assert.ok(sim.s.hostLog.some((h) => h.alert && h.message.includes('"second"')), 'the operatives see what leaked');
+});
+
+test('activity: a failed action keeps what was typed (dev only, never in the view); a success does not', () => {
+  const sim = new Sim();
+  const [banker] = sim.byRole('PERSONAL_BANKER');
+  const code = sim.code(banker.id, 'TRANSACTIONS', 'PAYMENT_QUEUE');
+  const origin = sim.s.customers.find((c) => c.bankerId === banker.id)!.primary.slice(4);
+  const last = () => sim.s.players[banker.id].activity.at(-1)!;
+  sim.at(5);
+  const typed = { originAccount: origin, beneficiaryId: 'Nobody Ltd', amount: '500000' };
+  assert.match(sim.run(banker.id, code, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'CREATE_TRANSACTION', typed).message, /No customer "Nobody Ltd"/);
+  assert.deepEqual(last().typed, { ...typed, code });
+  // A failure before access is settled is noted too, with the code as typed.
+  assert.equal(sim.run(banker.id, '12', 'TRANSACTIONS', 'PAYMENT_QUEUE', 'VIEW_QUEUE').ok, false);
+  assert.match(last().text, /^FAILED: View queue on Payment Queue - Enter a 4-digit code\./);
+  assert.equal(last().typed!.code, '12');
+  assert.ok(sim.run(banker.id, code, 'TRANSACTIONS', 'PAYMENT_QUEUE', 'VIEW_QUEUE').ok);
+  assert.equal(last().typed, undefined);
+  const view = getPlayerView(sim.s, banker.id);
+  assert.ok(view.me.activity.every((a) => !('typed' in a)), 'what was typed stays out of the view');
+});
+
+test('views: each payment stage\'s automation, only for stages the player can read', () => {
+  const sim = new Sim();
+  const [banker] = sim.byRole('PERSONAL_BANKER');
+  const [ar] = sim.byRole('ACCOUNTS_RECEIVABLES');
+  const a = sim.s.automation;
+  const pb = getPlayerView(sim.s, banker.id).automation;
+  assert.equal(pb.RISK_CHECK, undefined, 'a banker cannot read Risk Check');
+  assert.deepEqual(pb.AUTHORIZATION, { upTo: a.approveUpTo });
+  assert.deepEqual(pb.SETTLEMENT, { maxAmount: a.settleMax });
+  sim.at(5);
+  assert.ok(sim.run(ar.id, sim.code(ar.id, 'TRANSACTIONS', 'RISK_CHECK'), 'TRANSACTIONS', 'RISK_CHECK', 'SET_AUTO_SCORE', { maxAmount: '2000000', source: 'ALL', origin: 'CUSTOMER', payee: 'ANY' }).ok);
+  assert.deepEqual(getPlayerView(sim.s, ar.id).automation.RISK_CHECK, { maxAmount: 2_000_000, source: 'ALL', origin: 'CUSTOMER', payee: 'ANY' });
+  assert.equal(getPlayerView(sim.s, ar.id).automation.AUTHORIZATION, undefined);
+});
+
+test('customers: names never contain digits, so a typed name or tag finds the same customer', () => {
+  assert.ok(CUSTOMER_NAMES.every((n) => !/\d/.test(n)));
+  const sim = new Sim();
+  const [a, b] = sim.s.customers;
+  for (const ref of [b.id, b.id.slice(2), `  ${b.name.toUpperCase()}  `, b.name.replace(/ /g, '   ')]) assert.equal(findCustomer(sim.s, ref)?.id, b.id, ref);
+  assert.equal(findCustomer(sim.s, b.name.slice(0, -1)), undefined, 'no partial matches');
+  // Create payment takes the payee's name.
+  const banker = sim.s.players[a.bankerId!];
+  sim.at(5);
+  const made = sim.run(banker.id, sim.code(banker.id, 'TRANSACTIONS', 'PAYMENT_QUEUE'), 'TRANSACTIONS', 'PAYMENT_QUEUE', 'CREATE_TRANSACTION', { originAccount: a.primary.slice(4), beneficiaryId: b.name.toLowerCase(), amount: '100000' });
+  assert.ok(made.ok, made.message);
+  assert.equal(sim.s.transactions.at(-1)!.beneficiaryId, b.id);
+});
+
+test("payment requests usually give the payee's tag (requestTagShare), from a side stream", () => {
+  const tagged = (share: number) => {
+    const sim = new Sim({ requestTagShare: share, strikesToSuspend: 999 });
+    sim.at(900);
+    const pay = sim.s.requests.filter((r) => r.kind === 'PAYMENT' && !r.phish && !r.first);
+    return { n: pay.length, tagged: pay.filter((r) => r.text.includes(`(${r.payeeId})`)).length, ids: sim.s.requests.map((r) => r.customerId) };
+  };
+  const all = tagged(1), none = tagged(0), most = tagged(0.75);
+  assert.equal(all.tagged, all.n);
+  assert.equal(none.tagged, 0);
+  assert.ok(most.tagged > most.n * 0.5 && most.tagged < most.n, `${most.tagged} of ${most.n}`);
+  assert.deepEqual(all.ids, none.ids, 'the share never changes what else happens');
+});
+
+test("tutorial: a Personal Banker's checklist follows their first request until its payment settles", () => {
+  const sim = new Sim({}, 42, false); // automation off: every stage by hand
+  const [banker] = sim.byRole('PERSONAL_BANKER');
+  const [ar] = sim.byRole('ACCOUNTS_RECEIVABLES');
+  const tv = () => getPlayerView(sim.s, banker.id).tutorial as Extract<TutorialView, { kind: 'BANKER' }>;
+  assert.equal(tv().kind, 'BANKER');
+  assert.equal(getPlayerView(sim.s, sim.byRole('BANK_MANAGER')[0].id).tutorial!.kind, 'MANAGER', 'every role has its own');
+  assert.equal(tv().requestId, null, 'waiting for the request');
+  sim.at(55);
+  const r = sim.s.requests.find((x) => x.id === tv().requestId)!;
+  assert.ok(r.first && r.bankerId === banker.id);
+  const bank = (module: string, fn: string, params: Record<string, string> = {}) => sim.run(banker.id, sim.code(banker.id, module === 'CLIENT_REQUESTS' ? 'CLIENT_DATA' : 'TRANSACTIONS', module), module === 'CLIENT_REQUESTS' ? 'CLIENT_DATA' : 'TRANSACTIONS', module, fn, params);
+  bank('CLIENT_REQUESTS', 'VIEW_REQUESTS');
+  assert.ok(tv().viewed);
+  const pay = { requestId: r.id, originAccount: r.originAccount!.slice(4), beneficiaryId: r.payeeId!, amount: String(r.amount) };
+  assert.ok(bank('PAYMENT_QUEUE', 'CREATE_TRANSACTION', { ...pay, amount: '1' }).ok, 'a wrong amount still makes a payment...');
+  assert.ok(tv().openedQueue && tv().retry && !tv().created, '...but not the one asked for');
+  assert.ok(bank('PAYMENT_QUEUE', 'CREATE_TRANSACTION', pay).ok);
+  assert.ok(tv().created && !tv().retry);
+  const tx = sim.s.transactions.at(-1)!;
+  assert.ok(sim.run(ar.id, sim.code(ar.id, 'TRANSACTIONS', 'RISK_CHECK'), 'TRANSACTIONS', 'RISK_CHECK', 'RUN_RISK_CHECK', { txId: tx.id, score: 'MEDIUM' }).ok);
+  assert.ok(tv().riskChecked && tv().approval === null);
+  assert.ok(bank('AUTHORIZATION', 'APPROVE', { txId: tx.id }).ok);
+  assert.equal(tv().approval, 'MANUAL');
+  assert.ok(sim.run(ar.id, sim.code(ar.id, 'TRANSACTIONS', 'SETTLEMENT'), 'TRANSACTIONS', 'SETTLEMENT', 'SETTLE', { txId: tx.id }).ok);
+  assert.ok(tv().settled);
+  assert.equal(tv().result, 'DONE');
+});
+
+test('tutorial: an expired first request fails it, with an alert to the bank', () => {
+  const sim = new Sim({}, 42, false);
+  const [banker] = sim.byRole('PERSONAL_BANKER');
+  sim.at(55);
+  const r = sim.s.requests.find((x) => x.id === (getPlayerView(sim.s, banker.id).tutorial as Extract<TutorialView, { kind: 'BANKER' }>).requestId)!;
+  sim.at(r.dueAt + 1);
+  assert.equal(getPlayerView(sim.s, banker.id).tutorial!.result, 'FAILED');
+  const message = `${banker.name} failed their Personal Banker tutorial. Consider immediate termination for poor performance.`;
+  assert.ok(sim.s.alerts.some((a) => a.kind === 'TUTORIAL_FAILED' && a.message === message));
+  assert.ok(sim.s.logs.some((l) => l.kind === 'TUTORIAL_FAILED' && l.message === message));
+  assert.equal(sim.s.alerts.filter((a) => a.kind === 'TUTORIAL_FAILED' && a.message === message).length, 1, 'only once');
+});
+
+test('tutorial: Accounts & Receivables do each part themselves, in any order, only once work waits for a person', () => {
+  const sim = new Sim({}, 42, false); // automation off: everything waits for people
+  const [ar, ar2] = sim.byRole('ACCOUNTS_RECEIVABLES');
+  const [banker] = sim.byRole('PERSONAL_BANKER');
+  const parts = (pid = ar.id) => (getPlayerView(sim.s, pid).tutorial as Extract<TutorialView, { kind: 'AR' }>).parts;
+  const run = (pid: string, module: string, fn: string, params: Record<string, string> = {}) => {
+    const system = module === 'VERIFICATION' || module === 'CUSTOMER_RECORDS' ? 'CLIENT_DATA' : 'TRANSACTIONS';
+    return sim.run(pid, sim.code(pid, system, module), system, module, fn, params);
+  };
+  // Checking before anything waits counts for nothing.
+  sim.at(1);
+  assert.ok(run(ar.id, 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS', { show: 'ALL' }).ok);
+  assert.deepEqual(parts().RISK, { waited: false, opened: false, checked: false, done: false });
+  sim.at(12); // the first automatic payment is waiting for a score
+  assert.ok(parts().RISK.waited && !parts().SETTLE.waited && !parts().VERIFY.waited);
+  const tx = sim.s.transactions.find((x) => x.status === 'QUEUED')!;
+  // Scoring without checking first does not tick it.
+  assert.ok(run(ar.id, 'RISK_CHECK', 'RUN_RISK_CHECK', { txId: tx.id }).ok);
+  assert.ok(parts().RISK.opened && !parts().RISK.done);
+  assert.ok(run(ar.id, 'VERIFICATION', 'INVESTIGATE_CHANGES', { target: tx.beneficiaryId }).ok);
+  assert.ok(run(ar.id, 'RISK_CHECK', 'RUN_RISK_CHECK', { txId: tx.id }).ok, 're-scoring is allowed');
+  assert.ok(parts().RISK.checked && parts().RISK.done);
+  assert.ok(!parts(ar2.id).RISK.checked, "a colleague's work never ticks yours");
+  // Settlement: approved by the banker (by hand), checked in Customer Records, settled.
+  assert.ok(run(banker.id, 'AUTHORIZATION', 'APPROVE', { txId: tx.id }).ok);
+  sim.at(13);
+  assert.ok(parts().SETTLE.waited);
+  assert.ok(run(ar.id, 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS', { show: 'ALL' }).ok);
+  assert.ok(run(ar.id, 'SETTLEMENT', 'SETTLE', { txId: tx.id }).ok);
+  assert.ok(parts().SETTLE.done);
+  // Verification: a banker's account change.
+  const cust = sim.s.customers.find((c) => c.bankerId === banker.id)!;
+  sim.open(0, '55555');
+  assert.ok(run(banker.id, 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: cust.id, account: '55555' }).ok);
+  sim.at(14);
+  assert.ok(parts().VERIFY.waited);
+  assert.ok(run(ar.id, 'VERIFICATION', 'INVESTIGATE_CHANGES', { target: cust.id }).ok);
+  const ch = sim.s.customers.find((c) => c.id === cust.id)!.history.at(-1)!;
+  assert.ok(run(ar.id, 'VERIFICATION', 'VERIFY_CHANGE', { changeId: ch.id }).ok);
+  assert.equal(getPlayerView(sim.s, ar.id).tutorial!.result, 'DONE');
+  assert.equal(getPlayerView(sim.s, ar2.id).tutorial!.result, null);
+});
+
+test('tutorial: an A&R part never ticks for automation', () => {
+  const sim = new Sim({ automation: { scoreMax: 99_000_000, scoreSource: 'ALL', scoreOrigin: 'ANY', scorePayee: 'ANY', approveUpTo: 'HIGH', settleMax: 99_000_000 } }, 42, false);
+  const [ar] = sim.byRole('ACCOUNTS_RECEIVABLES');
+  sim.at(120);
+  assert.ok(sim.s.transactions.some((x) => x.status === 'SETTLED'), 'automation settled payments');
+  const parts = (getPlayerView(sim.s, ar.id).tutorial as Extract<TutorialView, { kind: 'AR' }>).parts;
+  assert.ok(!parts.RISK.waited && !parts.SETTLE.waited, 'nothing was left waiting for a person');
+});
+
+test('tutorial: an IT Specialist learns the Master Log and the Firewall by doing it themselves', () => {
+  const sim = new Sim({}, 42, false);
+  const [it] = sim.byRole('IT_SPECIALIST');
+  const thief = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const steps = () => (getPlayerView(sim.s, it.id).tutorial as Extract<TutorialView, { kind: 'IT' }>).steps;
+  const log = (fn: string, params: Record<string, string> = {}, quiet = false) =>
+    sim.do({ type: 'EXECUTE', playerId: it.id, code: sim.code(it.id, 'SECURITY', 'MASTER_LOG'), system: 'SECURITY', module: 'MASTER_LOG', fn, params, quiet });
+  sim.at(5);
+  assert.ok(log('VIEW_LOG', { show: 'ALL' }).ok);
+  assert.ok(!steps().viewedEverything, 'too early: before the first trace');
+  assert.ok(steps().openedLog && !steps().autoUpdate);
+  assert.ok(log('VIEW_LOG', {}, true).ok, 'the auto-update refresh');
+  assert.ok(steps().autoUpdate);
+  // A first trace of an ordinary entry: the hunt step is still to come.
+  const plain = sim.s.logs.find((e) => e.actor !== 'SYSTEM')!;
+  assert.ok(log('TRACE', { logId: plain.id }).ok);
+  assert.ok(steps().traced && !steps().tracedHidden && !steps().firstTraceHidden);
+  assert.ok(!steps().viewedEverything);
+  assert.ok(log('VIEW_LOG', { show: 'ALL' }).ok);
+  assert.ok(steps().viewedEverything, '"Everything" after the first trace');
+  assert.ok(sim.run(thief.id, sim.code(thief.id, 'HIDDEN_HOST', 'BLACKNET'), 'HIDDEN_HOST', 'BLACKNET', 'POST_MESSAGE', { text: 'hi' }).ok);
+  sim.at(40); // past the trace cooldown
+  assert.ok(log('TRACE', { logId: sim.s.logs.filter((e) => e.kind === 'HIDDEN_ACCESS').at(-1)!.id }).ok);
+  assert.ok(steps().tracedHidden && !steps().firstTraceHidden);
+  assert.equal(steps().firewallAt, null);
+  assert.ok(sim.run(it.id, sim.code(it.id, 'SECURITY', 'FIREWALL'), 'SECURITY', 'FIREWALL', 'VIEW_STATUS').ok);
+  assert.equal(steps().firewallAt, 40, 'when, so the screen can tell it came after the second window');
+});
+
+test('tutorial: when the first trace is already "Unknown server activity", the hunt step is never shown', () => {
+  const sim = new Sim({}, 42, false);
+  const [it] = sim.byRole('IT_SPECIALIST');
+  const thief = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  sim.at(5);
+  assert.ok(sim.run(thief.id, sim.code(thief.id, 'HIDDEN_HOST', 'BLACKNET'), 'HIDDEN_HOST', 'BLACKNET', 'POST_MESSAGE', { text: 'hi' }).ok);
+  const hidden = sim.s.logs.filter((e) => e.kind === 'HIDDEN_ACCESS').at(-1)!;
+  assert.ok(sim.run(it.id, sim.code(it.id, 'SECURITY', 'MASTER_LOG'), 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: hidden.id }).ok);
+  const steps = (getPlayerView(sim.s, it.id).tutorial as Extract<TutorialView, { kind: 'IT' }>).steps;
+  assert.ok(steps.traced && steps.tracedHidden && steps.firstTraceHidden);
+});
+
+test('tutorial: a Bank Manager watches everything, each "all" view counting once there is something to see', () => {
+  const sim = new Sim({}, 42, false);
+  const [m] = sim.byRole('BANK_MANAGER');
+  const tv = () => getPlayerView(sim.s, m.id).tutorial as Extract<TutorialView, { kind: 'MANAGER' }>;
+  const run = (system: SystemId, module: string, fn: string, params: Record<string, string> = {}) => sim.run(m.id, sim.code(m.id, system, module), system, module, fn, params);
+  sim.at(5);
+  assert.ok(run('CLIENT_DATA', 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS').ok);
+  assert.ok(!tv().steps.customersAll, 'their own customers (none) is not all of them');
+  assert.ok(run('CLIENT_DATA', 'CUSTOMER_RECORDS', 'VIEW_CUSTOMERS', { show: 'ALL' }).ok);
+  assert.ok(tv().steps.customersAll);
+  // Viewing requests before the second one arrives is too early.
+  assert.ok(run('CLIENT_DATA', 'CLIENT_REQUESTS', 'VIEW_REQUESTS', { show: 'ALL' }).ok);
+  assert.equal(tv().requestsFrom, null);
+  sim.at(60); // every banker's first request is in
+  assert.ok(tv().requestsFrom !== null && tv().steps.requestsAllAt! < tv().requestsFrom!);
+  assert.ok(run('CLIENT_DATA', 'CLIENT_REQUESTS', 'VIEW_REQUESTS', { show: 'ALL' }).ok);
+  assert.ok(tv().steps.requestsAllAt! >= tv().requestsFrom!);
+  assert.ok(run('TRANSACTIONS', 'PAYMENT_QUEUE', 'VIEW_QUEUE', { show: 'ALL' }).ok);
+  assert.ok(tv().paymentsFrom !== null && tv().steps.paymentsAllAt! >= tv().paymentsFrom!);
+  assert.ok(run('SECURITY', 'MASTER_LOG', 'VIEW_LOG').ok);
+  assert.ok(run('SECURITY', 'MASTER_LOG', 'TRACE', { logId: sim.s.logs.find((e) => e.actor !== 'SYSTEM')!.id }).ok);
+  assert.ok(tv().steps.openedLog && tv().steps.traced);
+});
+
+test('heist checklist: only Thieves get it; personal tasks are their own, the heist is the crew\'s and stays ticked', () => {
+  const sim = new Sim({}, 42, false);
+  const thieves = Object.values(sim.s.players).filter((p) => p.allegiance === 'BLACK');
+  const regular = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE')!;
+  assert.equal(getPlayerView(sim.s, regular.id).heist, null, 'never sent to a regular employee');
+  const [a, b] = thieves;
+  const hv = (pid: string) => getPlayerView(sim.s, pid).heist!;
+  assert.equal(hv(a.id).goal, sim.s.config.blackTarget);
+  sim.at(5);
+  assert.ok(sim.run(a.id, sim.code(a.id, 'HIDDEN_HOST', 'BLACKNET'), 'HIDDEN_HOST', 'BLACKNET', 'POST_MESSAGE', { text: 'hi' }).ok);
+  assert.ok(sim.run(a.id, sim.code(a.id, 'HIDDEN_HOST', 'TARGET_LEDGER'), 'HIDDEN_HOST', 'TARGET_LEDGER', 'VIEW_TARGETS').ok);
+  assert.deepEqual(hv(a.id).tasks, { openedHost: true, posted: true, ledger: true, kit: false });
+  assert.ok(!hv(b.id).tasks.posted, "a crewmate's post is not yours");
+  // The heist, from the state of the bank: a mule on a customer's file, made primary, money in, the goal.
+  const cust = sim.s.customers[0];
+  const mule = sim.s.targets[0].account;
+  sim.s.customers[0].accounts.push(mule);
+  sim.at(6);
+  assert.ok(hv(b.id).progress.onFile && !hv(b.id).progress.primary, 'shared by the crew');
+  sim.s.customers[0].primary = mule;
+  sim.at(7);
+  assert.ok(hv(a.id).progress.primary);
+  fillLedger(sim);
+  sim.at(8);
+  assert.ok(hv(a.id).progress.earning && hv(a.id).progress.goalMet);
+  assert.equal(hv(a.id).stolen, sim.s.config.blackTarget);
+  // The bank claws it back: the steps stay ticked.
+  sim.s.customers[0].accounts = sim.s.customers[0].accounts.filter((x) => x !== mule);
+  sim.s.customers[0].primary = cust.primary;
+  sim.s.totals.stolen = 0;
+  sim.at(9);
+  assert.deepEqual(hv(a.id).progress, { onFile: true, primary: true, earning: true, goalMet: true });
+  assert.equal(hv(a.id).stolen, 0, 'the goal line shows the money as it is now');
+});
+
+test('modes: Noob is easier, Expert has no checklists, and an explicit setting wins over the mode', () => {
+  const make = (config: Partial<GameConfig>) => createGame({ seed: 1, players: PLAYERS, now: T0, config });
+  const normal = make({});
+  const noob = make({ mode: 'NOOB' });
+  const expert = make({ mode: 'EXPERT' });
+  assert.equal(normal.config.whiteTarget, 13_000_000 * PLAYERS.length);
+  assert.equal(noob.config.whiteTarget, 9_500_000 * PLAYERS.length);
+  assert.equal(noob.config.strikesToSuspend, 3);
+  assert.equal(make({ mode: 'NOOB', strikesToSuspend: 5 }).config.strikesToSuspend, 5);
+  assert.ok(Object.values(normal.players).every((p) => p.tutorial));
+  assert.ok(Object.values(expert.players).every((p) => !p.tutorial && !p.heistTasks));
+  assert.equal(expert.config.whiteTarget, normal.config.whiteTarget);
+  const thief = Object.values(expert.players).find((p) => p.allegiance === 'BLACK')!;
+  assert.equal(getPlayerView(expert, thief.id).heist, null);
+  assert.equal(getPlayerView(expert, thief.id).tutorial, null);
 });

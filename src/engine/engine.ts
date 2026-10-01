@@ -4,7 +4,8 @@
 import { CREDENTIAL_SHARING_ENABLED, findFn, findSystem, SYSTEMS } from './catalog';
 import { runAutomation, spawnNpc } from './bank';
 import { runAutopilot } from './autopilot';
-import { advanceRequests, scheduleRequest, spawnRequest } from './requests';
+import { advanceRequests, scheduleRequest, spawnFirstRequest, spawnRequest } from './requests';
+import { advanceTutorials, finishBankerTutorials, trackTutorial } from './tutorial';
 import {
   activeBlock,
   systemAddress,
@@ -50,15 +51,18 @@ export function advanceState(s: GameState, now: number): void {
   const endT = s.config.durationSec;
   const targetT = Math.min(Math.max(0, (now - s.startedAt) / 1000), endT);
 
-  // Scheduled arrivals (NPC payments, client requests), handled in time order. Their rate follows the time
-  // of day (pacing.ts): slow mornings, a lunch rush, a busy end of day, nothing new at close of business.
+  // Scheduled arrivals (NPC payments, bankers' first requests, client requests), handled in time order. Their rate
+  // follows the time of day (pacing.ts): slow mornings, a lunch rush, a busy end of day, nothing new at close of business.
+  const firsts = (s.firstRequests ??= []); // older saves have none
   while (s.status === 'RUNNING') {
     const nextNpc = Number.isFinite(s.nextNpcAt) ? s.nextNpcAt : nextArrival(endT, s.lastNpcAt, s.config.npcIntervalSec); // older saves have none
     const nextReq = Number.isFinite(s.nextRequestAt) ? s.nextRequestAt : Infinity; // JSON turns Infinity into null
-    const next = Math.min(nextNpc, nextReq);
+    const nextFirst = firsts.length ? firsts[0].at : Infinity;
+    const next = Math.min(nextNpc, nextReq, nextFirst);
     if (next > targetT) break;
     s.now = Math.max(s.now, s.startedAt + next * 1000);
-    if (next === nextNpc) {
+    if (next === nextFirst) spawnFirstRequest(s, firsts.shift()!.bankerId);
+    else if (next === nextNpc) {
       s.lastNpcAt = nextNpc;
       s.nextNpcAt = nextArrival(endT, nextNpc, s.config.npcIntervalSec);
       spawnNpc(s);
@@ -77,6 +81,7 @@ export function advanceState(s: GameState, now: number): void {
   advanceUnlocks(s);
   advanceRequests(s);
   runAutomation(s);
+  advanceTutorials(s); // after automation: what is left waiting is left for people
   runAutopilot(s, execute);
   checkWin(s);
   if (s.status === 'RUNNING' && targetT >= endT) closeOfBusiness(s);
@@ -107,6 +112,8 @@ export function applyAction(state: GameState, action: Action, now: number): { st
   switch (action.type) {
     case 'EXECUTE':
       result = execute(s, p, action);
+      trackTutorial(s, p, action, result.ok);
+      finishBankerTutorials(s); // a settlement by hand finishes a banker's at once
       break;
     case 'SHARE_CREDENTIAL':
       result = shareCredential(s, p, action.credentialId, action.toPlayerId);
@@ -181,20 +188,30 @@ function workstationBlocked(s: GameState, p: Player, toHiddenHost = false): stri
   return `Your workstation is blocked by the firewall ${blockText(s, b)}.`;
 }
 
+/** What the player typed into an action, the code included, for the dev-only `typed` on a failure's activity entry. */
+function typedOf(a: ExecuteAction): Record<string, string> {
+  return { ...a.params, code: a.code ?? '' };
+}
+
 function execute(s: GameState, p: Player, a: ExecuteAction): ActionResult {
   const t = gameTime(s);
-  // A terminated employee keeps nothing but the unregistered host.
-  if (p.terminated && a.system !== 'HIDDEN_HOST') return fail(TERMINATED_TEXT);
-  const blocked = workstationBlocked(s, p, a.system === 'HIDDEN_HOST');
-  if (blocked) return fail(blocked);
-  if (p.lockedUntil > t) {
-    return fail(`Workstation locked for ${Math.ceil(p.lockedUntil - t)}s after repeated failed attempts.`);
-  }
   const def = findFn(a.system, a.module, a.fn);
+  // A failure before access is settled still goes in the activity log (a monitor's quiet refresh aside).
+  const failed = (message: string): ActionResult => {
+    if (!a.quiet) note(p, t, `FAILED: ${def?.label ?? a.fn} on ${targetLabel(a.system, a.module)} - ${message}`, typedOf(a));
+    return fail(message);
+  };
+  // A terminated employee keeps nothing but the unregistered host.
+  if (p.terminated && a.system !== 'HIDDEN_HOST') return failed(TERMINATED_TEXT);
+  const blocked = workstationBlocked(s, p, a.system === 'HIDDEN_HOST');
+  if (blocked) return failed(blocked);
+  if (p.lockedUntil > t) {
+    return failed(`Workstation locked for ${Math.ceil(p.lockedUntil - t)}s after repeated failed attempts.`);
+  }
   const handler = HANDLERS[`${a.system}.${a.module}.${a.fn}`];
-  if (!def || !handler) return fail('Unknown system, module or function.');
+  if (!def || !handler) return failed('Unknown system, module or function.');
   const address = systemAddress(s, a.system);
-  if (activeBlock(s, address)) return fail('No route to host (blocked by the firewall).');
+  if (activeBlock(s, address)) return failed('No route to host (blocked by the firewall).');
   if (!a.quiet) markActive(s, p, t);
   const code = (a.code ?? '').trim();
   const label = targetLabel(a.system, a.module);
@@ -203,7 +220,7 @@ function execute(s: GameState, p: Player, a: ExecuteAction): ActionResult {
 
   // Security switched off: no code needed, and the records say "Anonymous".
   if (mod.open && code === '') return run(s, p, a, def, handler, label, openCredential(s, a), anonymous(p), true);
-  if (!/^\d{4}$/.test(code)) return fail('Enter a 4-digit code.');
+  if (!/^\d{4}$/.test(code)) return failed('Enter a 4-digit code.');
   const cred = findCredentialByCode(s, code);
 
   // One deliberately uninformative reply for: unknown code / revoked code / code without the right scope.
@@ -214,7 +231,7 @@ function execute(s: GameState, p: Player, a: ExecuteAction): ActionResult {
       const entry = addLog(s, { actor, kind, message, sourceIp: effectiveIp(s, p, t), actualPlayerId: p.id });
       addAlert(s, kind, message, entry.id);
     }
-    note(p, t, `FAILED (${reason}): code ${code} on ${where}`);
+    note(p, t, `FAILED (${reason}): code ${code} on ${where}`, typedOf(a));
     registerFailure(s, p);
     return fail('Access denied.');
   };
@@ -262,7 +279,10 @@ function run(
   const t = gameTime(s);
   const where = `${a.system}.${a.module}.${a.fn}`;
   const mod = s.modules[keyOf(a.system, a.module)];
-  if (mod.status === 'OFFLINE') return fail(`${label} is offline.`);
+  if (mod.status === 'OFFLINE') {
+    if (!a.quiet) note(p, t, `FAILED: ${def.label} on ${label} - ${label} is offline.`, typedOf(a));
+    return fail(`${label} is offline.`);
+  }
 
   const given = a.encCodes ?? [];
   const missing = mod.encryption.filter((layer) => !given.includes(layer));
@@ -270,7 +290,7 @@ function run(
     const message = `${owner.name} failed to decrypt ${label}`;
     const entry = addLog(s, { actor: owner.id, kind: 'DECRYPT_FAIL', message, sourceIp: effectiveIp(s, p, t), actualPlayerId: p.id });
     addAlert(s, 'DECRYPT_FAIL', message, entry.id);
-    note(p, t, `FAILED (missing layer codes): ${where}`);
+    note(p, t, `FAILED (missing layer codes): ${where}`, typedOf(a));
     registerFailure(s, p);
     const n = mod.encryption.length;
     return fail(`Module is encrypted (${n} layer${n > 1 ? 's' : ''}). Supply every layer code.`);
@@ -302,7 +322,7 @@ function run(
       const message = `${owner.name} failed a decryption attempt on ${label}`;
       const entry = addLog(s, { actor: owner.id, kind: 'DECRYPT_FAIL', message, sourceIp: effectiveIp(s, p, t), actualPlayerId: p.id });
       addAlert(s, 'DECRYPT_FAIL', message, entry.id);
-      note(p, t, `FAILED (${reason}): ${where}`);
+      note(p, t, `FAILED (${reason}): ${where}`, typedOf(a));
       registerFailure(s, p);
     },
   };
@@ -321,7 +341,7 @@ function run(
   }
 
   const via = open ? 'open access (no code)' : owner.id === p.id ? `your credential ${cred.id}` : `${owner.name}'s credential ${cred.id}`;
-  note(p, t, `${res.ok ? 'OK' : 'FAILED'}: ${def.label} on ${label} using ${via}${res.ok ? '' : ' - ' + res.message}`);
+  note(p, t, `${res.ok ? 'OK' : 'FAILED'}: ${def.label} on ${label} using ${via}${res.ok ? '' : ' - ' + res.message}`, res.ok ? undefined : typedOf(a));
   return { ok: res.ok, message: res.message, lines: res.lines, data: res.data };
 }
 

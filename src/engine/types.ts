@@ -1,6 +1,7 @@
 // Core data model. Everything here is plain JSON so it can be stored in Firestore later.
 
 import type { PageData } from './perception';
+import type { HeistProgress, HeistTasks, TutorialState } from './tutorial';
 
 export type PlayerId = string;
 export type Allegiance = 'WHITE' | 'BLACK';
@@ -20,7 +21,11 @@ export type TxStatus =
   | 'REVERSED';
 export type RiskResult = 'LOW' | 'MEDIUM' | 'HIGH';
 
+/** How hard the game is: Noob for new players, Normal, Expert (no tutorial checklists). See MODES in catalog.ts. */
+export type GameMode = 'NOOB' | 'NORMAL' | 'EXPERT';
+
 export interface GameConfig {
+  mode: GameMode; // its preset settings apply under any setting the game's config sets explicitly
   durationSec: number; // game length
   // Scaling with the table (see scaledConfig in setup.ts). The four derived values below are computed
   // from these at game creation unless the game's config sets them explicitly.
@@ -49,8 +54,10 @@ export interface GameConfig {
   automation: Automation; // the payment stages' automation at the start of the game (players change it in play)
   requestIntervalSec: number; // derived: one client request (bank-wide) every N seconds
   requestChangeShare: number; // share of requests that ask for an account change instead of a payment (0..1)
+  requestTagShare: number; // share of payment requests that give the payee's customer tag ("Keystone Plumbing (CU7)") (0..1)
   requestDeadlineSec: number; // a request expires if what it asks for has not happened within this
   urgentDeadlineSec: number; // ...or this, for an urgent payment request
+  firstRequestDeadlineSec: number; // ...or this, for a Personal Banker's gentle first request
   urgentShare: number; // share of payment requests that are urgent (0..1)
   strikesToSuspend: number; // expired requests before a customer stops doing business for the day
   phishPerBankerMin: number; // each Personal Banker gets this many phishing messages per game...
@@ -264,6 +271,7 @@ export interface ClientRequest {
   originAccount: string | null; // PAYMENT: which of their accounts to pay from
   account: string | null; // account requests: the account to add / make primary / remove
   urgent: boolean; // shorter deadline (urgentDeadlineSec)
+  first?: boolean; // the banker's gentle first request of the game: no rush (firstRequestDeadlineSec)
   dueAt: number; // game seconds: if what was asked has not happened by then, the request expires
   remindAt: number; // game seconds: halfway to the deadline, the customer chases it
   reminders: { t: number; text: string }[]; // follow-ups on the same request, oldest first
@@ -341,6 +349,8 @@ export interface Notice {
   id: string;
   t: number;
   page: string; // module label, e.g. "Firewall"
+  system: string; // the page it is about, so clicking the pop-up can open it
+  module: string;
   text: string;
 }
 
@@ -358,6 +368,8 @@ export type EndKind = 'CLOSE_OF_BUSINESS' | 'THIEVES_TERMINATED' | 'HOST_SHUT_DO
 export interface ActivityEntry {
   t: number;
   text: string;
+  /** Dev only (playtest review): what was typed on a failed action, the code included. Never in a view. */
+  typed?: Record<string, string>;
 }
 
 export interface Player {
@@ -386,6 +398,10 @@ export interface Player {
   /** Disabled for good: every bank credential revoked, or the workstation's IP revoked. Keeps the hidden host only. */
   terminated: { t: number; reason: TerminationReason } | null;
   fake?: boolean; // planted by a Thief (Infiltration): a record in Employee Records, not a real seat
+  /** Every role: their job's tutorial checklist (tutorial.ts). */
+  tutorial?: TutorialState;
+  /** Thieves: their personal heist tasks (tutorial.ts). */
+  heistTasks?: HeistTasks;
   bot?: boolean; // a scripted seat in a test scenario (autopilot.ts)
 }
 
@@ -446,6 +462,8 @@ export interface GameState {
   revocations: Revocation[];
   nextRequestAt: number; // game seconds: when the next client request arrives (scheduleRequest in requests.ts)
   phishSchedule: { at: number; bankerId: PlayerId }[]; // phishing messages still to arrive, soonest first
+  firstRequests: { at: number; bankerId: PlayerId }[]; // Personal Bankers' gentle first requests still to arrive, soonest first
+  heistProgress?: HeistProgress; // the Thieves' shared checklist: the steps of the heist reached so far (tutorial.ts)
   transactions: Transaction[];
   /**
    * Every account that exists, with its balance: customer accounts, Target Ledger (mule) accounts, player

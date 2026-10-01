@@ -1,6 +1,9 @@
 /* Custom settings form (settings.ts): used in the sandbox's yellow bar and on the host's lobby page. */
 .cfg { font-size: 13px; }
 .cfg-toggle.on { font-weight: 700; }
+/* The game mode sits next to the Custom settings button, always on show. */
+.cfg .cfg-mode { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; margin-right: 8px; color: inherit; font-size: 13px; }
+#dev .cfg .cfg-mode { display: inline-flex; flex-direction: row; align-items: center; }
 .cfg-panel { margin-top: 8px; padding: 10px 12px; background: #fff; color: #1a2233; border: 1px solid #c6cdd8; border-radius: 6px; max-height: min(70vh, 620px); overflow: auto; text-align: left; }
 .cfg fieldset { border: 1px solid #dde2ea; border-radius: 6px; margin: 0 0 10px; padding: 6px 10px 8px; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 14px; }
 .cfg legend { font-weight: 700; padding: 0 4px; }
