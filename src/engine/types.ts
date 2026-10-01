@@ -1,5 +1,7 @@
 // Core data model. Everything here is plain JSON so it can be stored in Firestore later.
 
+import type { PageData } from './perception';
+
 export type PlayerId = string;
 export type Allegiance = 'WHITE' | 'BLACK';
 export type Winner = Allegiance;
@@ -521,4 +523,6 @@ export interface ActionResult {
   lines?: string[];
   workstation?: PlayerId; // CONNECT: the address belongs to this player's workstation
   proxy?: { ip: string; relaying: boolean }; // CONNECT: the address is an Infiltration proxy (and whether a reroute runs through it now)
+  /** Bank views: what the lines show, as data (perception.ts). For bots on the host; never sent over the network. */
+  data?: PageData;
 }

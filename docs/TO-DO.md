@@ -33,3 +33,9 @@ a way to tap into the chat feed without knowing server ip?
 
 look at "all in" vs "trickle" strategies. Balanced?
 Big score can dwarf thief goals. ie. one big $8m score is 2+x the $3m target at 3 thieves
+
+
+Settlement: reject transaction?
+
+
+Hacker: modify a transaction in transit?

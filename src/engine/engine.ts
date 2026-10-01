@@ -311,7 +311,7 @@ function run(
   const monitorKey = `${a.system}.${a.module}.${a.fn}`;
   const quiet = a.quiet && def.permission === 'READ' && p.monitoring.includes(monitorKey);
   const res = handler(ctx, a.params ?? {});
-  if (quiet && res.ok) return { ok: true, message: res.message, lines: res.lines };
+  if (quiet && res.ok) return { ok: true, message: res.message, lines: res.lines, data: res.data };
   if (res.ok && def.permission === 'READ' && !p.monitoring.includes(monitorKey)) p.monitoring.push(monitorKey);
   if (res.ok && !st.logged) st.logged = writeAccessLog(res.logDetail);
   if (res.ok && hidden && st.logged) st.logged.leak ??= blacknetLeak(s, a.fn);
@@ -322,7 +322,7 @@ function run(
 
   const via = open ? 'open access (no code)' : owner.id === p.id ? `your credential ${cred.id}` : `${owner.name}'s credential ${cred.id}`;
   note(p, t, `${res.ok ? 'OK' : 'FAILED'}: ${def.label} on ${label} using ${via}${res.ok ? '' : ' - ' + res.message}`);
-  return { ok: res.ok, message: res.message, lines: res.lines };
+  return { ok: res.ok, message: res.message, lines: res.lines, data: res.data };
 }
 
 function shareCredential(s: GameState, p: Player, credentialId: string, toId: string): ActionResult {

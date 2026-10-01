@@ -65,6 +65,13 @@ alert that points at the entry without containing the leak; the trace reveals mo
 Adding a kit tool touches: catalog `fns`, a handler that calls `raiseExposure`, `HIDDEN_ACTIVITY` wording
 in engine.ts, and a `MODULE_PAGES` entry in the sandbox.
 
+**Bot perception (bot mode, docs/BotMode.md; not playable yet).** Every bank READ handler also returns
+`data` (`PageData`, perception.ts): the same rows as its lines, as data, with names as the records show them
+and no ground truth. Bots must read the bank only through it (senses.ts `look`, which opens the page with
+the bot's own code) plus their own PlayerView. When you change a bank view's text, change its data too;
+perception.test.ts checks them against each other for every seat. The SOLO bots in autopilot.ts still read
+raw state and are due to be replaced.
+
 **Game screen and sandbox (`src/sandbox/main.ts`).** The yellow bar at the top is dev tooling (seat switcher, speed,
 player count, seed, Ground truth); everything below it is the player's screen. Module pages come from
 the `MODULE_PAGES` registry (`commands` renders cards, `run` executes). The unregistered host's windows
@@ -99,6 +106,8 @@ release and never mentioned in player-facing text.
 ## Docs
 
 - `docs/RULES.md`: the rules as implemented. Update it whenever behaviour changes.
+- `docs/BotMode.md`: the design spec for bot mode (bots as the bank, humans as Thieves; single player).
+  Not built yet; keep it in step with rule changes that touch what bots would see or do.
 - `docs/BACKLOG.md`: the single source of truth for agreed-but-unbuilt, deferred and rejected work.
   Move items out when they ship.
 - `docs/TO-DO.md` is the designer's own notes: leave it alone.

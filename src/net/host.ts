@@ -126,7 +126,8 @@ export class HostSession {
     // The answer, the action's removal and the new views go out in one write, so they arrive together.
     const updates = this.viewUpdates();
     updates[`actions/${key}`] = null;
-    if (uid) updates[`results/${uid}/${key}`] = JSON.stringify(result);
+    // Page data is for bots on the host: a player's screen has the same thing as text.
+    if (uid) updates[`results/${uid}/${key}`] = JSON.stringify({ ...result, data: undefined });
     void this.db.update(roomPath(this.code), updates);
   }
 

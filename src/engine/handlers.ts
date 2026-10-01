@@ -39,6 +39,8 @@ import type { TxActor } from './bank';
 import { accountRequestText, paymentRequestText, requestReceived, requestTimes } from './requests';
 import { notify } from './notify';
 import { thiefTargetMet } from './ending';
+import { parseTrace } from './perception';
+import type { AutomationFact, ChangeRow, CustomerRow, PageData, PaymentRow, RequestRow } from './perception';
 import type { AccountChange, ClientRequest, CodeCrack, Credential, Customer, Message, RequestKind, Revocation, GameState, LogEntry, Player, RoleId, SystemId, Transaction, TxEvent, TxStatus, WorkstationUnlock } from './types';
 
 export interface Ctx {
@@ -60,12 +62,16 @@ export interface HandlerResult {
   message: string;
   lines?: string[];
   logDetail?: string;
+  /** Bank views: what the lines show, as data (perception.ts). */
+  data?: PageData;
 }
 type Params = Record<string, string>;
 export type Handler = (c: Ctx, q: Params) => HandlerResult;
 
 const good = (message: string, lines?: string[], logDetail?: string): HandlerResult => ({ ok: true, message, lines, logDetail });
 const bad = (message: string): HandlerResult => ({ ok: false, message });
+/** A view's result with its data. */
+const page = (message: string, lines: string[] | undefined, data: PageData, logDetail?: string): HandlerResult => ({ ok: true, message, lines, data, logDetail });
 const str = (q: Params, k: string): string => (q[k] ?? '').trim();
 const clampInt = (v: string | undefined, def: number, min: number, max: number): number => {
   const n = Number(v);
@@ -143,25 +149,38 @@ H['SECURITY.FIREWALL.BYPASS_ENCRYPTION'] = (c, q) => {
 
 /** Every bank module (online or offline, security on or off), active blocks, and pending revocations. */
 H['SECURITY.FIREWALL.VIEW_STATUS'] = (c) => {
-  const rows = SYSTEMS.filter((sys) => !sys.hidden && c.actor.knownSystems.includes(sys.id)).flatMap((sys) =>
+  const known = SYSTEMS.filter((sys) => !sys.hidden && c.actor.knownSystems.includes(sys.id));
+  const modules = known.flatMap((sys) =>
+    sys.modules.map((m) => {
+      const st = c.s.modules[keyOf(sys.id, m.id)];
+      return { system: sys.id, module: m.id, online: st.status !== 'OFFLINE', securityOn: !st.open };
+    }),
+  );
+  const rows = known.flatMap((sys) =>
     sys.modules.map((m) => {
       const st = c.s.modules[keyOf(sys.id, m.id)];
       const layers = ENCRYPTION_ENABLED && st.encryption.length ? `  ${st.encryption.length} encryption layer${st.encryption.length > 1 ? 's' : ''}` : '';
       return `${`${sys.label} / ${m.label}`.padEnd(46)} ${st.status.padEnd(8)}${st.open ? 'SECURITY OFF' : 'security on'}${layers}`;
     }),
   );
-  const blocks = c.s.blocks
-    .filter((b) => activeBlock(c.s, b.address) === b)
-    .map((b) => `BLOCKED  ${b.address.padEnd(12)} ${blockText(c.s, b)}  by ${nameOf(c.s, b.byOwner)}`);
-  const pending = c.s.revocations
-    .filter((r) => r.status === 'PENDING')
-    .map((r) => `PENDING  ${r.id}  revoke all access for ${r.address} in ${Math.ceil(r.executeAt - c.t)}s  (started by ${nameOf(c.s, r.byOwner)}; cancel from the Firewall)`);
+  const activeBlocks = c.s.blocks.filter((b) => activeBlock(c.s, b.address) === b);
+  const blocks = activeBlocks.map((b) => `BLOCKED  ${b.address.padEnd(12)} ${blockText(c.s, b)}  by ${nameOf(c.s, b.byOwner)}`);
+  const pendingRevs = c.s.revocations.filter((r) => r.status === 'PENDING');
+  const pending = pendingRevs.map(
+    (r) => `PENDING  ${r.id}  revoke all access for ${r.address} in ${Math.ceil(r.executeAt - c.t)}s  (started by ${nameOf(c.s, r.byOwner)}; cancel from the Firewall)`,
+  );
+  const data: PageData = {
+    page: 'FIREWALL',
+    modules,
+    revocations: pendingRevs.map((r) => ({ id: r.id, address: r.address, inSec: Math.ceil(r.executeAt - c.t), startedBy: nameOf(c.s, r.byOwner) })),
+    blocks: activeBlocks.map((b) => ({ address: b.address, sec: b.until === null ? -1 : Math.ceil(b.until - c.t), by: nameOf(c.s, b.byOwner) })),
+  };
   const offline = rows.filter((r) => r.includes('OFFLINE')).length;
   const open = rows.filter((r) => r.includes('SECURITY OFF')).length;
   const summary = [offline ? `${offline} offline` : 'everything online', open ? `${open} with security off` : '', blocks.length ? `${blocks.length} blocked` : '', pending.length ? `${pending.length} revocation pending` : '']
     .filter(Boolean)
     .join(', ');
-  return good(`Firewall: ${summary}.`, [...rows, ...pending, ...blocks]);
+  return page(`Firewall: ${summary}.`, [...rows, ...pending, ...blocks], data);
 };
 
 /** A network address: a workstation IP or a system address. */
@@ -267,15 +286,17 @@ H['SECURITY.MASTER_LOG.VIEW_LOG'] = (c, q) => {
   const limit = clampInt(q.limit, 25, 1, 200);
   const show = str(q, 'show') || 'PLAYERS';
   if (show === 'ALERTS') {
-    const rows = c.s.alerts
-      .slice(-limit)
-      .map((a) => `[${fmtClock(a.t)}] ${a.id.padEnd(5)} ${a.kind}: ${a.message}${a.logId ? ` (log ${a.logId})` : ''}`);
-    return good(`Master Log alerts: ${rows.length}.`, rows.length ? rows : ['No alerts.']);
+    const alerts = c.s.alerts.slice(-limit);
+    const rows = alerts.map((a) => `[${fmtClock(a.t)}] ${a.id.padEnd(5)} ${a.kind}: ${a.message}${a.logId ? ` (log ${a.logId})` : ''}`);
+    const data: PageData = { page: 'ALERTS', rows: alerts.map((a) => ({ id: a.id, t: a.t, kind: a.kind, message: a.message, logId: a.logId })) };
+    return page(`Master Log alerts: ${rows.length}.`, rows.length ? rows : ['No alerts.'], data);
   }
   // Wiped entries (Cleanup / Log wiper) drop out here, leaving a visible gap in the ids; a Trace can still reach them.
-  const entries = (show === 'ALL' ? c.s.logs : c.s.logs.filter((e) => e.actor !== 'SYSTEM')).filter((e) => !e.deleted);
-  const rows = entries.slice(-limit).map((e) => `[${fmtClock(e.t)}] ${e.id.padEnd(5)} ${e.message}`);
-  return good(`Master Log: ${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}.`, rows);
+  const entries = (show === 'ALL' ? c.s.logs : c.s.logs.filter((e) => e.actor !== 'SYSTEM')).filter((e) => !e.deleted).slice(-limit);
+  const rows = entries.map((e) => `[${fmtClock(e.t)}] ${e.id.padEnd(5)} ${e.message}`);
+  const by = (actor: string): string | null => (actor === 'SYSTEM' || actor === 'UNKNOWN' ? null : nameOf(c.s, actor));
+  const data: PageData = { page: 'LOG', rows: entries.map((e) => ({ id: e.id, t: e.t, message: e.message, by: by(e.actor) })) };
+  return page(`Master Log: ${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}.`, rows, data);
 };
 
 H['SECURITY.EMPLOYEE_RECORDS.RESET_LOCKOUT'] = (c, q) => {
@@ -295,6 +316,23 @@ const ipKey = (ip: string): number => ip.split('.').reduce((n, part) => n * 256 
 H['SECURITY.EMPLOYEE_RECORDS.VIEW_EMPLOYEES'] = (c) => {
   // In address order, so a planted user sits wherever their address falls rather than at the end.
   const order = [...c.s.playerOrder].sort((a, b) => ipKey(c.s.players[a].ip) - ipKey(c.s.players[b].ip));
+  const data: PageData = {
+    page: 'EMPLOYEES',
+    rows: order.map((id) => {
+      const p = c.s.players[id];
+      const b = activeBlock(c.s, p.ip);
+      return {
+        name: p.name,
+        role: ROLES[p.role].label,
+        ip: p.ip,
+        terminated: p.terminated ? { t: p.terminated.t, resigned: p.terminated.reason === 'RESIGNED' } : null,
+        lockedSec: p.lockedUntil > c.t ? Math.ceil(p.lockedUntil - c.t) : 0,
+        blockedSec: b ? (b.until === null ? -1 : Math.ceil(b.until - c.t)) : 0,
+        lastActive: p.lastActiveAt,
+        failedAttempts: p.failTotal,
+      };
+    }),
+  };
   const rows = order.flatMap((id) => {
     const p = c.s.players[id];
     const active = p.lastActiveAt === null ? 'never' : `${fmtClock(p.lastActiveAt)} (${ago(c, p.lastActiveAt)})`;
@@ -308,7 +346,7 @@ H['SECURITY.EMPLOYEE_RECORDS.VIEW_EMPLOYEES'] = (c) => {
       `           last activity: ${active}   failed attempts: ${p.failTotal}`,
     ];
   });
-  return good('Employee Records:', rows);
+  return page('Employee Records:', rows, data);
 };
 
 /**
@@ -385,16 +423,17 @@ H['SECURITY.MASTER_LOG.TRACE'] = (c, q) => {
   if (wait > 0) return bad(`Trace engine cooling down (${Math.ceil(wait)}s).`);
   if (c.t - e.t > c.s.config.traceMaxAgeSec) return bad('That entry is too old to trace.');
   c.actor.lastTraceAt = c.t;
-  if (!e.sourceIp) return good(`Trace ${e.id}: system event, no workstation origin.`, undefined, `ran a trace on ${e.id}`);
+  const traced = (message: string): HandlerResult => page(message, undefined, { page: 'TRACE', logId: e.id, clue: parseTrace(message) }, `ran a trace on ${e.id}`);
+  if (!e.sourceIp) return traced(`Trace ${e.id}: system event, no workstation origin.`);
   // Hidden host traffic is relayed. What a trace returns escalates with the action's exposure tier.
   if (e.kind === 'HIDDEN_ACCESS') {
     e.clue ??= exposureClue(c.s, e); // tracing it again gives the same clue
     const clue = e.clue + (e.leak ? ` ${e.leak}` : '');
     // The host notices: operatives see who traced it and what the bank learned.
     addHostLog(c.s, `Relay entry ${e.id} was traced by ${c.owner.name}. The bank learned: ${clue}`, true);
-    return good(`Trace ${e.id}: routed through a relay. ${clue}`, undefined, `ran a trace on ${e.id}`);
+    return traced(`Trace ${e.id}: routed through a relay. ${clue}`);
   }
-  return good(`Trace ${e.id}: origin workstation ${e.sourceIp}`, undefined, `ran a trace on ${e.id}`);
+  return traced(`Trace ${e.id}: origin workstation ${e.sourceIp}`);
 };
 
 // ---- Client Data ------------------------------------------------------------
@@ -432,6 +471,27 @@ function requestLines(c: Ctx, r: ClientRequest): string[] {
     lines.push(`        (archived earlier${r.closedBy ? ` by ${nameOf(c.s, r.closedBy)}` : ''}: "${r.archiveReason}"; reopened by the follow-up)`);
   }
   return lines;
+}
+
+/** The same request as data: only what requestLines shows. */
+function requestRow(c: Ctx, r: ClientRequest): RequestRow {
+  const cust = c.s.customers.find((x) => x.id === r.customerId);
+  return {
+    id: r.id,
+    t: r.t,
+    from: r.sender ?? cust?.name ?? '?',
+    to: r.bankerId ? nameOf(c.s, r.bankerId) : 'nobody',
+    status: r.status,
+    closedBy: r.status !== 'OPEN' && r.status !== 'EXPIRED' && r.closedBy ? nameOf(c.s, r.closedBy) : null,
+    txId: r.status === 'DONE' ? r.txId : null,
+    archiveReason: r.status === 'ARCHIVED' || (r.status === 'OPEN' && r.archiveReason) ? r.archiveReason : null,
+    urgent: r.urgent,
+    dueInSec: r.outcome === null && !r.phish ? Math.max(0, Math.ceil(r.dueAt - c.t)) : null,
+    reminder: r.reminders.length > 0 && r.status === 'OPEN',
+    reopened: r.status === 'OPEN' && !!r.archiveReason,
+    text: r.text,
+    followUps: r.reminders.map((m) => ({ t: m.t, text: m.text })),
+  };
 }
 
 /** Optional request id to link to an action: null if blank, the open request of the right kind, or an error. */
@@ -472,7 +532,8 @@ H['CLIENT_DATA.CLIENT_REQUESTS.VIEW_REQUESTS'] = (c, q) => {
   const whose = seesAllRequests(c) ? 'All client requests' : `Client requests for ${c.owner.name}`;
   const lines = rows.flatMap((r) => requestLines(c, r));
   const n = rows.length;
-  return good(`${whose} (${all ? 'all' : 'open'}): ${n} request${n === 1 ? '' : 's'}.`, n ? lines : ['Nothing here.']);
+  const data: PageData = { page: 'REQUESTS', all, rows: rows.map((r) => requestRow(c, r)) };
+  return page(`${whose} (${all ? 'all' : 'open'}): ${n} request${n === 1 ? '' : 's'}.`, n ? lines : ['Nothing here.'], data);
 };
 
 H['CLIENT_DATA.CLIENT_REQUESTS.ARCHIVE_REQUEST'] = (c, q) => {
@@ -503,19 +564,39 @@ export const isSecurityWrite = (cr: Credential): boolean =>
 
 H['SECURITY.PERMISSIONS.VIEW_PERMISSIONS'] = (c, q) => {
   const all = str(q, 'show') === 'ALL';
-  const rows = Object.values(c.s.credentials)
+  const creds = Object.values(c.s.credentials)
     // The unregistered host is not part of the bank: its credentials never appear here. Nor do workstation
     // logins: an unlocked one shows only as a gap in the C ids (and can still be revoked by id).
     .filter((cr) => cr.system !== 'HIDDEN_HOST' && cr.system !== 'WORKSTATION')
-    .filter((cr) => all || cr.status === 'ACTIVE')
-    .map((cr) => {
-      const by = cr.issuedBy === null ? 'start of shift' : nameOf(c.s, cr.issuedBy);
-      return `${cr.id.padEnd(4)} ${nameOf(c.s, cr.owner).padEnd(10)} ${scopeLabel(cr).padEnd(44)} ${cr.status.padEnd(8)} issued: ${by}`;
-    });
-  const pending = Object.values(c.s.credentials)
-    .filter((cr) => cr.pendingRevoke && cr.status === 'ACTIVE')
-    .map((cr) => `PENDING  revoke ${cr.id} (${nameOf(c.s, cr.owner)}, ${scopeLabel(cr)}) in ${Math.ceil(cr.pendingRevoke!.at - c.t)}s  (started by ${nameOf(c.s, cr.pendingRevoke!.byOwner)}; cancel from Permissions)`);
-  return good(`Permissions registry (${all ? 'all' : 'active'}, codes hidden): ${rows.length}${pending.length ? `, ${pending.length} revocation pending` : ''}.`, [...pending, ...rows]);
+    .filter((cr) => all || cr.status === 'ACTIVE');
+  const rows = creds.map((cr) => {
+    const by = cr.issuedBy === null ? 'start of shift' : nameOf(c.s, cr.issuedBy);
+    return `${cr.id.padEnd(4)} ${nameOf(c.s, cr.owner).padEnd(10)} ${scopeLabel(cr).padEnd(44)} ${cr.status.padEnd(8)} issued: ${by}`;
+  });
+  const pendingCreds = Object.values(c.s.credentials).filter((cr) => cr.pendingRevoke && cr.status === 'ACTIVE');
+  const pending = pendingCreds.map(
+    (cr) => `PENDING  revoke ${cr.id} (${nameOf(c.s, cr.owner)}, ${scopeLabel(cr)}) in ${Math.ceil(cr.pendingRevoke!.at - c.t)}s  (started by ${nameOf(c.s, cr.pendingRevoke!.byOwner)}; cancel from Permissions)`,
+  );
+  const data: PageData = {
+    page: 'CREDENTIALS',
+    pending: pendingCreds.map((cr) => ({
+      credentialId: cr.id,
+      owner: nameOf(c.s, cr.owner),
+      inSec: Math.ceil(cr.pendingRevoke!.at - c.t),
+      startedBy: nameOf(c.s, cr.pendingRevoke!.byOwner),
+    })),
+    rows: creds.map((cr) => ({
+      id: cr.id,
+      owner: nameOf(c.s, cr.owner),
+      system: cr.system,
+      module: cr.module,
+      fn: cr.fn,
+      permission: cr.permission,
+      status: cr.status,
+      issuedBy: cr.issuedBy === null ? null : nameOf(c.s, cr.issuedBy),
+    })),
+  };
+  return page(`Permissions registry (${all ? 'all' : 'active'}, codes hidden): ${rows.length}${pending.length ? `, ${pending.length} revocation pending` : ''}.`, [...pending, ...rows], data);
 };
 
 H['SECURITY.PERMISSIONS.CREATE_CREDENTIAL'] = (c, q) => {
@@ -591,6 +672,18 @@ const seesAllCustomers = (c: Ctx): boolean => !ownCustomersOnly(c);
 
 const accountText = (c: Ctx, x: Customer, a: string): string => `${a} ${money(balanceOf(c.s, a))}${accountVerified(x, a) ? '' : ' (unverified)'}`;
 
+function customerRow(c: Ctx, x: Customer): CustomerRow {
+  const fact = (a: string) => ({ account: a, balance: balanceOf(c.s, a), verified: accountVerified(x, a) });
+  return {
+    id: x.id,
+    name: x.name,
+    banker: x.bankerId ? nameOf(c.s, x.bankerId) : null,
+    suspended: x.suspended,
+    primary: fact(x.primary),
+    others: x.accounts.filter((a) => a !== x.primary).map(fact),
+  };
+}
+
 function customerLines(c: Ctx, x: Customer): string[] {
   const others = x.accounts.filter((a) => a !== x.primary);
   return [
@@ -643,9 +736,10 @@ H['CLIENT_DATA.CUSTOMER_RECORDS.VIEW_CUSTOMERS'] = (c, q) => {
   const show = str(q, 'show').toUpperCase();
   const all = show === 'ALL' || (show !== 'MINE' && c.owner.role !== 'PERSONAL_BANKER');
   const rows = c.s.customers.filter((x) => all || x.bankerId === c.owner.id);
-  if (!all && !rows.length) return good('You have no customers assigned to you.');
+  const data: PageData = { page: 'CUSTOMERS', rows: rows.map((x) => customerRow(c, x)) };
+  if (!all && !rows.length) return page('You have no customers assigned to you.', undefined, data);
   const title = all ? 'Customer Records (all customers)' : `Customer Records: customers of ${c.owner.name}`;
-  return good(`${title}: ${rows.length}.`, rows.length ? rows.flatMap((x) => customerLines(c, x)) : ['Nothing here.']);
+  return page(`${title}: ${rows.length}.`, rows.length ? rows.flatMap((x) => customerLines(c, x)) : ['Nothing here.'], data);
 };
 
 H['CLIENT_DATA.CUSTOMER_RECORDS.ADD_ACCOUNT'] = (c, q) => {
@@ -711,6 +805,23 @@ H['CLIENT_DATA.CUSTOMER_RECORDS.REMOVE_ACCOUNT'] = (c, q) => {
 
 const allChanges = (s: GameState): AccountChange[] => s.customers.flatMap((x) => x.history).sort((a, b) => a.t - b.t || Number(a.id.slice(3)) - Number(b.id.slice(3)));
 
+function changeRow(c: Ctx, h: AccountChange): ChangeRow {
+  const x = c.s.customers.find((y) => y.id === h.customerId);
+  return {
+    id: h.id,
+    t: h.t,
+    customerId: h.customerId,
+    customerName: x?.name ?? '?',
+    action: h.action,
+    account: h.account,
+    previousPrimary: h.action === 'SET_PRIMARY' ? h.previousPrimary : null,
+    by: nameOf(c.s, h.byOwner),
+    requestId: h.requestId ?? null,
+    verified: h.verified,
+    verifiedBy: h.verified && h.verifiedBy ? nameOf(c.s, h.verifiedBy) : null,
+  };
+}
+
 function changeLine(c: Ctx, h: AccountChange): string {
   const x = c.s.customers.find((y) => y.id === h.customerId);
   const what =
@@ -723,12 +834,13 @@ function changeLine(c: Ctx, h: AccountChange): string {
 /** PENDING: account changes nobody has verified yet. ALL: the most recent changes. */
 H['CLIENT_DATA.VERIFICATION.VIEW_VERIFICATION'] = (c, q) => {
   const all = str(q, 'show') === 'ALL';
-  const rows = allChanges(c.s)
+  const changes = allChanges(c.s)
     .filter((h) => all || !h.verified)
-    .slice(-40)
-    .map((h) => changeLine(c, h));
+    .slice(-40);
+  const rows = changes.map((h) => changeLine(c, h));
   const n = rows.length;
-  return good(`Verification queue (${all ? 'all' : 'pending'}): ${n} change${n === 1 ? '' : 's'}.`, n ? rows : ['Nothing here.']);
+  const data: PageData = { page: 'CHANGES', rows: changes.map((h) => changeRow(c, h)) };
+  return page(`Verification queue (${all ? 'all' : 'pending'}): ${n} change${n === 1 ? '' : 's'}.`, n ? rows : ['Nothing here.'], data);
 };
 
 /** "CU3" -> that customer's changes; "12345" / "ACC-12345" -> that account's changes across every customer. */
@@ -740,14 +852,25 @@ H['CLIENT_DATA.VERIFICATION.INVESTIGATE_CHANGES'] = (c, q) => {
     const rows = allChanges(c.s).filter((h) => h.account === acc || (h.action === 'SET_PRIMARY' && h.previousPrimary === acc));
     const owner = accountOwner(c.s, acc);
     const now = owner ? `on ${owner.id} ${owner.name}${owner.primary === acc ? ' (primary)' : ''}` : 'floating (no customer)';
-    return good(`${acc}: now ${now}, balance ${money(balanceOf(c.s, acc))}. ${rows.length} change${rows.length === 1 ? '' : 's'}.`, rows.map((h) => changeLine(c, h)), `investigated changes to account ${acc}`);
+    const data: PageData = {
+      page: 'INVESTIGATE',
+      rows: rows.map((h) => changeRow(c, h)),
+      account: { account: acc, customerId: owner?.id ?? null, primary: owner?.primary === acc, balance: balanceOf(c.s, acc) },
+    };
+    return page(`${acc}: now ${now}, balance ${money(balanceOf(c.s, acc))}. ${rows.length} change${rows.length === 1 ? '' : 's'}.`, rows.map((h) => changeLine(c, h)), data, `investigated changes to account ${acc}`);
   }
   const x = c.s.customers.find((y) => y.id === normCust(raw));
   if (!x) return bad('Enter a customer (CU3) or a 5-digit account.');
   const n = x.history.length;
-  return good(
+  const data: PageData = {
+    page: 'INVESTIGATE',
+    rows: x.history.map((h) => changeRow(c, h)),
+    customer: { id: x.id, originalPrimary: x.originalPrimary, primary: x.primary },
+  };
+  return page(
     `${x.id} ${x.name}: ${n} change${n === 1 ? '' : 's'}. Opened with primary ${x.originalPrimary}; primary now ${x.primary}.`,
     x.history.map((h) => changeLine(c, h)),
+    data,
     `investigated account changes for ${x.id}`,
   );
 };
@@ -786,10 +909,28 @@ function txLine(c: Ctx, tx: Transaction): string {
   return `${tx.id}  ${money(tx.amount).padStart(11)}  ${payLine(c, tx)}  [${tx.status}${risk}]${tx.requestId ? `  for ${tx.requestId}` : ''}`;
 }
 
+/** A payment as the Payment Queue line shows it. */
+function txRow(c: Ctx, tx: Transaction): PaymentRow {
+  const payee = c.s.customers.find((x) => x.id === tx.beneficiaryId);
+  return {
+    id: tx.id,
+    amount: tx.amount,
+    originCustomer: tx.customerId,
+    originAccount: tx.originAccount,
+    beneficiaryId: tx.beneficiaryId,
+    beneficiaryPrimary: payee?.primary ?? null,
+    status: tx.status,
+    risk: tx.riskResult,
+    requestId: tx.requestId,
+  };
+}
+
 H['TRANSACTIONS.PAYMENT_QUEUE.VIEW_QUEUE'] = (c, q) => {
   const all = str(q, 'show') === 'ALL';
-  const rows = c.s.transactions.filter((tx) => all || ACTIVE.includes(tx.status)).slice(-40).map((tx) => txLine(c, tx));
-  return good(`Payment Queue: ${rows.length} payment${rows.length === 1 ? '' : 's'}.`, rows);
+  const txs = c.s.transactions.filter((tx) => all || ACTIVE.includes(tx.status)).slice(-40);
+  const rows = txs.map((tx) => txLine(c, tx));
+  const data: PageData = { page: 'PAYMENTS', stage: 'QUEUE', automation: null, rows: txs.map((tx) => txRow(c, tx)) };
+  return page(`Payment Queue: ${rows.length} payment${rows.length === 1 ? '' : 's'}.`, rows, data);
 };
 
 H['TRANSACTIONS.PAYMENT_QUEUE.CREATE_TRANSACTION'] = (c, q) => {
@@ -932,7 +1073,8 @@ const PAST: Record<TxEvent['action'], string> = {
 
 type Stage = 'RISK' | 'AUTH' | 'SETTLE';
 
-function stageLines(c: Ctx, tx: Transaction, stage: Stage): string[] {
+function stageLines(c: Ctx, tx: Transaction, stage: Stage): { lines: string[]; row: PaymentRow } {
+  const row: PaymentRow = { ...txRow(c, tx), risk: null };
   let head = `${tx.id}  ${money(tx.amount).padStart(11)}  ${payLine(c, tx)}  [${tx.status}]`;
   // The risk queue warns about accounts with account changes nobody has verified yet.
   if (stage === 'RISK') {
@@ -942,19 +1084,31 @@ function stageLines(c: Ctx, tx: Transaction, stage: Stage): string[] {
     if (payee && !accountVerified(payee, payee.primary)) warn.push("payee's primary");
     if (payer && !accountVerified(payer, tx.originAccount)) warn.push('originator account');
     if (warn.length) head += `  !! UNVERIFIED: ${warn.join(', ')}`;
+    row.unverified = warn;
   }
 
   // Each shown step remembers its event, so "how long ago" can be attached to the latest one instead of repeated.
   const parts: { text: string; e?: TxEvent }[] = [];
   if (tx.requestId) parts.push({ text: `for ${tx.requestId}` });
   const created = lastEvent(tx, 'CREATED');
-  if (stage === 'RISK' && created) parts.push({ text: `created ${fmtClock(created.t)} by ${eventBy(c, tx, created)}`, e: created });
+  if (stage === 'RISK' && created) {
+    parts.push({ text: `created ${fmtClock(created.t)} by ${eventBy(c, tx, created)}`, e: created });
+    row.created = { t: created.t, by: eventBy(c, tx, created) };
+  }
   const checked = lastEvent(tx, 'RISK_CHECKED');
-  if (checked && tx.riskResult) parts.push({ text: `risk ${tx.riskResult} by ${eventBy(c, tx, checked)}${quoted(tx.riskReason)}`, e: checked });
+  if (checked && tx.riskResult) {
+    parts.push({ text: `risk ${tx.riskResult} by ${eventBy(c, tx, checked)}${quoted(tx.riskReason)}`, e: checked });
+    row.risk = tx.riskResult;
+    row.checked = { by: eventBy(c, tx, checked), reason: tx.riskReason };
+  }
   const approved = lastEvent(tx, 'APPROVED');
-  if (stage === 'SETTLE' && approved) parts.push({ text: `approved by ${eventBy(c, tx, approved)}${quoted(approved.detail)}`, e: approved });
+  if (stage === 'SETTLE' && approved) {
+    parts.push({ text: `approved by ${eventBy(c, tx, approved)}${quoted(approved.detail)}`, e: approved });
+    row.approved = { by: eventBy(c, tx, approved), reason: approved.detail };
+  }
   const last = tx.history.at(-1);
   const shown = last && parts.find((p) => p.e === last);
+  if (last) row.last = { action: PAST[last.action], by: eventBy(c, tx, last), agoSec: Math.max(0, Math.floor(c.t - last.t)) };
   if (shown) shown.text += ` (${ago(c, last.t)})`;
   else if (last) {
     const why = last.action === 'APPROVED' || last.action === 'HELD' || last.action === 'REJECTED' ? quoted(last.detail) : '';
@@ -962,10 +1116,13 @@ function stageLines(c: Ctx, tx: Transaction, stage: Stage): string[] {
   }
   if (tx.status === 'SETTLED' && tx.settledAt !== null) {
     const left = c.s.config.reversalWindowSec - (c.t - tx.settledAt);
-    if (left > 0) parts.push({ text: `reversible for ${Math.ceil(left)}s` });
+    if (left > 0) {
+      parts.push({ text: `reversible for ${Math.ceil(left)}s` });
+      row.reversibleSec = Math.ceil(left);
+    }
   }
 
-  return [head, `         ${parts.map((p) => p.text).join('   ')}`];
+  return { lines: [head, `         ${parts.map((p) => p.text).join('   ')}`], row };
 }
 
 function stageView(c: Ctx, q: Record<string, string>, stage: Stage, title: string, pending: TxStatus[], all: (tx: Transaction) => boolean): HandlerResult {
@@ -974,10 +1131,21 @@ function stageView(c: Ctx, q: Record<string, string>, stage: Stage, title: strin
     .filter((tx) => (showAll ? all(tx) : pending.includes(tx.status)))
     .slice(-40);
   const n = rows.length;
-  return good(`${title} (${showAll ? 'all' : 'pending'}): ${n} payment${n === 1 ? '' : 's'}.`, [
-    automationText(c.s, stage),
-    ...(n ? rows.flatMap((tx) => stageLines(c, tx, stage)) : ['Nothing here.']),
-  ]);
+  const shown = rows.map((tx) => stageLines(c, tx, stage));
+  const a = c.s.automation;
+  // Only the settings the stage's first line states.
+  const automation: AutomationFact =
+    stage === 'RISK'
+      ? { scoreMax: a.scoreMax, scoreSource: a.scoreSource, scoreOrigin: a.scoreOrigin, scorePayee: a.scorePayee }
+      : stage === 'AUTH'
+        ? { approveUpTo: a.approveUpTo }
+        : { settleMax: a.settleMax };
+  const data: PageData = { page: 'PAYMENTS', stage, automation, rows: shown.map((x) => x.row) };
+  return page(
+    `${title} (${showAll ? 'all' : 'pending'}): ${n} payment${n === 1 ? '' : 's'}.`,
+    [automationText(c.s, stage), ...(n ? shown.flatMap((x) => x.lines) : ['Nothing here.'])],
+    data,
+  );
 }
 
 H['TRANSACTIONS.RISK_CHECK.VIEW_RISK_QUEUE'] = (c, q) =>

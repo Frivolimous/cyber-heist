@@ -3,6 +3,12 @@
 Agreed or discussed work that is not built yet. Rules as they stand today are in [RULES.md](RULES.md).
 Move an item out of here when it ships. Firebase, the lobby and real multiplayer are on the README roadmap.
 
+## Bot mode
+
+- **Bot mode and single player** (co-op stealth: every Thief human, every regular employee a bot, with
+  difficulty levels; single player is 1 human + 5 bots). Designed, not built: the spec, symptom table and
+  build phases are in [BotMode.md](BotMode.md).
+
 ## Loose ends in shipped features
 
 - **Remove the watcher link before any public release** (dev only: `?watch=`, host.ts `publishWatch`, the
