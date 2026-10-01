@@ -23,6 +23,9 @@ There is no linter. Engine tests live in `src/engine/engine.test.ts` (network te
 `sim.byRole(role)`, `sim.bankerOf(customerId)`). Games are deterministic per seed, so changing the order of
 RNG calls in setup reshuffles every seeded test.
 
+**Git: always work and commit on `master`.** Never create a branch unless the designer asks for one, even
+where general guidance says to branch first.
+
 ## Architecture
 
 **Engine (`src/engine/`) is pure.** No DOM, no I/O. `applyAction(state, action, now)` returns a NEW state
