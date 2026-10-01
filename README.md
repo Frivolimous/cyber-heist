@@ -84,11 +84,11 @@ devices.
   mule account a customer's primary diverts every payment to them.
 - **Time:** 20 minutes, running through a working day (slow morning, lunch rush, busy end of day, close
   of business). New work arrives faster or slower accordingly.
-- **Winning:** the game ends at close of business, when every Thief is terminated (all their credentials
-  revoked, or their IP revoked), or when the Firewall shuts down the unregistered host or one of the bank's
-  own systems. Whichever it is, the Thieves win if their mule accounts hold their goal at that moment.
-  Otherwise the bank wins (its hidden target met at close of business, the Thieves terminated, or the host
-  shut down) or, if time runs out short or a bank system is shut down, everybody loses. The end screen shows both teams, what they made,
+- **Winning:** the game ends at close of business, when every Thief is out (terminated: all their
+  credentials or their IP revoked; or quit, from their Profile), or when the Firewall shuts down the
+  unregistered host or one of the bank's own systems. The Thieves win if their mule accounts hold their
+  goal when it ends. Otherwise the bank wins (its target met at close of business, the Thieves out, or the
+  host shut down) or, if time runs out short or a bank system is shut down, everybody loses. The end screen shows both teams, what they made,
   and anyone who embezzled.
 
 Full rules and tuning: [docs/RULES.md](docs/RULES.md).

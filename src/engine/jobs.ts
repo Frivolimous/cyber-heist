@@ -32,7 +32,7 @@ function commonRules(c: GameConfig): string[] {
     `${c.lockoutAfterFails} wrong codes in a row lock your workstation for ${secs(c.lockoutSec)}.`,
     'Your workstation has its own login code (W): it never changes and cannot be revoked. Anyone who has it can log in to your workstation and read it: your codes, your activity log and your messages (not your objective or which side you are on).',
     'Switch on the bell of a page you can write to and it tells you when someone else does something there.',
-    "Lose every credential, or have your IP revoked by the Firewall, and you are terminated: the bank's systems refuse you for the rest of the game. Terminating every Thief ends the game: the bank wins, unless the Thieves' goal is already met.",
+    "Lose every credential, or have your IP revoked by the Firewall, and you are terminated: the bank's systems refuse you for the rest of the game. Quitting (at the bottom of your Profile) does the same. Once every Thief is terminated or has quit, the game ends: the bank wins, unless the Thieves' goal is already met.",
   ];
 }
 
@@ -102,7 +102,7 @@ const JOBS: Record<RoleId, (c: GameConfig, n: number) => Omit<JobDescription, 't
       `A trace reveals which workstation made a log entry. Entries must be under ${secs(c.traceMaxAgeSec)} old, and you can trace once every ${secs(c.traceCooldownSec)}. Employee Records list every workstation's IP.`,
       '"Unknown server activity" comes from an unregistered host. Tracing it gives only a partial clue, unless an alert points at it.',
       `A block lasts ${secs(c.blockSec)}. A blocked workstation cannot use any system.`,
-      `"Revoke all access" is permanent once its ${secs(c.revokeCountdownSec)} countdown ends; only the Firewall can cancel it, and only one can count down at a time. Revoking a workstation terminates its owner for good. Revoking the unregistered host shuts it down and the bank wins; revoking one of the bank's own systems shuts the bank down, and everybody loses. Either way, if the Thieves' goal is met at that moment, they win.`,
+      `"Revoke all access" is permanent once its ${secs(c.revokeCountdownSec)} countdown ends; only the Firewall can cancel it, and only one can count down at a time. Revoking a workstation terminates its owner for good. Revoking the unregistered host shuts it down and the bank wins, unless the Thieves' goal is already met; revoking one of the bank's own systems shuts the bank down, and everybody loses.`,
       'While the Master Log is offline nothing is recorded, but the entry numbers keep counting, so the gap shows.',
       'You can issue a credential in anyone\'s name. Its owner is told.',
       'Blocking an address, switching security off, taking a module offline, and issuing or revoking a credential raise a "Suspicious security activity" alert naming you. Starting a "revoke all access", and issuing or revoking Firewall or Permissions write, raise a "Fatal" one.',
@@ -142,7 +142,7 @@ const OPERATIVE = (c: GameConfig): string[] => [
   'Kit tools are marked noisy, loud or reckless. The louder the tool, the more a trace of its alert gives away: a partial clue, then your exact IP or the server\'s address, then your IP and your host code.',
   'Your Host Log warns you when the bank gets an alert about you, and when someone traces one of your entries. Its bell and Blacknet\'s start on, so these pop up on your screen (in the host\'s dark red): mind who can see it, or switch them off.',
   'If you are terminated, the unregistered host still answers you: keep helping from there.',
-  "Meeting your goal does not end the game. However it ends (close of business, every Thief terminated, the host or a bank system shut down), the Thieves win if the Target Ledger meets the goal at that moment. Once it does, revoking all access to a bank system from the Firewall ends the day on the spot.",
+  "Meeting your goal does not end the game. However it ends (close of business, every Thief out or bank shuts down), the Thieves win if the Target Ledger meets the goal at that moment. Once it does, quit (at the bottom of your Profile): when every Thief is out, the day ends on the spot.",
   `Money counts while it sits in a Target Ledger account. A settled payment can be reversed for ${secs(c.reversalWindowSec)}, but only while the account it went to still holds the money: a mule account can pay it on first.`,
 ];
 

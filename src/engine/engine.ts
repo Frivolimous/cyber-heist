@@ -29,7 +29,7 @@ import {
 import { findCredentialByCode } from './credentials';
 import { advanceCracks, advanceUnlocks, credScopeText, HANDLERS } from './handlers';
 import { canWriteModule, notify, WATCHABLE } from './notify';
-import { bankShutDown, checkEnd, closeOfBusiness, hostShutDown, TERMINATED_TEXT } from './ending';
+import { bankShutDown, checkEnd, closeOfBusiness, hostShutDown, resign, TERMINATED_TEXT } from './ending';
 import { nextArrival } from './pacing';
 import type { Ctx } from './handlers';
 import type {
@@ -122,6 +122,13 @@ export function applyAction(state: GameState, action: Action, now: number): { st
       break;
     case 'SET_WATCH':
       result = setWatch(s, p, action.system, action.module, action.on);
+      break;
+    case 'QUIT':
+      if (p.terminated) result = fail('You no longer work here.');
+      else {
+        resign(s, p);
+        result = ok('You quit. The bank\'s systems no longer accept you.');
+      }
       break;
     default:
       result = fail('Unknown action.');

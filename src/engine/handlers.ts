@@ -302,7 +302,7 @@ H['SECURITY.EMPLOYEE_RECORDS.VIEW_EMPLOYEES'] = (c) => {
       p.lockedUntil > c.t ? `LOCKED OUT ${Math.ceil(p.lockedUntil - c.t)}s` : '',
       activeBlock(c.s, p.ip) ? `BLOCKED ${blockText(c.s, activeBlock(c.s, p.ip)!)}` : '',
     ].filter(Boolean);
-    if (p.terminated) flags.unshift(`TERMINATED ${fmtClock(p.terminated.t)}`);
+    if (p.terminated) flags.unshift(`${p.terminated.reason === 'RESIGNED' ? 'RESIGNED' : 'TERMINATED'} ${fmtClock(p.terminated.t)}`);
     return [
       `${p.name.padEnd(10)} ${ROLES[p.role].label.padEnd(24)} ${p.ip}${flags.length ? '  ' + flags.map((x) => `[${x}]`).join(' ') : ''}`,
       `           last activity: ${active}   failed attempts: ${p.failTotal}`,
@@ -313,14 +313,15 @@ H['SECURITY.EMPLOYEE_RECORDS.VIEW_EMPLOYEES'] = (c) => {
 
 /**
  * One true but partial clue about hidden host activity:
- * a range of addresses holding four real workstations, a pair (real + decoy), one number of the server's
- * address, or what was done.
+ * a range of addresses holding four real workstations, one number of the server's address, or what was done;
+ * from a noisy tool (tier 2) also possibly a pair (real + decoy). Everyday use (tier 1) never gives the pair:
+ * it raised no alert, and one of two workstations is nearly a name.
  */
-function relayClue(s: GameState, ip: string, server: string, activity?: string): string {
+function relayClue(s: GameState, ip: string, server: string, tier: number, activity?: string): string {
   const ips = s.playerOrder.map((id) => s.players[id].ip);
   const last = (x: string): number => Number(x.split('.').pop());
-  const kinds = ['RANGE', 'PAIR', 'SERVER', ...(activity ? ['ACTIVITY'] : [])];
-  const kind = pick(s, kinds);
+  const kinds = ['RANGE', ...(tier >= 2 ? ['PAIR'] : []), 'SERVER', ...(activity ? ['ACTIVITY'] : [])];
+  let kind = pick(s, kinds);
   if (kind === 'RANGE') {
     // Addresses are random, so the range is as wide as it takes to hold the origin and four real
     // workstations (the origin counts as one of them unless it is a proxy).
@@ -343,6 +344,7 @@ function relayClue(s: GameState, ip: string, server: string, activity?: string):
       const [lo, hi] = pick(s, windows);
       return `The origin workstation is within ${prefix}.${lo}-${hi}.`;
     }
+    kind = tier >= 2 ? 'PAIR' : 'SERVER'; // no range holds it (a proxy off the workstation subnet)
   }
   if (kind === 'SERVER') {
     const parts = server.split('.');
@@ -358,7 +360,7 @@ function relayClue(s: GameState, ip: string, server: string, activity?: string):
 
 /**
  * What a trace of a hidden host entry reveals, by the action's exposure tier:
- * 1-2 (vague): one partial clue; 3 (loud): one exact fact, the operative's IP or the server's address;
+ * 1-2 (vague): one partial clue (the pair only at 2); 3 (loud): one exact fact, the operative's IP or the server's address;
  * 4 (reckless): the operative's IP and a working host credential code (their own).
  * Every tier uses the addresses as recorded: a rerouted workstation or host shows its proxy, even here.
  */
@@ -367,7 +369,7 @@ function exposureClue(s: GameState, e: LogEntry): string {
   const real = e.actualPlayerId ? s.players[e.actualPlayerId] : undefined;
   const ip = e.sourceIp!;
   const server = e.server ?? s.hiddenHost;
-  if (tier <= 2) return relayClue(s, ip, server, e.activity);
+  if (tier <= 2) return relayClue(s, ip, server, tier, e.activity);
   if (tier === 3) {
     return rand(s) < 0.5 ? `The relay leaked the origin workstation: ${ip}.` : `The relay leaked the server's address: ${server}.`;
   }
@@ -386,7 +388,8 @@ H['SECURITY.MASTER_LOG.TRACE'] = (c, q) => {
   if (!e.sourceIp) return good(`Trace ${e.id}: system event, no workstation origin.`, undefined, `ran a trace on ${e.id}`);
   // Hidden host traffic is relayed. What a trace returns escalates with the action's exposure tier.
   if (e.kind === 'HIDDEN_ACCESS') {
-    const clue = exposureClue(c.s, e) + (e.leak ? ` ${e.leak}` : '');
+    e.clue ??= exposureClue(c.s, e); // tracing it again gives the same clue
+    const clue = e.clue + (e.leak ? ` ${e.leak}` : '');
     // The host notices: operatives see who traced it and what the bank learned.
     addHostLog(c.s, `Relay entry ${e.id} was traced by ${c.owner.name}. The bank learned: ${clue}`, true);
     return good(`Trace ${e.id}: routed through a relay. ${clue}`, undefined, `ran a trace on ${e.id}`);
@@ -1427,7 +1430,7 @@ H['HIDDEN_HOST.BLACKNET.POST_MESSAGE'] = (c, q) => {
 /** Each mule account: the customer it is on (and whether it is their primary) or floating, and its balance. */
 H['HIDDEN_HOST.TARGET_LEDGER.VIEW_TARGETS'] = (c) =>
   good(
-    `Target accounts: ${money(c.s.totals.stolen)} of ${money(c.s.config.blackTarget)} diverted.${thiefTargetMet(c.s) ? ' Heist secured: Hold funds until close of business, or shut the bank down to escape with your prize.' : ''}`,
+    `Target accounts: ${money(c.s.totals.stolen)} of ${money(c.s.config.blackTarget)} diverted.${thiefTargetMet(c.s) ? ' Heist secured: Hold funds until close of business, or quit to escape with your prize.' : ''}`,
     c.s.targets.map((tg) => {
       const owner = accountOwner(c.s, tg.account);
       const where = owner ? `${owner.id}${owner.primary === tg.account ? ' (primary)' : ''}` : 'floating';

@@ -41,8 +41,7 @@ Move an item out of here when it ships. Firebase, the lobby and real multiplayer
 
 Built, but the numbers or the balance are a first guess.
 
-- **Roles.** Only IT Specialists hold Firewall write, so only they can revoke an IP or a system, and at
-  6-7 players there is just one. Personal Bankers hold both Customer Records write and Payment Queue
+- **Roles.** Personal Bankers hold both Customer Records write and Payment Queue
   write, so one banker can divert a customer and start payments to them (verification and risk sit with
   other roles). Employee Records write (reset a lockout) is IT-only.
 - **Economy** (see RULES.md > Win conditions). Targets ($15M per player, $1M per Thief), volume
@@ -59,11 +58,14 @@ Built, but the numbers or the balance are a first guess.
     re-measure if payment sizing or tiers change;
   - the Thieves' target grows with their number, but their chances per payment do not;
   - the 20-minute timer (was 40), and time-of-day pacing (busy = 4x slow).
-- **Endings.** At close of business the bank wins if it met its target; otherwise both sides lose, so
-  Thieves short of their goal may prefer to stall the bank rather than steal. Terminating every Thief
-  , or revoking the unregistered host, wins at once for the bank; a wrong IP revocation
-  permanently removes a regular employee. Regular employees who are losing may prefer to shut the bank down. Watch whether
-  any of this is too swingy.
+- **Endings.** Every ending goes to the Thieves if their goal is met when it fires; meeting it never
+  ends the game by itself, so a secured team either holds on to close of business or quits (every Thief
+  out ends it at once). Otherwise, at close of business the bank wins if it met its target and both sides
+  lose if not, so Thieves short of their goal may prefer to stall the bank rather than steal. Every Thief
+  out, or revoking the unregistered host, wins at once for the bank; a wrong IP revocation permanently
+  removes a regular employee. Regular employees who are losing may prefer to shut the bank down. Watch:
+  whether this is too swingy; whether secured Thieves quitting (one by one, each goodbye exposing them)
+  feels good or rushed; whether anyone finds the bank-shutdown easter egg.
 - **Limits.** Workstation IPs are random in 10.1.0.2-254, so the subnet is not the limit any more; past
   30 players the game needs more than 42 customer names.
 - **Workstation logins.** A W login can never be revoked, so once it is shared or read off a workstation

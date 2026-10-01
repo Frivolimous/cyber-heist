@@ -2,6 +2,7 @@
 
 import { ROLES } from './catalog';
 import { activeBlock, addLog, fmtClock, gameTime, money, nextId, note } from './core';
+import { pick } from './rng';
 import type { Allegiance, EndKind, GameState, Player, TerminationReason, Winner } from './types';
 
 /** What a terminated player sees on any bank system. */
@@ -19,6 +20,17 @@ function terminationReason(s: GameState, p: Player): TerminationReason | null {
   return null;
 }
 
+/** Mutating: disables a player for good: every bank credential revoked. The hidden host still answers them. */
+function disable(s: GameState, p: Player, reason: TerminationReason): void {
+  p.terminated = { t: gameTime(s), reason };
+  for (const cr of bankCredentials(s, p)) {
+    cr.status = 'REVOKED';
+    cr.pendingRevoke = null;
+  }
+  p.watching = p.watching.filter((k) => k.startsWith('HIDDEN_HOST.'));
+  p.remoteAccess = [];
+}
+
 /** Mutating: disables for good every player who has lost all their bank credentials or had their IP revoked. */
 export function checkTerminations(s: GameState): void {
   const t = gameTime(s);
@@ -27,16 +39,43 @@ export function checkTerminations(s: GameState): void {
     if (p.terminated) continue;
     const reason = terminationReason(s, p);
     if (!reason) continue;
-    p.terminated = { t, reason };
-    for (const cr of bankCredentials(s, p)) {
-      cr.status = 'REVOKED';
-      cr.pendingRevoke = null;
-    }
-    p.watching = p.watching.filter((k) => k.startsWith('HIDDEN_HOST.')); // the hidden host still answers them
-    p.remoteAccess = [];
+    disable(s, p, reason);
     const why = reason === 'IP_REVOKED' ? `the firewall revoked all access for ${p.ip}` : 'all their credentials were revoked';
     addLog(s, { actor: 'SYSTEM', kind: 'TERMINATED', message: `${p.name} (${p.ip}) terminated: ${why}`, sourceIp: null, actualPlayerId: null });
     note(p, t, `You have been terminated: ${reason === 'IP_REVOKED' ? `the firewall revoked all access for your workstation` : 'all your credentials were revoked'}. The bank's systems no longer accept you.`);
+  }
+}
+
+/** What a Thief who quits tells everyone on the way out. */
+export const THIEF_GOODBYES = [
+  'So long, suckers! Enjoy the paperwork.',
+  "It's been a pleasure robbing you. Don't bother looking for me.",
+  'Check the books after I\'m gone. Bye!',
+  "Thanks for all the money. I'm off somewhere sunny.",
+];
+/** What a regular employee who quits tells everyone on the way out. */
+export const EMPLOYEE_GOODBYES = [
+  "This job sucks. I'm outta here.",
+  'I quit. Good luck keeping this place running.',
+  "That's it, I'm done. Nobody pays me enough for this.",
+  "Consider this my two seconds' notice. Bye.",
+];
+
+/**
+ * Mutating: the player quits. They are terminated like a fired employee (so when the last Thief is out, the
+ * game ends: see checkEnd), the log says they resigned, and they send everyone a parting message that gives
+ * away which side they were on.
+ */
+export function resign(s: GameState, p: Player): void {
+  const t = gameTime(s);
+  disable(s, p, 'RESIGNED');
+  addLog(s, { actor: 'SYSTEM', kind: 'TERMINATED', message: `${p.name} (${p.ip}) resigned`, sourceIp: null, actualPlayerId: null });
+  note(p, t, "You quit. The bank's systems no longer accept you.");
+  const text = pick(s, p.allegiance === 'BLACK' ? THIEF_GOODBYES : EMPLOYEE_GOODBYES);
+  for (const to of s.playerOrder.map((id) => s.players[id]).filter((x) => !x.fake && x.id !== p.id)) {
+    const m = { id: nextId(s, 'msg', 'M'), t, from: p.id, to: to.id, text };
+    p.messages.push(m);
+    to.messages.push(m);
   }
 }
 
@@ -61,7 +100,7 @@ export function thiefTargetMet(s: GameState): boolean {
 }
 
 export const HEIST_SECURED_TEXT = (s: GameState): string =>
-  `Heist secured: the Target Ledger holds ${money(s.totals.stolen)}, meeting your ${money(s.config.blackTarget)} goal. Hold it until close of business, or shut the bank down to escape with your prize.`;
+  `Heist secured: the Target Ledger holds ${money(s.totals.stolen)}, meeting your ${money(s.config.blackTarget)} goal. Hold it until close of business, or quit to escape with your prize: the day ends once every Thief is out.`;
 export const HEIST_LOST_TEXT = (s: GameState): string =>
   `Heist no longer secured: the Target Ledger dropped to ${money(s.totals.stolen)}, under your ${money(s.config.blackTarget)} goal. Get it back over the goal before close of business.`;
 
@@ -78,15 +117,15 @@ function checkHeistSecured(s: GameState): void {
   }
 }
 
-/** Mutating: the instant end condition (every Thief terminated), after telling the Thieves if their goal changed. */
+/** Mutating: the instant end condition (every Thief out: terminated or quit), after telling the Thieves if their goal changed. */
 export function checkEnd(s: GameState): void {
   if (s.status !== 'RUNNING') return;
   checkTerminations(s);
   checkHeistSecured(s);
   const blacks = team(s, 'BLACK');
   if (blacks.length > 0 && blacks.every((p) => p.terminated)) {
-    if (thiefTargetMet(s)) endGame(s, 'THIEVES_TERMINATED', 'BLACK', 'They thought they caught the thieves, but this was their plan all along...');
-    else endGame(s, 'THIEVES_TERMINATED', 'WHITE', 'Security walked them out one by one, broke and empty handed.');
+    if (thiefTargetMet(s)) endGame(s, 'THIEVES_TERMINATED', 'BLACK', 'One by one they left the building, and the money left with them.');
+    else endGame(s, 'THIEVES_TERMINATED', 'WHITE', 'One by one they left the building, with nothing to show for it.');
   }
 }
 
@@ -123,6 +162,7 @@ export interface EndMember {
   name: string;
   roleLabel: string;
   terminated: boolean;
+  resigned: boolean; // terminated because they quit
   /** Payments settled into this person's own account: shown as an aside, it counts toward no goal. */
   embezzled: number;
 }
@@ -154,7 +194,7 @@ export function embezzledBy(s: GameState, p: Player): number {
 export function endSummary(s: GameState): EndSummary | null {
   if (s.status !== 'ENDED' || !s.endKind) return null;
   const members = (side: Allegiance): EndMember[] =>
-    team(s, side).map((p) => ({ name: p.name, roleLabel: ROLES[p.role].label, terminated: !!p.terminated, embezzled: embezzledBy(s, p) }));
+    team(s, side).map((p) => ({ name: p.name, roleLabel: ROLES[p.role].label, terminated: !!p.terminated, resigned: p.terminated?.reason === 'RESIGNED', embezzled: embezzledBy(s, p) }));
   return {
     kind: s.endKind,
     winner: s.winner,

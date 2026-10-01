@@ -68,8 +68,7 @@ const HOW_TO_PLAY = (): string => {
       the thieves have been locked out of the system. If you're a regular employee, you want to make
       sure the bank wins.
     </li>
-    <li>The Thieves win if their secret accounts hold enough stolen money whenever the game ends.</li>
-    <li>Careless use of the Firewall can shut the whole bank down instead. If that happens, everybody loses!</li>
+    <li>The Thieves win if they steal enough to hit their target goal and get away with the money.</li>
   </ul>
 
   <h3>Your job</h3>
@@ -439,7 +438,7 @@ function runGame(db: Db, code: string, first: GameState, startVNow: number, star
             <div class="fac-teams">${end.teams
               .map(
                 (team) => `<div><h4>${esc(team.label)}: ${team.won ? 'won' : 'lost'}</h4><p>${money(team.made)} of ${money(team.target)}</p>
-                  <ul>${team.members.map((m) => `<li>${esc(m.name)}, ${esc(m.roleLabel)}${m.terminated ? ' (terminated)' : ''}${m.embezzled ? `, embezzled ${money(m.embezzled)}` : ''}</li>`).join('')}</ul></div>`,
+                  <ul>${team.members.map((m) => `<li>${esc(m.name)}, ${esc(m.roleLabel)}${m.terminated ? (m.resigned ? ' (resigned)' : ' (terminated)') : ''}${m.embezzled ? `, embezzled ${money(m.embezzled)}` : ''}</li>`).join('')}</ul></div>`,
               )
               .join('')}</div></section>`
         : `<p class="play-hint">Settled today: ${money(s.transactions.reduce((sum, tx) => (tx.status === 'SETTLED' ? sum + tx.amount : sum), 0))} of the bank's ${money(s.config.whiteTarget)} target (players see this total too, which includes diverted and embezzled payments; the bank's real progress stays hidden until the end).</p>
@@ -447,7 +446,7 @@ function runGame(db: Db, code: string, first: GameState, startVNow: number, star
           <button class="btn ${speed ? 'alt' : ''}" data-pause>${speed ? 'Pause the game' : 'Resume the game'}</button>`}
       <h3>Players <small class="play-hint">${connected} of ${people.length} connected</small></h3>
       <ul class="play-list">${people
-        .map((id) => `<li class="${host.isOnline(id) ? 'on' : 'off'}"><i class="dot" aria-hidden="true"></i>${esc(s.players[id].name)}${host.isOnline(id) ? '' : ' <small>not connected</small>'}${s.players[id].terminated ? ' <small>terminated</small>' : ''}</li>`)
+        .map((id) => `<li class="${host.isOnline(id) ? 'on' : 'off'}"><i class="dot" aria-hidden="true"></i>${esc(s.players[id].name)}${host.isOnline(id) ? '' : ' <small>not connected</small>'}${s.players[id].terminated ? ` <small>${s.players[id].terminated!.reason === 'RESIGNED' ? 'resigned' : 'terminated'}</small>` : ''}</li>`)
         .join('')}</ul>
       <p class="play-hint">This tab runs the game for everyone: keep it open${end ? '' : ' until the end'}. Players rejoin with ${esc(link({ game: code }))}</p>
       <details class="fac-dev"${devOpen ? ' open' : ''}><summary>Dev tools</summary>

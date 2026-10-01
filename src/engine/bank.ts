@@ -172,6 +172,28 @@ export const MIN_PAYMENT = 10_000;
 /** Automatic payments and payment requests take at most this share of the paying account's balance. */
 export const MAX_BALANCE_SHARE = 0.4;
 
+const IN_FLIGHT: TxStatus[] = ['QUEUED', 'RISK_CHECKED', 'AUTHORIZED', 'HELD'];
+
+/**
+ * Money an account has already promised: payments from it still on their way, and its customer's payment
+ * requests from it that are still waiting on the bank (the customer counts on that money going out). A
+ * request whose payment is on its way, or already went, is counted through that payment.
+ */
+export function committedFrom(s: GameState, account: string): number {
+  const inFlight = s.transactions.filter((tx) => tx.originAccount === account && IN_FLIGHT.includes(tx.status)).reduce((sum, tx) => sum + tx.amount, 0);
+  const waiting = s.requests
+    .filter((r) => r.kind === 'PAYMENT' && !r.phish && !r.scam && r.outcome === null && r.originAccount === account && r.amount)
+    .filter((r) => {
+      const tx = r.txId ? s.transactions.find((x) => x.id === r.txId) : undefined;
+      return !tx || DEAD.includes(tx.status);
+    })
+    .reduce((sum, r) => sum + (r.amount ?? 0), 0);
+  return inFlight + waiting;
+}
+
+/** What a customer can still spend from an account: its balance less what is already promised (committedFrom). */
+export const spendable = (s: GameState, account: string): number => Math.max(0, balanceOf(s, account) - committedFrom(s, account));
+
 /** A customer's money as they see it: their own accounts (knownOf), not whatever the bank's file says. */
 export const customerMoney = (s: GameState, c: Customer): number => knownOf(c).accounts.reduce((sum, a) => sum + balanceOf(s, a), 0);
 /** Customers pay and get paid roughly in proportion to their wealth, so money does not just drain from rich to poor. */
@@ -180,14 +202,14 @@ export const wealthWeight = (s: GameState, c: Customer): number => customerMoney
  * The account a customer pays from: one of the accounts they believe are theirs (knownOf), the richer the
  * likelier. It may no longer be on the bank's file (removed unasked): the payment then comes from a floating account.
  */
-export const payingAccount = (s: GameState, c: Customer): string => weightedPick(s, knownOf(c).accounts, (a) => balanceOf(s, a) + 1);
+export const payingAccount = (s: GameState, c: Customer): string => weightedPick(s, knownOf(c).accounts, (a) => spendable(s, a) + 1);
 
 /**
- * An amount between min and max (rounded to $1,000) that the account can afford right now, or null if it cannot
- * afford even MIN_PAYMENT. A small account pays between a quarter of its cap and its cap, not always the cap.
+ * An amount between min and max (rounded to $1,000) that the account can afford right now, after what it has
+ * already promised (spendable), or null if it cannot afford even MIN_PAYMENT. A small account pays between a quarter of its cap and its cap, not always the cap.
  */
 export function affordableAmount(s: GameState, account: string, min: number, max: number): number | null {
-  const cap = Math.floor((balanceOf(s, account) * MAX_BALANCE_SHARE) / 1000) * 1000;
+  const cap = Math.floor((spendable(s, account) * MAX_BALANCE_SHARE) / 1000) * 1000;
   if (cap < MIN_PAYMENT) return null;
   const hi = Math.min(max, cap);
   const lo = Math.max(MIN_PAYMENT, Math.min(min, hi / 4));

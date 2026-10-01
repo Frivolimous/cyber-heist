@@ -90,7 +90,7 @@ export function joinView(parts: unknown): PlayerView | null {
 
 // ---- Actions ----------------------------------------------------------------------------
 
-const ACTION_TYPES: Action['type'][] = ['EXECUTE', 'SHARE_CREDENTIAL', 'SEND_MESSAGE', 'CONNECT', 'ACCESS_WORKSTATION', 'SET_WATCH'];
+const ACTION_TYPES: Action['type'][] = ['EXECUTE', 'SHARE_CREDENTIAL', 'SEND_MESSAGE', 'CONNECT', 'ACCESS_WORKSTATION', 'SET_WATCH', 'QUIT'];
 
 /**
  * A client's action as the host will apply it: one of the known kinds, and always as the seat the sender

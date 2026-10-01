@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { accountVerified, applyAction, CHANNELS, createGame, CREDENTIAL_SHARING_ENABLED, DAY_PHASES, dayPhaseAt, nextArrival, paceMultiplier, ENCRYPTION_ENABLED, getPlayerView, grantMasterAccess, thiefCountFor, HOST_KITS, HOST_SHARED_MODULES, MAX_PLAYERS, MIN_PLAYERS, roleCounts, SYSTEMS, tick } from './index';
 import type { Action, ActionResult, GameConfig, GameState, Player, RoleId, SystemId } from './index';
 import { NPC_AMOUNT_FACTOR, REQUEST_AMOUNT_FACTOR } from './setup';
-import { spawnNpc } from './bank';
+import { committedFrom, spawnNpc } from './bank';
+import { EMPLOYEE_GOODBYES, THIEF_GOODBYES } from './ending';
 import { spawnRequest } from './requests';
 
 const NAMES = ['Jeremy', 'Sarah', 'Mike', 'David', 'Lisa', 'Anna', 'Omar', 'Priya', 'Chen', 'Rosa'];
@@ -547,7 +548,7 @@ test('with the Thieves\' goal met, every ending goes to the Thieves; the check i
   }
   assert.equal(term.s.winner, 'BLACK');
   assert.equal(term.s.endKind, 'THIEVES_TERMINATED');
-  assert.match(term.s.endReason!, /their plan all along/);
+  assert.match(term.s.endReason!, /the money left with them/);
 
   // Close of business with both goals met: the Thieves still win.
   const both = new Sim();
@@ -569,6 +570,56 @@ test('with the Thieves\' goal met, every ending goes to the Thieves; the check i
   assert.equal(live.s.status, 'ENDED');
   assert.equal(live.s.winner, null);
   assert.equal(live.s.endKind, 'SHUTDOWN');
+});
+
+test('customers never ask to pay money they have already promised: payments in flight and their own waiting requests', () => {
+  // Nothing moves (manual automation, nobody acts), so everything spawned stays promised.
+  const s = createGame({ seed: 5, players: PLAYERS, now: T0, config: { automation: MANUAL } });
+  for (let i = 0; i < 300; i++) {
+    const before = structuredClone(s);
+    if (i % 2) spawnNpc(s);
+    else spawnRequest(s);
+    const tx = s.transactions.length > before.transactions.length ? s.transactions.at(-1)! : null;
+    const req = s.requests.length > before.requests.length ? s.requests.at(-1)! : null;
+    const ask = tx ? { account: tx.originAccount, amount: tx.amount } : req && req.kind === 'PAYMENT' && !req.phish ? { account: req.originAccount!, amount: req.amount! } : null;
+    if (!ask) continue;
+    const free = (before.balances[ask.account] ?? 0) - committedFrom(before, ask.account);
+    assert.ok(ask.amount <= free, `${ask.amount} asked from ${ask.account}, only ${free} not yet promised`);
+  }
+  // Promised money adds up: every account's waiting payments and requests fit inside its balance.
+  for (const acc of Object.keys(s.balances)) assert.ok(committedFrom(s, acc) <= s.balances[acc], acc);
+});
+
+test('quitting: terminated for good, everyone gets a parting message, and the last Thief out ends the game', () => {
+  const sim = new Sim();
+  sim.at(2);
+  const thieves = Object.values(sim.s.players).filter((p) => p.allegiance === 'BLACK');
+  const white = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE')!;
+  const others = (id: string) => Object.values(sim.s.players).filter((p) => !p.fake && p.id !== id);
+
+  // A regular employee quits: out for good, a regular goodbye to everyone, the game goes on.
+  assert.ok(sim.do({ type: 'QUIT', playerId: white.id }).ok);
+  assert.equal(sim.s.players[white.id].terminated?.reason, 'RESIGNED');
+  assert.ok(Object.values(sim.s.credentials).filter((c) => c.owner === white.id && c.system !== 'HIDDEN_HOST' && c.system !== 'WORKSTATION').every((c) => c.status === 'REVOKED'));
+  const bye = sim.s.players[white.id].messages.at(-1)!.text;
+  assert.ok(EMPLOYEE_GOODBYES.includes(bye));
+  for (const p of others(white.id)) assert.ok(p.messages.some((m) => m.from === white.id && m.text === bye), p.name);
+  assert.ok(sim.s.logs.some((l) => l.message === `${white.name} (${white.ip}) resigned`));
+  assert.equal(getPlayerView(sim.s, white.id).me.resigned, true);
+  assert.equal(sim.do({ type: 'QUIT', playerId: white.id }).ok, false, 'only once');
+  assert.equal(sim.s.status, 'RUNNING');
+
+  // The Thieves quit with their goal met: a Thief's goodbye, and the last one out ends it, the Thieves winning.
+  fillLedger(sim);
+  for (const t of thieves) {
+    assert.equal(sim.s.status, 'RUNNING');
+    assert.ok(sim.do({ type: 'QUIT', playerId: t.id }).ok);
+    assert.ok(THIEF_GOODBYES.includes(sim.s.players[t.id].messages.at(-1)!.text));
+  }
+  assert.equal(sim.s.status, 'ENDED');
+  assert.equal(sim.s.winner, 'BLACK');
+  assert.equal(sim.s.endKind, 'THIEVES_TERMINATED');
+  assert.ok(getPlayerView(sim.s, white.id).end!.teams.find((t) => t.side === 'BLACK')!.members.every((m) => m.resigned));
 });
 
 test('players see every settled payment as one total and the bank\'s goal, never its real progress', () => {
@@ -1587,7 +1638,8 @@ test('hidden host: failures are also "Unknown server activity", and traces give 
   assert.ok(!sim.s.logs.some((l) => l.message.includes(analyst.name) && l.message.includes('denied')), 'the code owner is not named');
   assert.equal(sim.s.players[black.id].failTotal, before + 1);
 
-  // Many traces: every kind of clue shows up, and every clue is true.
+  // Many traces of everyday use: every kind of clue but the pair shows up, and every clue is true.
+  const kindOf = (msg: string): string => (msg.includes('within') ? 'range' : msg.includes('one of two') ? 'pair' : msg.includes("server's IP") ? 'server' : 'activity');
   const kinds = new Set<string>();
   for (let i = 0; i < 40; i++) {
     const module = i % 2 ? 'TARGET_LEDGER' : 'BLACKNET';
@@ -1595,9 +1647,27 @@ test('hidden host: failures are also "Unknown server activity", and traces give 
     const e = sim.s.logs.at(-1)!;
     const msg = sim.run(analyst.id, logCode, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: e.id }).message;
     assert.ok(clueIsTrue(sim, msg, e), msg);
-    kinds.add(msg.includes('within') ? 'range' : msg.includes('one of two') ? 'pair' : msg.includes("server's IP") ? 'server' : 'activity');
+    kinds.add(kindOf(msg));
   }
-  assert.deepEqual([...kinds].sort(), ['activity', 'pair', 'range', 'server']);
+  assert.deepEqual([...kinds].sort(), ['activity', 'range', 'server']);
+
+  // A noisy tool's entry (tier 2) can also give the pair.
+  const noisy = new Set<string>();
+  for (let i = 0; i < 40; i++) {
+    sim.run(black.id, sim.code(black.id, 'HIDDEN_HOST', 'BLACKNET'), 'HIDDEN_HOST', 'BLACKNET', 'READ_MESSAGES');
+    const e = sim.s.logs.at(-1)!;
+    e.exposure = 2;
+    const msg = sim.run(analyst.id, logCode, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: e.id }).message;
+    assert.ok(clueIsTrue(sim, msg, e), msg);
+    noisy.add(kindOf(msg));
+  }
+  assert.ok(noisy.has('pair'));
+
+  // Tracing the same entry again gives the same clue.
+  sim.run(black.id, sim.code(black.id, 'HIDDEN_HOST', 'TARGET_LEDGER'), 'HIDDEN_HOST', 'TARGET_LEDGER', 'VIEW_TARGETS');
+  const again = sim.s.logs.at(-1)!.id;
+  const first = sim.run(analyst.id, logCode, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: again }).message;
+  for (let i = 0; i < 10; i++) assert.equal(sim.run(analyst.id, logCode, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: again }).message, first);
 });
 
 test('hidden host kits: every operative gets the shared modules and exactly one kit; the rest go unused', () => {
@@ -2393,7 +2463,7 @@ test('termination: a revoked IP disables a Thief on the bank, but not on the unr
   assert.ok(read.ok, read.message);
 });
 
-test('the bank wins at once when every Thief is terminated; the end screen shows both teams', () => {
+test('the bank wins at once when every Thief is terminated (goal not met); the end screen shows both teams', () => {
   const sim = new Sim();
   const admin = whiteIt(sim);
   const fw = sim.code(admin.id, 'SECURITY', 'FIREWALL');
@@ -2408,7 +2478,7 @@ test('the bank wins at once when every Thief is terminated; the end screen shows
   assert.equal(sim.s.status, 'ENDED');
   assert.equal(sim.s.winner, 'WHITE');
   assert.equal(sim.s.endKind, 'THIEVES_TERMINATED');
-  assert.match(sim.s.endReason!, /broke and empty handed/);
+  assert.match(sim.s.endReason!, /nothing to show for it/);
 
   const end = getPlayerView(sim.s, blacks[0].id).end!;
   assert.equal(end.headline, 'The Bank wins');
@@ -2611,6 +2681,12 @@ test('solo test: scripted regular employees work the bank, and the IT bot traces
   for (let t = 3; t <= 300; t++) s = tick(s, T0 + t * 1000); // the host ticks often; bots act on each tick
   assert.ok(s.requests.some((q) => q.status === 'DONE' && s.players[q.closedBy!]?.bot), 'a banker bot did a request');
   assert.ok(s.transactions.some((tx) => tx.status === 'SETTLED' && tx.origin === 'PLAYER'), 'a requested payment was settled');
+  // The IT bot never traces its own entries.
+  const it = Object.values(s.players).find((p) => p.bot && p.role === 'IT_SPECIALIST')!;
+  assert.ok(s.scenario!.traceLog.every((x) => s.logs.find((l) => l.id === x.logId)?.actor !== it.id));
+  // The solo Thief holds every kit.
+  const kits = Object.values(s.credentials).filter((c) => c.owner === 'me' && c.system === 'HIDDEN_HOST').map((c) => c.module);
+  for (const kit of ['INFILTRATION', 'SOCIAL', 'CLEANUP', 'ACCESS']) assert.ok(kits.includes(kit), kit);
 });
 
 test('the day starts empty: the first automatic payment at 10s, the first client request at 20s', () => {

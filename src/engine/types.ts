@@ -177,6 +177,8 @@ export interface LogEntry {
   exposure?: number;
   /** Hidden host entries only: what a Trace also reveals besides its clue (a Blacknet message posted or read). */
   leak?: string;
+  /** Hidden host entries only: the clue its first Trace gave; every later Trace of it gives the same. */
+  clue?: string;
   /** Wiped by Cleanup / Log wiper: hidden from the Master Log (leaving an id gap) but still traceable until it ages out. */
   deleted?: boolean;
 }
@@ -335,7 +337,7 @@ export interface Notice {
   text: string;
 }
 
-export type TerminationReason = 'CREDENTIALS' | 'IP_REVOKED';
+export type TerminationReason = 'CREDENTIALS' | 'IP_REVOKED' | 'RESIGNED';
 
 /**
  * What ended the game (the winner is kept separately). CLOSE_OF_BUSINESS: the clock ran out. THIEVES_TERMINATED:
@@ -500,7 +502,12 @@ export interface SetWatchAction {
   module: string;
   on: boolean;
 }
-export type Action = ExecuteAction | ShareCredentialAction | SendMessageAction | ConnectAction | AccessWorkstationAction | SetWatchAction;
+/** The player quits for good: terminated like a fired employee (see ending.ts: resign). */
+export interface QuitAction {
+  type: 'QUIT';
+  playerId: PlayerId;
+}
+export type Action = ExecuteAction | ShareCredentialAction | SendMessageAction | ConnectAction | AccessWorkstationAction | SetWatchAction | QuitAction;
 
 export interface ActionResult {
   ok: boolean;

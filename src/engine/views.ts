@@ -33,6 +33,7 @@ export interface WorkstationView {
   lockedForSec: number;
   /** Terminated: the bank's systems refuse this workstation for good. */
   terminated: boolean;
+  resigned: boolean; // terminated because they quit
   job: JobDescription;
   knownSystems: SystemId[];
   credentials: {
@@ -72,7 +73,7 @@ export interface PlayerView {
   /** Every employee on record, planted users included (they can be messaged and issued credentials). */
   players: { id: PlayerId; name: string; roleLabel: string }[];
   /** The real people at the table (everyone on the call knows who they are), and who has been terminated. */
-  table: { id: PlayerId; name: string; roleLabel: string; terminated: boolean }[];
+  table: { id: PlayerId; name: string; roleLabel: string; terminated: boolean; resigned: boolean }[];
   /** Rule numbers the screens quote. */
   settings: { blockSec: number; revokeCountdownSec: number };
   systems: SystemDef[]; // only systems this player knows about
@@ -104,6 +105,7 @@ function workstationView(s: GameState, p: Player, visitor = false): WorkstationV
     bankBalance: accountExists(s, p.bankAccount) ? balanceOf(s, p.bankAccount) : null,
     lockedForSec: Math.max(0, Math.ceil(p.lockedUntil - t)),
     terminated: !!p.terminated,
+    resigned: p.terminated?.reason === 'RESIGNED',
     job: jobDescription(p.role, visitor ? 'WHITE' : p.allegiance, s.config, tableSize(s)), // a visitor gets no handbook
     knownSystems: visitor ? p.knownSystems.filter((id) => id !== 'HIDDEN_HOST') : p.knownSystems,
     credentials: p.heldCredentialIds.filter((id) => !visitor || s.credentials[id].system !== 'HIDDEN_HOST').map((id) => {
@@ -163,7 +165,7 @@ export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
     players: s.playerOrder.map((id) => ({ id, name: s.players[id].name, roleLabel: ROLES[s.players[id].role].label })),
     table: s.playerOrder
       .filter((id) => !s.players[id].fake)
-      .map((id) => ({ id, name: s.players[id].name, roleLabel: ROLES[s.players[id].role].label, terminated: !!s.players[id].terminated })),
+      .map((id) => ({ id, name: s.players[id].name, roleLabel: ROLES[s.players[id].role].label, terminated: !!s.players[id].terminated, resigned: s.players[id].terminated?.reason === 'RESIGNED' })),
     settings: { blockSec: s.config.blockSec, revokeCountdownSec: s.config.revokeCountdownSec },
     systems: SYSTEMS.filter((sys) => p.knownSystems.includes(sys.id)).map((sys) => ({ ...sys, address: systemAddress(s, sys.id) })),
     openModules: Object.entries(s.modules).filter(([, m]) => m.open).map(([k]) => k),

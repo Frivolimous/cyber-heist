@@ -371,5 +371,7 @@ function dealKits(s: GameState): void {
     s.players[owner].heldCredentialIds.push(cred.id);
     if (WATCHABLE[`HIDDEN_HOST.${module}`]) s.players[owner].watching.push(`HIDDEN_HOST.${module}`); // a kit's bell starts on
   };
-  blacks.forEach((owner, i) => give(owner, kits[i % kits.length]));
+  // The solo test's lone Thief gets every kit: it tests the tools, and one random kit may give no way to win.
+  if (s.scenario?.kind === 'SOLO') for (const kit of HOST_KITS) give(blacks[0], kit);
+  else blacks.forEach((owner, i) => give(owner, kits[i % kits.length]));
 }

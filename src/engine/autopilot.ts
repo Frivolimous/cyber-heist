@@ -106,13 +106,14 @@ export function runAutopilot(s: GameState, execute: Execute): void {
     }
   }
 
-  // IT: trace what an alert points at, else hidden host activity, whenever the cooldown allows.
+  // IT: trace what an alert points at, else hidden host activity, whenever the cooldown allows and the Master
+  // Log is up. Never its own entries (an alert about its own action tells it nothing).
   const it = bots(s, 'IT_SPECIALIST')[0];
-  if (it && t - it.lastTraceAt >= s.config.traceCooldownSec) {
+  if (it && t - it.lastTraceAt >= s.config.traceCooldownSec && s.modules['SECURITY.MASTER_LOG']?.status !== 'OFFLINE') {
     const traced = new Set(sc.traced);
     const fresh = (id: string | null): boolean => {
       const e = id ? s.logs.find((x) => x.id === id) : undefined;
-      return !!e && !traced.has(e.id) && t - e.t <= s.config.traceMaxAgeSec;
+      return !!e && e.actor !== it.id && !traced.has(e.id) && t - e.t <= s.config.traceMaxAgeSec;
     };
     const alerted = [...s.alerts].reverse().find((a) => fresh(a.logId))?.logId;
     const hidden = [...s.logs].reverse().find((e) => e.kind === 'HIDDEN_ACCESS' && fresh(e.id))?.id;

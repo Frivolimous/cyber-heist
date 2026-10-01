@@ -399,7 +399,7 @@ function renderStatus(): void {
   $('status').innerHTML = `
     <div class="who"><b>${esc(v.me.name)}</b><span>${esc(v.me.roleLabel)}</span>
       ${v.me.allegiance === 'BLACK' ? '<span class="chip BLACK">Thief</span>' : ''}
-      ${v.me.terminated ? '<span class="chip terminated">Terminated</span>' : ''}
+      ${v.me.terminated ? `<span class="chip terminated">${v.me.resigned ? 'Resigned' : 'Terminated'}</span>` : ''}
       <span id="lock" class="chip lock" hidden></span></div>
     <div class="clock"><span id="phase" class="phase"></span><span id="pace" class="pace"></span><b id="elapsed"></b><span class="ends" title="The game ends at this time">/ ${fmtClock(v.durationSec)}</span></div>
     <div class="throughput" title="Every payment settled today, however it counts"><span id="thr"></span></div>
@@ -441,7 +441,7 @@ function renderEnd(): void {
      <div class="end-bar"><i class="rv-bar" style="--d:${barsAt.toFixed(2)}s;width:${Math.min(100, (t.made / t.target) * 100)}%"></i></div>`;
   const member = (m: EndMember): string =>
     `<li class="rv" ${at(REVEAL_START + order.indexOf(m) * REVEAL_STEP)}><span class="nm">${esc(m.name)}</span><span class="rl">${esc(m.roleLabel)}</span>
-      ${m.terminated ? '<span class="flag term">Terminated</span>' : ''}
+      ${m.terminated ? `<span class="flag term">${m.resigned ? 'Resigned' : 'Terminated'}</span>` : ''}
       ${m.embezzled > 0 ? `<span class="flag emb">Embezzled ${money(m.embezzled)}</span>` : ''}</li>`;
   const anyEmbezzled = end.teams.some((t) => t.members.some((m) => m.embezzled > 0));
   el.innerHTML = `<div class="end-card ${end.winner ?? 'NONE'}" role="dialog" aria-label="Game over" title="Click to skip ahead">
@@ -494,7 +494,7 @@ function renderRail(): void {
     .table.map((p) => {
       const side = god && game ? game.players[p.id].allegiance : null;
       return `<div class="pl ${p.id === selected ? 'me' : ''}">
-        <span class="nm">${esc(p.name)}${p.id === selected ? ' <small>(you)</small>' : ''}</span><span class="rl">${esc(p.roleLabel)}${p.terminated ? ' <b class="gone">Terminated</b>' : ''}</span>
+        <span class="nm">${esc(p.name)}${p.id === selected ? ' <small>(you)</small>' : ''}</span><span class="rl">${esc(p.roleLabel)}${p.terminated ? ` <b class="gone">${p.resigned ? 'Resigned' : 'Terminated'}</b>` : ''}</span>
         ${side === 'BLACK' ? `<i class="tag BLACK" title="Sandbox: allegiance">Thief</i>` : ''}
       </div>`;
     })
@@ -1605,6 +1605,13 @@ const TABS: [Tab, string][] = [
 ];
 
 /** Tabs + body for a workstation. `remote` = someone else's, shown read-only. */
+/** Quitting, at the bottom of your own profile: a button, then a warning to confirm. */
+function quitHtml(f: Record<string, string>): string {
+  if (f.quitAsk !== 'YES') return `<div class="quit"><button class="small-btn danger" data-act="quitask">Quit…</button></div>`;
+  return `<div class="quit asking"><p><b>Quit your job?</b> This cannot be undone. The bank's systems stop accepting you for the rest of the game, and everyone gets a parting message from you. The game ends when every Thief is out.</p>
+    <button class="small-btn danger" data-act="quitdo">Confirm: I quit</button> <button class="small-btn" data-act="quitback">Back</button></div>`;
+}
+
 function workstationHtml(w: Win, ws: WorkstationView, current: Tab, remote: boolean): string {
   const f = w.form;
   const v = view();
@@ -1629,7 +1636,8 @@ function workstationHtml(w: Win, ws: WorkstationView, current: Tab, remote: bool
       <h4>Your tools</h4>${list(job.tools)}
       <h4>Who you depend on</h4>${list(job.dependsOn)}
       <h4>Rules to know</h4>${list(job.rules)}
-      ${job.operative ? `<div class="job-secret"><h4>Operative handbook</h4>${list(job.operative)}</div>` : ''}`;
+      ${job.operative ? `<div class="job-secret"><h4>Operative handbook</h4>${list(job.operative)}</div>` : ''}
+      ${remote || ws.terminated ? '' : quitHtml(f)}`;
   } else if (current === 'codes') {
     body = `
       <p class="hint">Logs name the credential owner, not the person who typed the code.</p>
@@ -1709,6 +1717,14 @@ function renderPersonal(force = false): void {
 
 async function doShare(w: Win, credId: string): Promise<void> {
   const result = await act({ type: 'SHARE_CREDENTIAL', playerId: selected, credentialId: credId, toPlayerId: w.form.shareTo });
+  w.notice = [{ cls: result.ok ? 'ok' : 'bad', text: result.message }];
+  refresh();
+  renderPersonal(true);
+}
+
+async function doQuit(w: Win): Promise<void> {
+  const result = await act({ type: 'QUIT', playerId: selected });
+  w.form.quitAsk = '';
   w.notice = [{ cls: result.ok ? 'ok' : 'bad', text: result.message }];
   refresh();
   renderPersonal(true);
@@ -1932,6 +1948,16 @@ app.addEventListener('click', (e) => {
       break;
     case 'send':
       if (hostWin) doSend(hostWin);
+      break;
+    case 'quitask':
+    case 'quitback':
+      if (hostWin) {
+        hostWin.form.quitAsk = act === 'quitask' ? 'YES' : '';
+        renderPersonal(true);
+      }
+      break;
+    case 'quitdo':
+      if (hostWin) doQuit(hostWin);
       break;
   }
 });

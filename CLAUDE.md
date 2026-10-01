@@ -52,7 +52,7 @@ diverts payments already in flight (the core heist). Settling into a Target Ledg
 stolen; otherwise it counts toward the bank target only if `countsForBank` (bank.ts) agrees: automatic
 payments always, manual ones only when they fulfil a linked payment request (same payee and amount).
 
-**Endings (ending.ts).** Four triggers (close of business, every Thief terminated, host shut down, bank
+**Endings (ending.ts).** Four triggers (close of business, every Thief out (terminated or quit), host shut down, bank
 system shut down); each checks `thiefTargetMet(s)` live when it fires, and the Thieves win if it holds.
 Meeting the goal never ends the game by itself. Players know the bank's target but must not learn its real progress:
 `PlayerView.settled` is the raw total of every settled payment, and `processed` never goes into a view

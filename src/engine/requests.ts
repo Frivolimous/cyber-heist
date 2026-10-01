@@ -1,7 +1,7 @@
 // Client Requests: customers write to their personal banker asking for payments or changes to their
 // own accounts. Requests are written in words (names, not codes), so acting on one means looking things up.
 
-import { activeCustomers, affordableAmount, MAX_BALANCE_SHARE, MIN_PAYMENT, payingAccount, paymentFor, wealthWeight } from './bank';
+import { activeCustomers, affordableAmount, MAX_BALANCE_SHARE, MIN_PAYMENT, payingAccount, paymentFor, spendable, wealthWeight } from './bank';
 import { addLog, balanceOf, gameTime, knownOf, money, nextId, unusedAccountNumber } from './core';
 import { notify } from './notify';
 import { pick, rand, randInt, weightedPick } from './rng';
@@ -128,14 +128,14 @@ export function requestTimes(s: GameState, t: number, urgent: boolean): Pick<Cli
 
 /**
  * What a customer asks to pay from `account`: an affordable amount in the request range, scaled up by
- * requestAmountFactor (requests are the bank's big payments), but never more than the account holds or a
- * banker may pay by hand. Null when the account cannot afford a payment at all.
+ * requestAmountFactor (requests are the bank's big payments), but never more than the account can spend (its
+ * balance less what it has already promised: spendable) or a banker may pay by hand. Null when the account cannot afford a payment at all.
  */
 function requestAmount(s: GameState, account: string): number | null {
   const base = affordableAmount(s, account, s.config.requestMinAmount, s.config.requestMaxAmount);
   if (base === null) return null;
   const scaled = Math.round((base * s.config.requestAmountFactor) / 1000) * 1000;
-  return Math.min(scaled, Math.floor(balanceOf(s, account) / 1000) * 1000, s.config.maxManualAmount);
+  return Math.min(scaled, Math.floor(spendable(s, account) / 1000) * 1000, s.config.maxManualAmount);
 }
 
 /**
@@ -155,9 +155,9 @@ function paymentSource(s: GameState, cust: Customer): { origin: string; amount: 
     if (amount !== null) return { origin: known.primary, amount, from: 'from our main account' };
   }
   if (form === 'OTHER') {
-    const able = others.filter((a) => balanceOf(s, a) * MAX_BALANCE_SHARE >= MIN_PAYMENT);
+    const able = others.filter((a) => spendable(s, a) * MAX_BALANCE_SHARE >= MIN_PAYMENT);
     if (able.length) {
-      const origin = weightedPick(s, able, (a) => balanceOf(s, a) + 1);
+      const origin = weightedPick(s, able, (a) => spendable(s, a) + 1);
       const amount = requestAmount(s, origin);
       const from = others.length === 1 ? 'from our other account (not the main one)' : 'from whichever of our other accounts has the funds (not the main one)';
       if (amount !== null) return { origin, amount, from };

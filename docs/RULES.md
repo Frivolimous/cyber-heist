@@ -15,8 +15,8 @@ win. Otherwise the ending's own outcome applies.
 | Close of business | yes, bank target not met | Thieves |
 | Close of business | no, bank target met | the bank |
 | Close of business | no, bank target not met | nobody (both lose) |
-| Every Thief terminated | yes | Thieves |
-| Every Thief terminated | no | the bank |
+| Every Thief out (terminated or quit) | yes | Thieves |
+| Every Thief out (terminated or quit) | no | the bank |
 | Firewall "revoke all access" completes on the unregistered host | yes | Thieves |
 | Same | no | the bank |
 | Firewall "revoke all access" completes on a bank system (Security, Client Data, Transaction Processing) | yes | Thieves |
@@ -31,11 +31,15 @@ Details:
   later ending then falls through to its own outcome (a reversal seconds before the clock runs out counts).
 - **Heist secured**: when the ledger first meets the goal, every Thief gets an activity entry and a pop-up
   (page "Target Ledger", whether or not its bell is on): "Heist secured: the Target Ledger holds $X, meeting
-  your $Y goal. Hold it until close of business, or shut the bank down to escape with your prize." When a
+  your $Y goal. Hold it until close of business, or quit to escape with your prize: the day ends once every
+  Thief is out." When a
   reversal takes it back under: "Heist no longer secured: the Target Ledger dropped to $X, under your $Y
   goal. Get it back over the goal before close of business." Each crossing tells them again. While it
-  holds, View targets adds "Heist secured: Hold funds until close of business, or shut the bank down to
-  escape with your prize." Only Thieves ever see any of this.
+  holds, View targets adds "Heist secured: Hold funds until close of business, or quit to escape with your
+  prize." Only Thieves ever see any of this. Quitting is how a secured team ends the day early (see
+  Termination); shutting down a bank system does too, an easter egg: the only hint is the Thieves'
+  handbook ("However it ends (close of business, every Thief out or bank shuts down), the Thieves win
+  if the Target Ledger meets the goal at that moment").
 - **The bank** (the regular employees) wins **at close of business** (when the timer runs out) if **$15M per player** ($150M at
   10 players) of legitimate payments have been SETTLED by then, and the Thieves' goal is not met. Meeting the target early does not end the
   game: the bank has to survive the whole day. Legitimate = every automatic payment, plus manual payments that **fulfil a payment request**
@@ -52,7 +56,7 @@ Details:
   stolen total in the Target Ledger.
 - **Timer:** 20 minutes. If it runs out with the bank short of its target and the Thieves short of
   theirs, **both sides lose**.
-- **The bank** also wins **at once** when **every Thief is terminated** (see Termination), or when a
+- **The bank** also wins **at once** when **every Thief is out**, terminated or quit (see Termination), or when a
   Firewall "revoke all access" completes on the **unregistered host**: it is shut down and
   the heist is over. Either way, the Thieves win instead if their goal is met at that moment.
 - **Bank shut down**: a Firewall "revoke all access" completing on one of the bank's own systems
@@ -123,6 +127,21 @@ Details:
 - A terminated Thief **keeps the unregistered host**: it is outside the bank's firewall, so a revoked
   IP does not cut it off and its credentials are not revoked. (A timed Firewall block still does.)
 - Planted users (Infiltration) are terminated the same way once they have been issued a credential.
+- **Quitting**: any player can quit from the bottom of their own workstation's Profile ("Quit…", then a
+  warning to confirm: irreversible, everyone gets a parting message, the game ends when every Thief is
+  out). A visitor to the workstation cannot. It terminates them exactly as above, except the Master Log
+  says "<name> (<ip>) resigned" and the employee list, Employee Records and the end screen say
+  **Resigned**. They send every other player a private message from themselves, chosen at random, which
+  gives their side away (`THIEF_GOODBYES` / `EMPLOYEE_GOODBYES`, ending.ts):
+  - a Thief: "So long, suckers! Enjoy the paperwork.", "It's been a pleasure robbing you. Don't bother
+    looking for me.", "Check the books after I'm gone. Bye!", "Thanks for all the money. I'm off
+    somewhere sunny.";
+  - a regular employee: "This job sucks. I'm outta here.", "I quit. Good luck keeping this place
+    running.", "That's it, I'm done. Nobody pays me enough for this.", "Consider this my two seconds'
+    notice. Bye."
+  When the last Thief is out the game ends (Win conditions): with the goal met, the Thieves win ("One by
+  one they left the building, and the money left with them."); otherwise the bank ("One by one they left
+  the building, with nothing to show for it.").
 ## Roles
 
 **Player count:** 6 to 30 (`MIN_PLAYERS` / `MAX_PLAYERS`; anything else is refused). The cap of 30 is
@@ -258,11 +277,17 @@ when a payment is created. A **reversal claws the money back** from the account 
 fails ("no longer holds") if that account no longer holds the whole amount, for example because a mule
 account already paid it on.
 
-Automatic payments and payment requests are sized to what the paying account holds: the customer
-paying is picked in proportion to their wealth, the account in proportion to its balance, and the amount
-is at most 40% of that account's balance (at least $10k). Automatic payments are $165k-$1.32M within that.
-A payment request picks $500k-$5M within that, then **x2.18**, but never more than the account holds or the
-$10M a banker may pay by hand (so a request can ask for up to ~87% of an account). A payment request says
+Automatic payments and payment requests are sized to what the paying account can **spend**: its balance
+less what it has already promised (`committedFrom`, bank.ts): payments from it still on their way
+(queued, risk checked, authorized or held) and its customer's payment requests from it still waiting on the
+bank (a request whose payment is on its way counts through that payment). So a customer never asks for
+money they have already committed, and two of their own payments cannot overdraw them by themselves; a
+payment can still fail if one is delayed while the account is drained in other ways (a
+manual payment nobody asked for). The customer paying is picked in proportion to their wealth, the account
+in proportion to what it can spend, and the amount is at most 40% of that (at least $10k). Automatic
+payments are $165k-$1.32M within that. A payment request picks $500k-$5M within that, then **x2.18**, but
+never more than the account can spend or the $10M a banker may pay by hand (so a request can ask for up to
+~87% of it). A payment request says
 where to pay from in one of three forms, a third each: "from our main account" (the primary); "from our
 account 12345" (any of theirs, the richer the likelier); or "from our other account (not the main one)",
 "from whichever of our other accounts has the funds" with several (a non-primary account that can afford
@@ -660,13 +685,15 @@ have no timed tools, so no bell.
 - Failed code attempts on the host (unknown, revoked, wrong access) also write only "Unknown server
   activity". They still count toward the lockout and the failed-attempts total in Employee Records.
 - **Tracing** an "Unknown server activity" entry ("routed through a relay.") returns one true but
-  partial clue, chosen at random (entries from louder kit tools give more: an exact IP or the server's
+  partial clue, chosen at random on its first trace; tracing the same entry again gives the same clue (entries from louder kit tools give more: an exact IP or the server's
   address at tier 3, the IP plus a host access code at tier 4):
   - a range of addresses holding four real workstations (planted users don't count; the origin is one of
     them unless it is a proxy): "The origin workstation is within 10.1.0.37-112." Workstation numbers are
     random, so the range is as wide as it needs to be. If no such range exists (a proxy off the
     workstation subnet), a pair is given instead.
-  - a pair, the real one and a random decoy in random order: "one of two workstations: A or B."
+  - a pair, the real one and a random decoy in random order: "one of two workstations: A or B." Only
+    from a noisy kit tool's entry (tier 2): everyday use (tier 1) raised no alert, and a pair is nearly a
+    name. Where no range holds the origin, everyday use gives a server number instead, a noisy tool the pair.
   - one number of the server's address: "The server's IP address is x.143.x.x."
   - what was done: "Activity performed: posted on Blacknet." (also: read the board, viewed the target
     ledger, connected, failed login attempt)
@@ -693,14 +720,17 @@ game) or open `?sandbox&scenario=duo` / `?sandbox&scenario=solo` (`createGame`'s
   (every 90s). For two people on two machines, open the online sandbox with the scenario
   (`?host=new&scenario=duo`) and have each open the tester link and pick a seat.
 - **Solo Thief test (SOLO):** you are the only Thief (Accounts & Receivables) against five scripted
-  seats (`autopilot.ts`), in a **6-player economy** (bank target $90M, Thief goal $2M). The bots use real
+  seats (`autopilot.ts`), in a **6-player economy** (bank target $90M, Thief goal $2M). You hold **all four
+  kits** (a real game deals one at random), so every tool can be tried and the deal never leaves you
+  without a way to steal. The bots use real
   codes, so every log, alert and bell is real. They wait `BOT_DELAY_SEC` (8s) before acting on new work:
   - banker bots archive obvious phishing and do everything else their customers ask (a scam works on them);
     the first one also approves LOW and MEDIUM payments, and HIGH ones made for a request, and holds the rest;
   - the A&R bot scores what automation leaves with the bank's own risk assessment, verifies only account
     changes a customer asked for, and settles approved payments;
   - the IT bot traces the newest untraced entry an alert points at, else the newest "Unknown server
-    activity" entry, **every time its cooldown allows** (normal cooldown and age limit). It never acts on what
+    activity" entry, **every time its cooldown allows** (normal cooldown and age limit), never one of its
+    own entries and not while the Master Log is offline. It never acts on what
     it learns; the Manager bot does nothing.
   - A strip under the yellow bar turns red when a trace first exposes **your workstation IP** or **the hidden
     host's address**, and lists the latest traces. This is a worst case for the Thief (a tracer that

@@ -263,6 +263,10 @@ button:disabled { cursor: default; opacity: 0.4; }
 .job-list { margin: 0; padding-left: 20px; display: grid; gap: 3px; }
 .job-secret { border-left: 3px solid var(--thief-side); background: #f7e6e4; border-radius: 0 4px 4px 0; padding: 6px 10px 8px; }
 .job-secret h4 { color: var(--thief-side) !important; }
+/* Profile: quitting (QuitAction). */
+.quit { margin-top: 18px; padding-top: 10px; border-top: 1px solid #d9dee8; }
+.quit.asking p { margin: 0 0 8px; padding: 8px 10px; border-radius: 4px; background: #f7d9d5; color: #5c120c; font-size: 13px; }
+.small-btn.danger { color: #a3271b; border-color: #d9a39c; }
 table.cred { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.cred td { padding: 5px 4px; border-bottom: 1px solid #e3e7ee; vertical-align: top; }
 table.cred .code { font: 700 15px var(--mono); letter-spacing: 0.1em; }
