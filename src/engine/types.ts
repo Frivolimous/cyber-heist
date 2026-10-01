@@ -311,6 +311,11 @@ export interface Transaction {
 
 export interface TargetAccount {
   account: string;
+  /**
+   * Its balance when the day started. Mule accounts open with money, like the new accounts customers ask to
+   * add, so a $0 balance never gives them away. The stolen total is current balance less opening balance.
+   */
+  opening: number;
 }
 
 export interface BlacknetMessage {
@@ -450,7 +455,7 @@ export interface GameState {
   blacknet: BlacknetMessage[];
   /**
    * processed: legitimate money settled (automatic payments, plus manual ones that fulfil a payment request).
-   * stolen: the money now sitting in Target Ledger accounts (they start empty).
+   * stolen: the Target Ledger accounts' balances less their opening balances (can go below zero).
    */
   totals: { processed: number; stolen: number };
   hiddenHost: string;

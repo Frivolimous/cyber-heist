@@ -101,9 +101,9 @@ export function thiefTargetMet(s: GameState): boolean {
 }
 
 export const HEIST_SECURED_TEXT = (s: GameState): string =>
-  `Heist secured: the Target Ledger holds ${money(s.totals.stolen)}, meeting your ${money(s.config.blackTarget)} goal. Hold it until close of business, or quit to escape with your prize: the day ends once every Thief is out.`;
+  `Heist secured: the Target Ledger holds ${money(s.totals.stolen)} of stolen money, meeting your ${money(s.config.blackTarget)} goal. Hold it until close of business, or quit to escape with your prize: the day ends once every Thief is out.`;
 export const HEIST_LOST_TEXT = (s: GameState): string =>
-  `Heist no longer secured: the Target Ledger dropped to ${money(s.totals.stolen)}, under your ${money(s.config.blackTarget)} goal. Get it back over the goal before close of business.`;
+  `Heist no longer secured: the Target Ledger's stolen money dropped to ${money(s.totals.stolen)}, under your ${money(s.config.blackTarget)} goal. Get it back over the goal before close of business.`;
 
 /** Mutating: tells every Thief when their goal becomes met, or stops being met (a reversal). */
 function checkHeistSecured(s: GameState): void {

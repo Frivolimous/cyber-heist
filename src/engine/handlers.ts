@@ -1434,7 +1434,8 @@ H['HIDDEN_HOST.TARGET_LEDGER.VIEW_TARGETS'] = (c) =>
     c.s.targets.map((tg) => {
       const owner = accountOwner(c.s, tg.account);
       const where = owner ? `${owner.id}${owner.primary === tg.account ? ' (primary)' : ''}` : 'floating';
-      return `${tg.account}  ${where.padEnd(14)} ${money(balanceOf(c.s, tg.account))}`;
+      const balance = balanceOf(c.s, tg.account);
+      return `${tg.account}  ${where.padEnd(14)} ${money(balance)}  (stolen ${money(balance - tg.opening)})`;
     }),
   );
 

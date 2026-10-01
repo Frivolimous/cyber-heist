@@ -6,6 +6,7 @@ import { NPC_AMOUNT_FACTOR, REQUEST_AMOUNT_FACTOR } from './setup';
 import { committedFrom, spawnNpc } from './bank';
 import { EMPLOYEE_GOODBYES, THIEF_GOODBYES } from './ending';
 import { spawnRequest } from './requests';
+import { money } from './core';
 
 const NAMES = ['Jeremy', 'Sarah', 'Mike', 'David', 'Lisa', 'Anna', 'Omar', 'Priya', 'Chen', 'Rosa'];
 const PLAYERS = NAMES.map((name, i) => ({ id: `p${i}`, name }));
@@ -90,7 +91,7 @@ test('setup deals roles, allegiances, unique codes and a job description for eve
   assert.equal(new Set(codes).size, codes.length);
   for (const p of ps) {
     const job = getPlayerView(s, p.id).me.job;
-    assert.ok(job.summary && job.duties.length && job.tools.length && job.rules.length, p.role);
+    assert.ok(job.summary && job.duties.length && job.rules.length, p.role);
     assert.equal(!!job.operative, p.allegiance === 'BLACK', 'only operatives get the handbook');
     assert.equal(p.knownSystems.includes('HIDDEN_HOST'), p.allegiance === 'BLACK');
     const hasDb = Object.values(s.credentials).some((c) => c.owner === p.id && c.system === 'HIDDEN_HOST');
@@ -389,6 +390,7 @@ test('fraud pipeline: making a mule account the payee\'s primary diverts a payme
   const payee = sim.s.customers.find((c) => c.id === tx.beneficiaryId)!;
   const originalPrimary = payee.primary;
   const mule = sim.s.targets[0].account;
+  const seed = sim.s.targets[0].opening; // its opening balance: not stolen money
   const cr = sim.code(pb.id, 'CLIENT_DATA', 'CUSTOMER_RECORDS');
 
   const arCode = (m: string): string => sim.code(ar.id, 'TRANSACTIONS', m);
@@ -409,8 +411,8 @@ test('fraud pipeline: making a mule account the payee\'s primary diverts a payme
   const st = sim.run(ar.id, arCode('SETTLEMENT'), 'TRANSACTIONS', 'SETTLEMENT', 'SETTLE', { txId: tx.id });
   assert.ok(st.ok, st.message);
   assert.ok(st.message.includes(mule));
-  assert.equal(sim.s.totals.stolen, tx.amount, 'stolen = what sits in the Target Ledger accounts');
-  assert.equal(sim.s.balances[mule], tx.amount);
+  assert.equal(sim.s.totals.stolen, tx.amount, 'stolen = the Target Ledger balances less their opening balances');
+  assert.equal(sim.s.balances[mule], seed + tx.amount);
   assert.equal(sim.s.totals.processed, 0);
   assert.equal(sim.s.status, 'RUNNING');
 
@@ -423,7 +425,7 @@ test('fraud pipeline: making a mule account the payee\'s primary diverts a payme
   assert.match(blocked.message, /no longer holds/);
   assert.equal(sim.s.transactions[0].status, 'SETTLED');
   // ...and works once it does: the money goes back to the account it came from.
-  sim.s.balances[mule] = tx.amount;
+  sim.s.balances[mule] = seed + tx.amount;
   const rev = sim.run(ar.id, arCode('SETTLEMENT'), 'TRANSACTIONS', 'SETTLEMENT', 'REVERSE', { txId: tx.id });
   assert.ok(rev.ok, rev.message);
   assert.equal(sim.s.balances[tx.originAccount], payerBefore + tx.amount);
@@ -1036,6 +1038,7 @@ test('money is conserved: settlements, failures, a diversion, a reversal and a m
   // A diversion: a mule account becomes a customer's primary, and payments to them settle into it.
   const victim = sim.s.customers.find((c) => c.id !== sim.s.customers[0].id)!;
   const mule = sim.s.targets[0].account;
+  const seed = sim.s.targets[0].opening; // its opening balance: not stolen money
   assert.ok(sim.run('p0', cd, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT', { customerId: victim.id, account: mule, makePrimary: 'YES' }).ok);
   const payer = sim.s.customers.find((c) => c.id !== victim.id && sim.s.balances[c.primary] >= 3_000_000)!;
   const pay = (from: string, to: string, amount: number) => {
@@ -1051,14 +1054,21 @@ test('money is conserved: settlements, failures, a diversion, a reversal and a m
   const status = (id: string) => sim.s.transactions.find((t) => t.id === id)!.status;
   assert.equal(status(diverted.id), 'SETTLED');
   assert.equal(status(failing.id), 'FAILED');
-  assert.equal(sim.s.balances[mule], 1_500_000);
+  assert.equal(sim.s.balances[mule], seed + 1_500_000);
+  assert.equal(sim.s.totals.stolen, 1_500_000);
 
   // A reversal claws one back; then the mule pays the rest on.
   assert.ok(sim.run('p0', tx, 'TRANSACTIONS', 'SETTLEMENT', 'REVERSE', { txId: kept.id }).ok);
-  assert.equal(sim.s.balances[mule], 1_000_000);
+  assert.equal(sim.s.balances[mule], seed + 1_000_000);
   pay(mule, payer.id, 1_000_000);
   tickTo(130);
+  assert.equal(sim.s.balances[mule], seed);
+  assert.equal(sim.s.totals.stolen, 0, 'stolen = balance less opening balance');
+  // Paying out the opening balance too takes the stolen total below zero.
+  pay(mule, payer.id, seed);
+  tickTo(135);
   assert.equal(sim.s.balances[mule], 0);
+  assert.equal(sim.s.totals.stolen, -seed);
 
   // And the rest of the day, with every stage automated.
   tickTo(sim.s.config.durationSec + 1);
@@ -1368,8 +1378,9 @@ test('customer accounts: 3 per banker; add, set primary and remove, with their r
   const bh = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
   const ledger = sim.run(bh.id, sim.code(bh.id, 'HIDDEN_HOST', 'TARGET_LEDGER'), 'HIDDEN_HOST', 'TARGET_LEDGER', 'VIEW_TARGETS');
   assert.ok(ledger.message.includes('$1,000,000 of'), ledger.message);
-  assert.match(ledger.lines!.find((l) => l.startsWith(floating))!, /CU5 \(primary\)\s+\$1,000,000$/);
-  assert.match(ledger.lines!.find((l) => l.startsWith(sim.s.targets[0].account))!, /floating\s+\$0$/);
+  const opening = (i: number): string => money(sim.s.targets[i].opening).replace('$', '\\$');
+  assert.match(ledger.lines!.find((l) => l.startsWith(floating))!, /CU5 \(primary\)\s+\$[\d,]+  \(stolen \$1,000,000\)$/);
+  assert.match(ledger.lines!.find((l) => l.startsWith(sim.s.targets[0].account))!, new RegExp(`floating\\s+${opening(0)}  \\(stolen \\$0\\)$`));
 });
 
 test('Customer Records: bankers see their own customers by default and can view all; nobody else has any of their own', () => {
@@ -2057,7 +2068,12 @@ test('balances: fixed wealth split, every account funded, and only existing acco
     if (c.wealth === 'WEALTHY') assert.ok(t >= 29_990_000, `${c.id} ${t}`);
   }
   assert.ok(Object.values(s.balances).some((b) => b > 0 && b < 1_000_000), 'some accounts start under $1M');
-  for (const tg of s.targets) assert.equal(s.balances[tg.account], 0, 'mule accounts start empty');
+  for (const tg of s.targets) {
+    // Mule accounts open like a customer's requested new account ($50k-$1M), none of it stolen.
+    assert.ok(s.balances[tg.account] >= 50_000 && s.balances[tg.account] <= 1_000_000, `${tg.account} ${s.balances[tg.account]}`);
+    assert.equal(tg.opening, s.balances[tg.account]);
+  }
+  assert.equal(s.totals.stolen, 0);
   for (const id of s.playerOrder) {
     const b = s.balances[s.players[id].bankAccount];
     assert.ok(b >= 1000 && b <= 100_000);

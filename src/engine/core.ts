@@ -21,7 +21,7 @@ export function fmtClock(t: number): string {
 }
 
 export function money(n: number): string {
-  return '$' + Math.round(n).toLocaleString('en-US');
+  return (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString('en-US');
 }
 
 export function ok(message: string, lines?: string[]): ActionResult {
@@ -164,7 +164,8 @@ export const balanceOf = (s: GameState, account: string): number => s.balances[a
 export function moveMoney(s: GameState, from: string, to: string, amount: number): void {
   s.balances[from] = balanceOf(s, from) - amount;
   s.balances[to] = balanceOf(s, to) + amount;
-  s.totals.stolen = s.targets.reduce((sum, tg) => sum + balanceOf(s, tg.account), 0);
+  // Stolen = the mule accounts' balances less their opening balances: it can go below zero.
+  s.totals.stolen = s.targets.reduce((sum, tg) => sum + balanceOf(s, tg.account) - tg.opening, 0);
 }
 
 /**

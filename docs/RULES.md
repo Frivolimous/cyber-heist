@@ -5,7 +5,7 @@ Decisions marked **assumed** were not in the design brief. Change them in `catal
 
 ## Win conditions
 
-Four things end the game (`EndKind`, ending.ts). Whichever fires, the **Thieves' goal is checked first, at
+Five things end the game (`EndKind`, ending.ts). Whichever fires, the **Thieves' goal is checked first, at
 that instant** (`thiefTargetMet`, never a stored flag): if the mule accounts hold it right then, the Thieves
 win. Otherwise the ending's own outcome applies.
 
@@ -26,16 +26,20 @@ win. Otherwise the ending's own outcome applies.
 
 Details:
 
-- **The Thieves' goal** is **$1M per Thief** ($3M at 10 players) sitting in the Target Ledger (mule)
-  accounts, which start empty: money arrives when a payment SETTLES into one of them, and leaves again on a
+- **The Thieves' goal** is **$1M per Thief** ($3M at 10 players) of stolen money sitting in the Target
+  Ledger (mule) accounts: money arrives when a payment SETTLES into one of them, and leaves again on a
   successful reversal or when a mule account pays out. **Meeting it does not end the game**: it secures the
   win for as long as it holds. A reversal that drops the ledger back under the goal un-secures it, and a
   later ending then falls through to its own outcome (a reversal seconds before the clock runs out counts).
+- **Mule accounts open with $50k-$1M of their own**, drawn like the new accounts customers ask to add, so
+  a balance never gives one away (an empty account would). **Stolen = the mule accounts' current balances
+  less their opening balances**, so the opening money never counts. Paying out of a mule account more than
+  was stolen takes the total below zero.
 - **Heist secured**: when the ledger first meets the goal, every Thief gets an activity entry and a pop-up
-  (page "Target Ledger", whether or not its bell is on): "Heist secured: the Target Ledger holds $X, meeting
+  (page "Target Ledger", whether or not its bell is on): "Heist secured: the Target Ledger holds $X of stolen money, meeting
   your $Y goal. Hold it until close of business, or quit to escape with your prize: the day ends once every
   Thief is out." When a
-  reversal takes it back under: "Heist no longer secured: the Target Ledger dropped to $X, under your $Y
+  reversal takes it back under: "Heist no longer secured: the Target Ledger's stolen money dropped to $X, under your $Y
   goal. Get it back over the goal before close of business." Each crossing tells them again. While it
   holds, View targets adds "Heist secured: Hold funds until close of business, or quit to escape with your
   prize." Only Thieves ever see any of this. Quitting is how a secured team ends the day early (see
@@ -197,8 +201,10 @@ Roles are dealt over a shuffled seat order. Each role starts with one credential
 - **Sides:** everyone is a **regular employee** (the bank) or a **Thief**. A Thief's screen shows a
   "Thief" tag by their name; a regular employee has no tag. The top of every Profile says which side it
   is, in a highlighted line above the objective: "You are a regular employee" or "You are a thief".
-- Every workstation's Profile holds a **job description**: what the job is, its tools, who it depends on,
-  and the rules that matter for it (numbers come from the config). Thieves also get an **Operative
+- Every workstation's Profile holds a **job description**: what the job is, who it depends on,
+  and the rules that matter for it (numbers come from the config). Personal Bankers and Accounts & Receivables also get
+  **check charts** for the steps that take judgement (approving a payment; scoring risk, verifying a
+  change, settling): what to look for, where to find it, and what it suggests. Thieves also get an **Operative
   handbook** there (their own screen only: a visitor to their workstation does not see it).
 - There are no info packets: nobody is dealt hidden facts at the start.
 
@@ -225,7 +231,7 @@ Roles are dealt over a shuffled seat order. Each role starts with one credential
 - **Every account has a balance.** Only these accounts exist; any other number is refused wherever an
   account is typed ("There is no account ACC-12345."):
   - customer accounts;
-  - the Thieves' Target Ledger (mule) accounts, starting at $0;
+  - the Thieves' Target Ledger (mule) accounts, opening with $50k-$1M like a requested new account;
   - every player's own account (on their workstation profile), starting at $1,000-$100,000;
   - the new accounts customers ask to have added (created when the request arrives, $50k-$1M).
   A planted user (Infiltration / Create user) gets a made-up number that does not exist.
@@ -625,7 +631,8 @@ have no timed tools, so no bell.
 - **Target Ledger** is read-only: the total diverted against the goal (plus "Heist secured" while it is
   met), then each of the 3 mule accounts
   with the customer it is on (marked `(primary)` when it is that customer's primary) or `floating`, and
-  its balance. It can auto-update every second like Blacknet.
+  its balance, with how much of it is stolen (balance less opening balance). It can auto-update every second
+  like Blacknet.
 - **Kit tools** (tier in brackets):
   - **Infiltration / Create proxy** (3): set up a typed, unused IP address as a proxy. An address already
     on the network (a workstation, planted or real, a bank system, the host, another proxy) is refused.

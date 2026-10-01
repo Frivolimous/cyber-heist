@@ -234,7 +234,7 @@ export function createGame(o: NewGameOptions): GameState {
     const accounts = Array.from({ length: randInt(s, 1, 3) }, () => newAccount());
     return { id: `CU${i + 1}`, name, bankerId: null, accounts, primary: accounts[0], originalPrimary: accounts[0], lastModifiedAt: null, history: [], known: { accounts: [...accounts], primary: accounts[0] }, wealth: 'SMALL' as WealthTier, person: false, contact: '', strikes: 0, suspended: false };
   });
-  s.targets = Array.from({ length: 3 }, () => ({ account: newAccount() }));
+  s.targets = Array.from({ length: 3 }, () => ({ account: newAccount(), opening: 0 }));
 
   // Addresses come from a side stream, so the game's main random sequence is unchanged: workstations get
   // distinct random numbers in 10.1.0.x, and the host a random address outside the bank's 10.0/10.1 ranges.
@@ -344,7 +344,10 @@ function fundAccounts(s: GameState): void {
     const cutTotal = cuts.reduce((a, b) => a + b, 0);
     others.forEach((a, j) => (s.balances[a] = Math.round(((total - primary) * cuts[j]) / cutTotal / 1000) * 1000));
   });
-  for (const tg of s.targets) s.balances[tg.account] = 0;
+  // Mule accounts open like the new accounts customers ask to add ($50k-$1M), so their balance gives nothing
+  // away. Drawn from a side stream, so the game's main random sequence is unchanged.
+  const mules = { rngState: (s.rngState ^ 0x6d2b79f5) | 0 };
+  for (const tg of s.targets) s.balances[tg.account] = tg.opening = randInt(mules, 50, 1000) * 1000;
   for (const id of s.playerOrder) s.balances[s.players[id].bankAccount] = randInt(s, 1000, 100_000);
 }
 

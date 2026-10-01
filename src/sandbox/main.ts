@@ -1633,7 +1633,11 @@ function workstationHtml(w: Win, ws: WorkstationView, current: Tab, remote: bool
       ${ws.motivation === null ? '' : `<p class="hint">${esc(ws.motivation)}</p>`}
       <h4>Job: ${esc(ws.roleLabel)}</h4><p class="job-summary">${esc(job.summary)}</p>
       <h4>What you do</h4>${list(job.duties)}
-      <h4>Your tools</h4>${list(job.tools)}
+      ${(job.checks ?? []).map((ch) => `
+        <h4>${esc(ch.title)}</h4>${ch.intro ? `<p class="job-summary">${esc(ch.intro)}</p>` : ''}
+        <table class="job-checks"><thead><tr><th>Look for</th><th>Where</th><th>What it suggests</th></tr></thead><tbody>${ch.rows
+          .map((r) => `<tr><td>${esc(r.look)}</td><td>${esc(r.where)}</td><td>${esc(r.means)}</td></tr>`)
+          .join('')}</tbody></table>`).join('')}
       <h4>Who you depend on</h4>${list(job.dependsOn)}
       <h4>Rules to know</h4>${list(job.rules)}
       ${job.operative ? `<div class="job-secret"><h4>Operative handbook</h4>${list(job.operative)}</div>` : ''}
