@@ -49,8 +49,12 @@ export function mountConsole(d: ConsoleDeps): { render: () => void; printJob: (t
   };
 
   function render(): void {
-    d.host.hidden = !open;
-    if (!open) return;
+    d.host.classList.toggle('open', open);
+    d.host.setAttribute('aria-hidden', String(!open));
+    if (!open) {
+      input.blur(); // keys go back to the page while it slides away
+      return;
+    }
     const s = st();
     outEl.innerHTML = s.out.map((l) => `<div class="${l.cls}">${esc(l.text)}</div>`).join('');
     outEl.scrollTop = outEl.scrollHeight;

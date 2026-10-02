@@ -604,7 +604,10 @@ fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
 
 /* ---- Console (the ` key): drops down over the desk ---- */
 .console { position: absolute; top: 0; left: 0; right: 0; height: 55%; z-index: 100000; display: flex; flex-direction: column; background: var(--term-bg); color: var(--term-text); border-bottom: 2px solid var(--gold); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); font: 13px/1.5 var(--mono); }
-.console[hidden] { display: none; }
+/* Slides down from the top; hidden (and out of the tab order) once it has slid away. */
+.console { transform: translateY(-104%); visibility: hidden; transition: transform 0.16s ease-in, visibility 0s 0.16s; }
+.console.open { transform: none; visibility: visible; transition: transform 0.2s ease-out; }
+@media (prefers-reduced-motion: reduce) { .console, .console.open { transition: none; } }
 .console-head { display: flex; justify-content: space-between; gap: 12px; padding: 6px 12px; border-bottom: 1px solid #23324d; color: var(--term-dim); font-size: 12px; }
 .console-head b { color: var(--gold); font-weight: 600; }
 .console-out.out { flex: 1; min-height: 0; border-radius: 0; white-space: pre-wrap; }

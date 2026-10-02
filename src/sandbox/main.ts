@@ -129,7 +129,7 @@ app.innerHTML = `
           <footer id="taskbar" class="taskbar"></footer>
           <div id="tutorial"></div>
           <div id="toasts" class="toasts" aria-live="polite"></div>
-          <div id="console" class="console" hidden></div>
+          <div id="console" class="console" aria-hidden="true"></div>
           <div id="endscreen" class="endscreen" hidden></div>
         </div>
       </div>
