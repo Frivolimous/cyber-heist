@@ -63,8 +63,7 @@ Every bot runs the same loop on the host, inside the engine's tick (like `runAut
 
 ### Rules the architecture must keep
 
-- **No ground truth.** Today's SOLO bots read raw `GameState` (`r.phish`, `computeRisk`, true actors).
-  Bot-mode bots must not. Perception goes through a function that returns, as structured data, exactly
+- **No ground truth.** Bots never read raw `GameState` for a decision (bots.test.ts greps bots.ts for it). Perception goes through a function that returns, as structured data, exactly
   what the seat's view commands would show its credentials. A test checks that perception never shows
   more than the matching view command.
 - **Looking costs something.** A bot only knows a page's contents after executing its view: a logged
@@ -254,11 +253,12 @@ each tool.
 
 ## Difficulty
 
-One setting for the game, chosen in the lobby. It sets the **means** that each bot's stats are drawn
-around; personalities spread around them, so even an Expert bank has a lazy bot and an Easy one a
-sharp bot. Values are *tune*.
+One setting for the game, chosen in the lobby (for now: Custom settings, "Bots"). It sets the **means**
+that each bot's stats are drawn around; personalities spread around them, so even a Ruthless bank has a
+lazy bot and a Rookie one a sharp bot. The levels are named apart from the game modes (Noob, Normal,
+Expert). Values are *tune*; the ones built so far are in `BOT_LEVELS` (bots.ts) and differ from this table.
 
-| Dial | Easy | Normal | Hard | Expert |
+| Dial | Rookie | Standard | Sharp | Ruthless |
 |---|---|---|---|---|
 | Reaction delay | 15-25s | 8-15s | 4-8s | 2-5s |
 | Action rate (per min) | 4 | 6 | 9 | 12 |
@@ -283,10 +283,10 @@ Other levers, if the dials aren't enough:
 
 Design aims per level:
 
-- **Easy**: a stealth tutorial. Bots announce their suspicions, react slowly and rarely act.
-- **Normal**: a careless crew gets caught, and a careful one wins.
-- **Hard**: the bots catch every loud tool and most stolen codes. Winning needs planning.
-- **Expert**: the bots are a real threat to a skilled, coordinated crew. Wins are possible but rare
+- **Rookie**: a stealth tutorial. Bots announce their suspicions, react slowly and rarely act.
+- **Standard**: a careless crew gets caught, and a careful one wins.
+- **Sharp**: the bots catch every loud tool and most stolen codes. Winning needs planning.
+- **Ruthless**: the bots are a real threat to a skilled, coordinated crew. Wins are possible but rare
   without good use of noise, framing and timing.
 
 ## Endings in bot mode
@@ -304,9 +304,9 @@ people: a wrong "revoke all access" terminates a bot for good, which helps the c
   + trace of L-212"). Shown in the sandbox's Ground truth panel, and possibly on the end screen as a
   debrief ("How they caught you").
 - **Bot-only bank runs** with no Thief: the bank should meet its target at every difficulty without
-  false terminations, except rare ones at Easy (sloppy) and Expert (trigger-happy). This measures the
+  false terminations, except rare ones at Rookie (sloppy) and Ruthless (trigger-happy). This measures the
   noise floor.
-- The SOLO scenario becomes the bot-mode debug harness; its current bots are replaced.
+- The SOLO scenario is the bot-mode debug harness (its old scripted bots are gone).
 
 ## Build phases
 
@@ -324,6 +324,32 @@ alone. Multi-human concerns (kit dealing, crew coordination, chatter between hum
      asked), the evidence model, telegraphing.
 2. **Bank roles doing their jobs** with the job and dedication stats. The bank meets its target with no
    Thieves.
+   - **Built.** reading.ts reads a request from its words (kind, amount, payee by tag or name, the account
+     to pay from; phishing = a sender who is not a customer), tested against every request form. bots.ts:
+     turns at the action rate, bells after the reaction time, page checks at the vigilance interval, slack,
+     typos caught by thoroughness; Personal Banker, A&R, IT (lockouts, traces) and the Manager as backup.
+     The SOLO scenario uses them, with a bot level in Custom settings. Measured (six seeds, idle human):
+     Rookie usually misses the bank target, Standard makes it in most games, Sharp and Ruthless always.
+     Not yet: dedication's exploration and ambition, personalities on profiles.
+3a. **First detection loop (B1, the primary swap) with the evidence model and telegraphing: built**
+   (detective.ts, chatter.ts; botkit.ts holds what every bot has). Decided: a first offence costs the
+   swap (put back) and the code used (revoked, reissued if stolen); "revoke all access" needs suspicion at
+   the bot's actAt, which one trace pointing at the human reaches from Standard up. Bots ask the named
+   employee first at Rookie and Standard. Reports are private messages in fixed forms, readable by breaking
+   into a bot's workstation, and fakeable with a spoofed message. Stats added: paranoia, actAt
+   (decisiveness), memorySec, warns. Rules as built: RULES.md, Dev test scenarios.
+3b. **After the first solo playtest (built):** B11 (the Firewall: modules restored, bank-system revocations
+   cancelled, stray blocks lifted), B13, B8 for security actions (an alert naming a bot for what it did not
+   do), H8 (code cracks: the credential revoked and reissued), and H5 (scam requests) for wary bots: the
+   Manager links a request to a server alert at the same moment and IT traces it; bankers hold such requests
+   and any that would make a new account primary; a follow-up (real) or none by halfway (scam) settles it.
+   Already-acted requests are undone first so the test still works. Stat added: wary (Sharp, Ruthless).
+   Rule change: Add account as primary answers a "make this account primary" request.
+   Then: bots tune automation when queues back up (tuneAt). Decided: every level keeps up with the bank's
+   work and wins a quiet day; levels differ only in dealing with Thieves. Rookie has Standard's job stats,
+   with securityLag 3 (its security pages checked and their bells answered three times slower), low
+   paranoia, a high actAt, short memory and no tracing of unalerted host activity. Quiet days, 20 seeds:
+   every level 20 of 20, no false alarms.
 3. **Core symptoms**: B1 (primary swap), B3 (unauthorised payment), B8 (stolen code), H0 (host clues).
    Scripted attacker tests for each.
 4. **Chain of command**: reports to IT and the Manager, enforcement (revoke, block, revoke all access).

@@ -73,7 +73,7 @@ const ACCOUNT_TEXTS: Record<Exclude<RequestKind, 'PAYMENT'>, ((w: Words) => stri
 };
 
 /**
- * An account request in the customer's words, from the same forms real requests use. Social / Scam request
+ * An account request in the customer's words, from the same forms real requests use. Social / Scam account request
  * writes its fake request with this, so it reads like any other.
  */
 export function accountRequestText(s: GameState, cust: Customer, kind: Exclude<RequestKind, 'PAYMENT'>, account: string): string {

@@ -1,5 +1,6 @@
 // Core data model. Everything here is plain JSON so it can be stored in Firestore later.
 
+import type { BotLevel, BotsState } from './bots';
 import type { PageData } from './perception';
 import type { HeistProgress, HeistTasks, TutorialState } from './tutorial';
 
@@ -26,6 +27,7 @@ export type GameMode = 'NOOB' | 'NORMAL' | 'EXPERT';
 
 export interface GameConfig {
   mode: GameMode; // its preset settings apply under any setting the game's config sets explicitly
+  botLevel: BotLevel; // how good the bots are (bots.ts BOT_LEVELS); only games with bot seats use it
   durationSec: number; // game length
   // Scaling with the table (see scaledConfig in setup.ts). The four derived values below are computed
   // from these at game creation unless the game's config sets them explicitly.
@@ -65,6 +67,7 @@ export interface GameConfig {
   blockSec: number; // how long a Firewall block lasts
   revokeCountdownSec: number; // how long anyone has to cancel a "revoke all access"
   unlockSec: number; // Access / Unlock workstation: seconds until the new workstation login is made
+  proxySetupSec: number; // Infiltration / Create proxy: seconds until the proxy can be used
   crackRevealSec: number; // Access / Code crack: seconds between digit reveals (4 digits ~= a minute)
 }
 
@@ -101,6 +104,7 @@ export interface Reroute {
   fromIp: string;
   toIp: string;
   until: number; // game seconds
+  seconds?: number; // how long it was set for (the owner's status bar gauge)
   byPlayerId: PlayerId; // ground truth: the operative who set it up
 }
 
@@ -111,6 +115,9 @@ export interface Reroute {
 export interface Proxy {
   ip: string;
   t: number; // game seconds
+  readyAt: number; // game seconds: usable from then (Create proxy takes proxySetupSec)
+  ready: boolean; // set up (its operative has been told)
+  result?: string; // what the operative was told when it was ready
   createdBy: PlayerId; // ground truth: the operative who set it up
 }
 
@@ -134,6 +141,7 @@ export interface CodeCrack {
   revealed: number; // digits recovered so far (0-4)
   nextRevealAt: number; // game seconds
   done: boolean; // completed, or aborted (credential revoked / source blocked)
+  result?: string; // how it ended, once done (the operative's screen prints it)
 }
 
 /** A running Unlock workstation (Access kit): after a delay the target gets a new workstation credential. */
@@ -144,6 +152,7 @@ export interface WorkstationUnlock {
   fromIp: string; // the origin as recorded when it started (a proxy during a reroute)
   doneAt: number; // game seconds
   done: boolean; // completed, or stopped by a block on either end
+  result?: string; // how it ended, once done (the operative's screen prints it)
 }
 
 export interface Credential {
@@ -276,7 +285,7 @@ export interface ClientRequest {
   remindAt: number; // game seconds: halfway to the deadline, the customer chases it
   reminders: { t: number; text: string }[]; // follow-ups on the same request, oldest first
   outcome: 'MET' | 'MISSED' | null; // decided at the deadline
-  scam?: boolean; // ground truth: planted by a Thief (Social / Scam request); no real customer is waiting
+  scam?: boolean; // ground truth: planted by a Thief (Social / Scam account request); no real customer is waiting
   phish?: boolean; // an obvious phishing message (fake customer tag, no real sender); customerId is then made up
   sender?: string; // who the request claims to be from, when that is not a customer (phishing)
   status: 'OPEN' | 'DONE' | 'ARCHIVED' | 'EXPIRED';
@@ -402,14 +411,14 @@ export interface Player {
   tutorial?: TutorialState;
   /** Thieves: their personal heist tasks (tutorial.ts). */
   heistTasks?: HeistTasks;
-  bot?: boolean; // a scripted seat in a test scenario (autopilot.ts)
+  bot?: boolean; // a bot seat (bots.ts)
 }
 
 /**
  * Dev-only test scenarios (never offered in a real lobby):
  * - DUO: two seats, one Personal Banker and one Accounts & Receivables, no Thieves; the economy is a
  *   3-player game's (half of 6), to measure the manual workload.
- * - SOLO: one human Thief against five scripted regular employee seats (autopilot.ts) in a 6-player economy;
+ * - SOLO: one human Thief against five bot regular employees (bots.ts) in a 6-player economy;
  *   a scripted IT traces every alert and hidden host entry as soon as its cooldown allows. A worst case for
  *   the Thief, not a model of real play.
  */
@@ -419,10 +428,6 @@ export interface ScenarioState {
   /** SOLO: game seconds when a trace first revealed the human's workstation IP, or the hidden host's address. */
   exposedIpAt: number | null;
   exposedHostAt: number | null;
-  /** SOLO: log entries the scripted IT has traced. */
-  traced: string[];
-  /** SOLO: work the bots have already tried (so a refused action is not retried every tick). */
-  handled: string[];
   /** SOLO: every trace result, oldest first, and what it gave away. */
   traceLog: { t: number; logId: string; text: string; exposes: ('IP' | 'HOST')[] }[];
 }
@@ -480,6 +485,7 @@ export interface GameState {
   totals: { processed: number; stolen: number };
   hiddenHost: string;
   scenario: ScenarioState | null; // a dev test scenario, or null in a real game
+  bots?: BotsState; // the bot seats' minds (bots.ts); absent when nobody is a bot
   counters: { log: number; alert: number; cred: number; tx: number; msg: number; req: number; change: number; revoke: number; host: number; player: number; crack: number; notice: number; wcred: number; xcred: number; unlock: number };
 }
 

@@ -2,8 +2,8 @@
 
 import { ROLES, SYSTEMS } from './catalog';
 import type { SystemDef } from './catalog';
-import { accountExists, balanceOf, fmtClock, gameTime, nameOf, systemAddress, tableSize } from './core';
-import { credScopeText, proxyUnavailable } from './handlers';
+import { accountExists, activeBlock, balanceOf, fmtClock, gameTime, nameOf, systemAddress, tableSize } from './core';
+import { ALERT_MUTE_SEC, allChanges, credScopeText, maskedCode, proxyUnavailable } from './handlers';
 import { jobDescription } from './jobs';
 import { endSummary } from './ending';
 import type { EndSummary } from './ending';
@@ -75,7 +75,18 @@ export interface PlayerView {
   /** Every employee on record, planted users included (they can be messaged and issued credentials). */
   players: { id: PlayerId; name: string; roleLabel: string }[];
   /** The real people at the table (everyone on the call knows who they are), and who has been terminated. */
-  table: { id: PlayerId; name: string; roleLabel: string; terminated: boolean; resigned: boolean }[];
+  table: { id: PlayerId; name: string; roleLabel: string; terminated: boolean; resigned: boolean; lock: Countdown | null; block: Countdown | null }[];
+  /**
+   * Countdowns for the status bar's gauges: a pending "revoke all access" (Firewall readers), an alert mute (every
+   * Thief), and a reroute of this player's own workstation IP (its owner, whoever set it up).
+   */
+  timers: (Countdown & { id: string; kind: 'REVOKE' | 'MUTE' | 'REROUTE'; label: string })[];
+  /** The operative's own Code cracks, Workstation unlocks and proxy setups, finished ones too (the screen prints how each ended). */
+  kitJobs: KitJob[];
+  /** The whole bank's workload, the same for everyone: what is waiting at each step, and settlements still reversible. */
+  workload: WorkloadItem[];
+  /** This player's Trace cooldown while it runs (Master Log). */
+  traceCooldown: Countdown | null;
   /** Rule numbers the screens quote. */
   settings: { blockSec: number; revokeCountdownSec: number };
   systems: SystemDef[]; // only systems this player knows about
@@ -93,6 +104,36 @@ export interface PlayerView {
   heist: HeistView | null;
   /** Each payment stage's automation (its page's badge), only for stages this player can read. */
   automation: StageAutomation;
+}
+
+/**
+ * A countdown the screen draws as a gauge: it ends at game second `until` (null: never, a permanent block)
+ * and lasts `total` seconds in all. End times, not seconds left, so a view does not change every second.
+ */
+export interface Countdown {
+  until: number | null;
+  total: number;
+}
+
+/**
+ * One step's queue in the status bar. `level` is how many are waiting per person who works that step (Personal
+ * Bankers: requests and approvals; Accounts & Receivables: verification, risk and settlement): calm under 2 each,
+ * busy under 4, swamped beyond. Clawback (settled, still inside the reversal window) has no level.
+ */
+export interface WorkloadItem {
+  label: string;
+  count: number;
+  level: 'calm' | 'busy' | 'swamped' | null;
+}
+
+/** A Code crack, Workstation unlock or Create proxy: its card shows a progress bar while it runs. */
+export interface KitJob extends Countdown {
+  id: string;
+  kind: 'CRACK' | 'UNLOCK' | 'PROXY';
+  label: string;
+  detail: string; // a crack's digits so far
+  done: boolean;
+  result: string | null; // how it ended
 }
 
 /** The automation settings by stage page; a stage is missing when the player cannot read it. */
@@ -173,6 +214,60 @@ function stageAutomation(s: GameState, p: Player): StageAutomation {
   return out;
 }
 
+/**
+ * A pending "revoke all access", for whoever can read the Firewall; Cleanup / Alert mute while it lasts, for every
+ * Thief; Infiltration / Reroute IP on this player's own workstation, for its owner (an innocent one included).
+ */
+function timersFor(s: GameState, p: Player): PlayerView['timers'] {
+  const out: PlayerView['timers'] = [];
+  if (canReadModule(s, p, 'SECURITY', 'FIREWALL')) {
+    for (const r of s.revocations) {
+      if (r.status === 'PENDING') out.push({ id: r.id, kind: 'REVOKE', label: `Revoke all: ${r.address}`, until: r.executeAt, total: s.config.revokeCountdownSec });
+    }
+  }
+  if (p.allegiance === 'BLACK' && gameTime(s) < s.alertMuteUntil) {
+    out.push({ id: 'MUTE', kind: 'MUTE', label: 'Alerts muted', until: s.alertMuteUntil, total: ALERT_MUTE_SEC });
+  }
+  const rr = s.reroutes.find((r) => r.fromIp === p.ip && r.until > gameTime(s));
+  if (rr) out.push({ id: 'REROUTE', kind: 'REROUTE', label: 'IP rerouted', until: rr.until, total: rr.seconds ?? rr.until - gameTime(s) });
+  return out;
+}
+
+function kitJobsFor(s: GameState, p: Player): KitJob[] {
+  const c = s.config;
+  const cracks = s.cracks
+    .filter((k) => k.actorId === p.id)
+    .map((k): KitJob => {
+      const code = s.credentials[k.credentialId]?.code ?? '____';
+      return { id: k.id, kind: 'CRACK', label: `${k.id} on ${k.credentialId}`, detail: maskedCode(code, k.revealed), until: k.nextRevealAt + (3 - k.revealed) * c.crackRevealSec, total: 4 * c.crackRevealSec, done: k.done, result: k.result ?? null };
+    });
+  const unlocks = s.unlocks
+    .filter((u) => u.actorId === p.id)
+    .map((u): KitJob => ({ id: u.id, kind: 'UNLOCK', label: `${u.id} on ${nameOf(s, u.targetId)}'s workstation`, detail: '', until: u.doneAt, total: c.unlockSec, done: u.done, result: u.result ?? null }));
+  const proxies = s.proxies
+    .filter((x) => x.createdBy === p.id)
+    .map((x): KitJob => ({ id: `proxy:${x.ip}`, kind: 'PROXY', label: `Proxy ${x.ip}`, detail: '', until: x.readyAt, total: x.readyAt - x.t, done: x.ready, result: x.result ?? null }));
+  return [...cracks, ...unlocks, ...proxies];
+}
+
+function workloadOf(s: GameState): WorkloadItem[] {
+  const t = gameTime(s);
+  const staff = (role: RoleId): number => s.playerOrder.filter((id) => !s.players[id].fake && !s.players[id].terminated && s.players[id].role === role).length;
+  const item = (label: string, count: number, role: RoleId): WorkloadItem => {
+    const each = count / Math.max(1, staff(role));
+    return { label, count, level: each < 2 ? 'calm' : each < 4 ? 'busy' : 'swamped' };
+  };
+  const txs = (...st: string[]): number => s.transactions.filter((tx) => st.includes(tx.status)).length;
+  return [
+    item('Requests', s.requests.filter((r) => r.status === 'OPEN').length, 'PERSONAL_BANKER'),
+    item('Verify', allChanges(s).filter((h) => !h.verified).length, 'ACCOUNTS_RECEIVABLES'),
+    item('Risk', txs('QUEUED'), 'ACCOUNTS_RECEIVABLES'),
+    item('Approve', txs('RISK_CHECKED', 'HELD'), 'PERSONAL_BANKER'),
+    item('Settle', txs('AUTHORIZED'), 'ACCOUNTS_RECEIVABLES'),
+    { label: 'Clawback', count: s.transactions.filter((tx) => tx.status === 'SETTLED' && tx.settledAt !== null && t - tx.settledAt <= s.config.reversalWindowSec).length, level: null },
+  ];
+}
+
 export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
   const p = s.players[playerId];
   const t = gameTime(s);
@@ -197,7 +292,24 @@ export function getPlayerView(s: GameState, playerId: PlayerId): PlayerView {
     players: s.playerOrder.map((id) => ({ id, name: s.players[id].name, roleLabel: ROLES[s.players[id].role].label })),
     table: s.playerOrder
       .filter((id) => !s.players[id].fake)
-      .map((id) => ({ id, name: s.players[id].name, roleLabel: ROLES[s.players[id].role].label, terminated: !!s.players[id].terminated, resigned: s.players[id].terminated?.reason === 'RESIGNED' })),
+      .map((id) => {
+        // What the whole table would know anyway: the person says so on the call. A block acts on the real address.
+        const q = s.players[id];
+        const block = q.terminated ? undefined : activeBlock(s, q.ip);
+        return {
+          id,
+          name: q.name,
+          roleLabel: ROLES[q.role].label,
+          terminated: !!q.terminated,
+          resigned: q.terminated?.reason === 'RESIGNED',
+          lock: !q.terminated && q.lockedUntil > t ? { until: q.lockedUntil, total: s.config.lockoutSec } : null,
+          block: block ? { until: block.until, total: s.config.blockSec } : null,
+        };
+      }),
+    timers: timersFor(s, p),
+    kitJobs: kitJobsFor(s, p),
+    workload: workloadOf(s),
+    traceCooldown: p.lastTraceAt + s.config.traceCooldownSec > t ? { until: p.lastTraceAt + s.config.traceCooldownSec, total: s.config.traceCooldownSec } : null,
     settings: { blockSec: s.config.blockSec, revokeCountdownSec: s.config.revokeCountdownSec },
     systems: SYSTEMS.filter((sys) => p.knownSystems.includes(sys.id)).map((sys) => ({ ...sys, address: systemAddress(s, sys.id) })),
     openModules: Object.entries(s.modules).filter(([, m]) => m.open).map(([k]) => k),

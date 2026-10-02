@@ -118,6 +118,7 @@ export function startTutorials(s: GameState): void {
   s.heistProgress = { onFile: false, primary: false, earning: false, goalMet: false };
   for (const id of s.playerOrder) {
     const p = s.players[id];
+    if (p.bot) continue; // checklists are for people
     if (p.allegiance === 'BLACK') p.heistTasks = { openedHost: false, posted: false, ledger: false, kit: false };
     if (p.role === 'PERSONAL_BANKER') p.tutorial = { kind: 'BANKER', requestId: null, viewed: false, openedQueue: false, retry: false, result: null };
     if (p.role === 'ACCOUNTS_RECEIVABLES') p.tutorial = { kind: 'AR', parts: { RISK: newPart(), SETTLE: newPart(), VERIFY: newPart() }, result: null };

@@ -113,6 +113,21 @@ Normal target is about 70-95% of what is possible and the Noob one about 60-75%.
   can still be finished). The header shows the time of day, the busy level and the game clock counting
   up to its end ("07:42 / 20:00"). Every time players see (logs, records, requests, the end screen) uses
   that same clock.
+- **Countdown gauges** (a ring that empties as the seconds count down). On the employee list, everyone
+  sees who is **Locked out** or **Blocked** by the Firewall, as the table would hear it on the call anyway
+  (a block shows on whoever's real address it cuts off). The status bar shows your own lockout or block, a
+  pending **revoke all access** if you can read the Firewall (so you can cancel it), **IP rerouted** while
+  an Infiltration / Reroute IP is on your own workstation (whoever set it up, so a framed employee sees it
+  too), and, for every Thief, **Alerts muted** while a Cleanup / Alert mute lasts. While your trace engine
+  cools down, the Master Log's Trace button is disabled with a countdown ring beside it. A running **Code
+  crack**, **Unlock workstation** or **Create proxy** shows as a progress bar in its own tool card (a crack's
+  digits so far, and the seconds left), with its button disabled; when it ends, its result is printed in
+  that page's terminal.
+- **The bank's workload** (status bar, the same for everyone): what is waiting at each step, **Requests**
+  (open), **Verify** (account changes not yet verified), **Risk** (to score), **Approve** (scored or held),
+  **Settle** (approved), and **Clawback** (settled, still inside the reversal window). Each step goes amber at
+  2 waiting per person who works it and red at 4 (Personal Bankers: requests and approvals; Accounts &
+  Receivables: verification, risk and settlement). Clawback is a plain count.
 - **The day starts empty:** nothing is waiting at the start. The first automatic payment arrives at
   **10s** (`FIRST_PAYMENT_SEC`, bank.ts). Each Personal Banker's **first request** arrives between 10s and
   50s (spread evenly, `FIRST_REQUESTS_WINDOW`); the regular client requests start at **90s**
@@ -395,10 +410,11 @@ of "potential targets for fraudulent transactions").
   - **Security off / on** for a module: with security off, the module needs no code; its use is logged
     as "Anonymous ... (open access)" (the workstation is still stored for Trace) and open use has full
     access to that module. The Firewall's own security cannot be switched off.
-  - **Block an address** for 60s (`blockSec`), or **Unblock** it early. A blocked workstation cannot use
+  - **Block Address** (one tool, one address, three buttons): **Block for 60s** (`blockSec`), **Unblock** it
+    early, or **Revoke all access** (below). A blocked workstation cannot use
     any system, connect to hosts or log in to workstations (private messages still work). A blocked system
     address (a bank system or the unregistered host) cannot be used by anyone. Logged in the Master Log only.
-  - **Revoke all access** for an address: a confirmation ("irreversible"), then a 30s countdown
+  - **Revoke all access**: a confirmation ("irreversible"), then a 30s countdown
     (`revokeCountdownSec`) that can only be cancelled from the Firewall (**Cancel a revocation** by id).
     **Only one revocation counts down at a time**, bank-wide: starting another is refused, naming the
     one in progress, until it completes or is cancelled.
@@ -527,7 +543,7 @@ of "potential targets for fraudulent transactions").
   or the person themselves for a private customer. Requests, follow-ups (normal and urgent), complaints
   and walkouts are each picked from a set of 6-10 form messages ("This is Cody from Cobalt Payroll.",
   "Regarding the payment to ...", ...).
-- **Scam requests** (Social / Scam request) are worded from the same form messages as real requests
+- **Scam requests** (Social / Scam account request) are worded from the same form messages as real requests
   (the operative picks the customer and what is asked, not the text). They show a deadline like any
   other (the urgent one for an urgent payment), but no customer ever follows up or complains: they
   expire quietly, with no strike. A payment made for a scam request never counts toward the bank's
@@ -586,7 +602,8 @@ chases it.
   Thief swaps the primary to a mule before the deadline, the request is not done: the customer
   complains, naming the banker. After the deadline, the same swap changes nothing about that request.
 - **Some requests cannot be done as asked.** A customer who does not know an account was removed may ask
-  to make it primary: that means adding the account back first. (Asking to remove it is already done.)
+  to make it primary: that means adding the account back first. Add account with "make it primary" takes
+  that request's id, so one action answers it. (Asking to remove it is already done.)
 
 ## Tutorials
 
@@ -756,7 +773,8 @@ have no timed tools, so no bell.
 - **Kit tools** (tier in brackets):
   - **Infiltration / Create proxy** (3): set up a typed, unused IP address as a proxy. An address already
     on the network (a workstation, planted or real, a bank system, the host, another proxy) is refused.
-    Proxies are shared by every operative, and Reroute IP and Create user can only use proxies, so
+    It takes **10s** to set up (`proxySetupSec`; a progress bar in its card, the terminal says when it is
+    ready) and cannot be used before then. **Only one proxy can be set up at a time.** Proxies are shared by every operative, and Reroute IP and Create user can only use proxies, so
     neither can borrow a real workstation's IP. A proxy is an address like any other: the Firewall can
     block it or revoke all access to it. Typing its address into a window's address bar shows a **Proxy
     relay** page: nothing to log in to, but it says whether traffic is going through it right now (a
@@ -776,7 +794,7 @@ have no timed tools, so no bell.
   - **Social / Spoofed message** (2): a private message that appears to come from another employee (typed
     to, from and text). It lands only in the recipient's inbox, never the impersonated sender's history,
     so comparing notes exposes it; a made-up sender name shows as typed.
-  - **Social / Scam request** (2): a fake Client Request from a customer to their banker, worded like
+  - **Social / Scam account request** (2): a fake Client Request from a customer to their banker, worded like
     real requests. It asks either for an account change (set primary, add and make primary, add, or
     remove an account) or for a payment (pay a typed payee a typed amount from the customer's main
     account, normal or urgent, up to the manual payment cap). It looks normal in the queue; the leak is
@@ -789,13 +807,14 @@ have no timed tools, so no bell.
   - **Access / Code crack** (2): pick a module; one digit of a random credential covering it is recovered
     about every 15s (a minute for all four), each leaving an alert naming the credential and its
     progress. The operative learns the credential when it completes. Revoking the credential or a timed
-    block on the operative's workstation stops it. **Only one code crack can run at a time**, across the
+    block on the operative's workstation stops it, and the operative is told. **Only one code crack can run at a time**, across the
     whole team: another is refused until it completes or is stopped.
   - **Access / Unlock workstation** (3): type a workstation IP. After 30s (`unlockSec`) that player gets a
     new workstation credential, and only the operative learns its code (in their activity log). The alert
     names the target's IP. A block on either end, the target or the operative (its real IP or the one
     recorded when it started, e.g. a proxy), stops it. The new credential is hidden from Permissions but
-    leaves a gap in the C ids, and can be revoked by id.
+    leaves a gap in the C ids, and can be revoked by id. **Only one unlock can run at a time**, like a
+    code crack.
   - **Access / Lockout bomb** (2): failed logins spoofed from the target's IP trip their lockout. Employee
     Records can reset it.
 - Kit tools have no cooldowns or charges; each is balanced by its **exposure tier**, shown on its button:
@@ -852,22 +871,87 @@ game) or open `?sandbox&scenario=duo` / `?sandbox&scenario=solo` (`createGame`'s
   (half of 6): the bank target, payment volume and customers (3) are halved, with one banker's requests
   (every 90s). For two people on two machines, open the online sandbox with the scenario
   (`?host=new&scenario=duo`) and have each open the tester link and pick a seat.
-- **Solo Thief test (SOLO):** you are the only Thief (Accounts & Receivables) against five scripted
-  seats (`autopilot.ts`), in a **6-player economy** (bank target $90M, Thief goal $2M). You hold **all four
+- **Solo Thief test (SOLO):** you are the only Thief (Accounts & Receivables) against five bot
+  regular employees (`bots.ts`, bot mode step 2: see [BotMode.md](BotMode.md)), in a **6-player economy**
+  (bank target $78M, Thief goal $2M). You hold **all four
   kits** (a real game deals one at random), so every tool can be tried and the deal never leaves you
-  without a way to steal. The bots use real
-  codes, so every log, alert and bell is real. They wait `BOT_DELAY_SEC` (8s) before acting on new work:
-  - banker bots archive obvious phishing and do everything else their customers ask (a scam works on them);
-    the first one also approves LOW and MEDIUM payments, and HIGH ones made for a request, and holds the rest;
-  - the A&R bot scores what automation leaves with the bank's own risk assessment, verifies only account
-    changes a customer asked for, and settles approved payments;
-  - the IT bot traces the newest untraced entry an alert points at, else the newest "Unknown server
-    activity" entry, **every time its cooldown allows** (normal cooldown and age limit), never one of its
-    own entries and not while the Master Log is offline. It never acts on what
-    it learns; the Manager bot does nothing.
-  - A strip under the yellow bar turns red when a trace first exposes **your workstation IP** or **the hidden
-    host's address**, and lists the latest traces. This is a worst case for the Thief (a tracer that
-    never misses a chance), not a model of attentive regular employee play.
+  without a way to steal. Bots get no tutorial checklists.
+  - **How bots work.** A bot decides only from pages it opens with its own codes (each read is logged under
+    its name, as anyone's is) and its own screen (bells). It spends its time in turns at its action rate:
+    each turn it opens one page or does one thing it saw there. A bell brings its page forward after the
+    bot's reaction time; otherwise it checks each of its job's pages every so often. Some turns it does
+    nothing (slack), and now and then it mistypes a number (accuracy), unless it reads it back and catches
+    it (thoroughness).
+  - **Personal Banker bots** read each request from its words: the amount, the payee (the tag when given,
+    else the name looked up in Customer Records), and the account to pay from ("our main account" is the
+    primary on file now). They archive messages from senders who are not customers (phishing), act on
+    everything else, including scams, and redo a request when its customer chases it. They approve
+    risk-checked payments: their own if it matches the request (rejected if mistyped), others' unless
+    scored HIGH (held). The first banker bot takes the payments made for no banker bot's request.
+  - **The A&R bot** scores what automation leaves, from what the risk queue shows: HIGH for an unverified
+    account or money from an account on no customer, MEDIUM for a large payment or a manual one made for
+    no request, LOW otherwise. It settles approved payments and verifies changes made for a request;
+    changes made for none stay unverified.
+  - **The Manager bot** backs them up: it settles and verifies what has waited 40s.
+  - **Tuning automation** (`tuneAt`): when 4 payments (3 at Sharp and Ruthless) wait in
+    Settlement, the A&R bot (the Manager bot if there is none) sets automatic settlement up to the manual
+    cap; when as many wait in Risk Check, automatic scoring takes manual payments too, up to the large-payment
+    line, still only from customer accounts to verified primaries (an unverified primary stays with people).
+  - **The IT bot** resets lockouts and, whenever its cooldown allows, traces the newest alert's entry it has
+    seen, else (from Standard up) the newest "Unknown server activity" entry, never its own.
+  - **Catching account changes nobody asked for** (the primary swap; `detective.ts`, bot mode step 3):
+    - A **banker bot** notices its own customers' files changing when it next looks at Customer Records (it
+      checks every few minutes unprompted; thorough ones keep the Customer Records bell on, which names who
+      did it). If the bell is on but silent, the change is under its own name and it knows it did not make
+      it: its code was used. It puts the file back (the old primary, the stranger's account off) and reports
+      to security.
+    - The **A&R bot** (the Manager bot if there is none) judges every change made for no request in
+      Verification: one undoing an earlier suspect change is verified (a colleague putting things right);
+      any other is reported to security and never verified.
+    - **Security** is the IT bot (the Manager bot once there is none). It finds the change in the Master Log,
+      traces it while it is under 3 minutes old, and looks the address up in Employee Records. The code used
+      is revoked, and reissued to its owner when someone else used it. An employee whose suspicion reaches
+      the bot's threshold gets **"revoke all access"** on their workstation: from Standard up, one trace
+      pointing at them is enough; at Rookie it takes more. A traced address that is nobody's workstation (a
+      proxy) is blocked. Without a trace, the name on the records takes the blame (evidence that fades).
+    - **Messages.** Reports go to security as private messages in fixed forms (`chatter.ts`), which bots also
+      read, so a spoofed message in a colleague's name can fake one. At Rookie and Standard, bots first ask
+      whoever the records name ("Did you change CU4's accounts (ACC-12345 made primary)? Nobody asked for
+      that."); a bot asked about a change it did not make answers "Not me" and tells security, which clears
+      it. Security tells its target when it starts revoking their access, and an owner when their code is
+      replaced.
+    - **Its own name on something it did not do.** An alert naming a bot for a security action it did not
+      take ("ITBot took Master Log offline") means its code was used: security handles it like a swap
+      (trace, the code revoked and reissued). A bot that is not security reports it ("Report: L76 (...) was
+      done under my name").
+    - **The Firewall.** IT and the Manager keep its bell and the Master Log's on, and check its status every
+      so often (at once when a page says it is offline, or an alert names a security action). A module
+      offline or with its security off is put back; a "revoke all access" on one of the bank's systems is
+      cancelled (straight from the pop-up or alert, without opening the Firewall first); IT also cancels any
+      revocation it did not start, and lifts any block it did not place.
+    - **Code cracks.** Each crack alert names the credential: security revokes it and issues its owner a new
+      one. A Firewall or Permissions credential's revocation still counts down, so a crack may finish, but
+      the code it reveals dies with the countdown.
+    - **Scam requests** (Sharp and Ruthless only: `wary`). The Manager bot links a request that arrived with
+      a server alert (within 2s), tells its banker to hold it, and asks IT to trace the alert's entry; IT
+      sends the result to both. A banker also holds any request that would make an account primary that is
+      not on file. A held request is settled by its customer: a follow-up means a real customer is waiting
+      (the banker acts at once); none by halfway to the deadline, judged from a page opened after that, means
+      nobody is (archived as a scam). A trace showing "planted a scam client request" settles it at once. If
+      the banker had already acted, it undoes it first (rejects the payment, puts the file back, and tells
+      A&R so the undo is not taken for tampering), so that a real customer, seeing it not done, chases it.
+    - Measured with a stolen-code swap at 2:30 (seed 4): put back within about a minute at every level;
+      the human terminated by about 5:00 at Standard, 4:45 at Sharp, 4:05 at Ruthless; at Rookie only the
+      code is replaced. With nobody stealing, no bot ever raised an alarm (24 games).
+  - **Bot level** (Custom settings, "Bots"; `botLevel`, `BOT_LEVELS`): Rookie, Standard (the default), Sharp or
+    Ruthless. Each bot's stats are drawn up to 20% either side of its level's (shown in Download state).
+    The day job is the same skill at Rookie and Standard; the levels differ in dealing with Thieves. Rookie
+    bots check the pages where tampering shows (alerts, the Firewall, the Master Log, Employee Records, their
+    customers' files) three times less often (`securityLag`), weigh evidence less, need more of it to act,
+    forget sooner, and never trace host activity nobody raised an alert about. Measured with nobody stealing
+    and the human idle (20 seeds): every level meets the bank target every day, with no false alarms.
+  - A strip under the yellow bar shows the bot level and turns red when a trace first exposes **your
+    workstation IP** or **the hidden host's address**, and lists the latest traces.
 - **Custom settings** (a button in the sandbox's yellow bar, applying on New game, and on the host's lobby
   page): every tunable `DEFAULT_CONFIG` value as a form, grouped (game, targets, volume, amounts, customers,
   security timing, starting automation). Only changed values are passed to `createGame`; the values derived

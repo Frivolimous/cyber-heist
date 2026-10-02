@@ -154,7 +154,8 @@ Things worth trying first:
 - **Download state** (sandbox yellow bar, host screen's Dev tools): the whole game, config included, as JSON.
 - **Test scenarios** (sandbox yellow bar, "table"; or `?sandbox&scenario=duo` / `solo`): a 2-player
   workload test (one Personal Banker, one A&R, no Thieves, a 3-player economy), and a solo Thief
-  test against scripted regular employees whose IT traces everything it can. For two people on two machines:
+  test against five bot regular employees (Rookie to Ruthless) who do their jobs, trace alerts, and catch
+  account changes nobody asked for. For two people on two machines:
   `?host=new&scenario=duo`, then each opens the tester link.
 
 ## Layout
@@ -172,7 +173,10 @@ src/engine/
   notify.ts       the page bells: who gets a pop-up notification about what
   pacing.ts       time of day and how fast new work arrives
   jobs.ts         job descriptions shown in each profile
-  autopilot.ts    dev test scenario: the scripted regular employee seats of the solo Thief test
+  bots.ts         bot mode: bank employees as bots (the solo Thief test's seats): their jobs and turns
+  botkit.ts       what every bot has: stats, memory, evidence; detective.ts catches tampering; chatter.ts
+                  the messages bots write and read; reading.ts reads requests
+  perception.ts   bank pages as data, for bots; senses.ts opens them
   views.ts        getPlayerView: the only data a given player may see
   engine.test.ts  tests
 src/sandbox/

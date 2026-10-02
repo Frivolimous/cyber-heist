@@ -7,6 +7,7 @@ import './style.css';
 import {
   advanceState,
   applyAction,
+  BOT_LEVELS,
   createGame,
   CREDENTIAL_SHARING_ENABLED,
   findFn,
@@ -25,7 +26,7 @@ import {
   TERMINATED_TEXT,
   WATCHABLE,
 } from '../engine';
-import type { Action, ActionResult, EndMember, EndTeam, GameState, Pace, PlayerId, PlayerView, ScenarioKind, StageAutomation, SystemId, TutorialView, WorkstationView } from '../engine';
+import type { Action, ActionResult, Countdown, EndMember, EndTeam, GameState, Pace, PlayerId, PlayerView, ScenarioKind, StageAutomation, SystemId, TutorialView, WorkstationView } from '../engine';
 import type { ArPart } from '../engine/tutorial';
 import { downloadState } from './dump';
 import { mountSettings } from './settings';
@@ -324,7 +325,7 @@ function renderTesterBar(): void {
 }
 
 /**
- * The test scenario strip under the dev bar. SOLO: whether the scripted IT's traces have exposed your
+ * The test scenario strip under the dev bar. SOLO: the bots' level, whether the IT bot's traces have exposed your
  * workstation IP or the hidden host's address yet (red once they have), and its latest traces.
  */
 function renderScenario(): void {
@@ -343,7 +344,7 @@ function renderScenario(): void {
   const recent = sc.traceLog.slice(-3).reverse();
   el.className = `dev scenario ${exposed ? 'exposed' : ''}`;
   el.innerHTML = `<b>${SCENARIO_LABEL.SOLO}</b> ${flag('Your workstation IP', sc.exposedIpAt)} ${flag('Hidden host address', sc.exposedHostAt)}
-    <span class="sc-note">ITBot traces every alert and host entry as soon as its cooldown allows: a worst case, not real play. ${sc.traceLog.length} traces so far.</span>
+    <span class="sc-note">Bots: ${esc(BOT_LEVELS[game.bots?.level ?? 'STANDARD'].label)} (they do their jobs and catch tampering; from Sharp up, scams too). ${sc.traceLog.length} traces so far.</span>
     ${recent.length ? `<ul>${recent.map((x) => `<li class="${x.exposes.length ? 'hit' : ''}">[${fmtClock(x.t)}] ${esc(x.logId)}: ${esc(x.text)}</li>`).join('')}</ul>` : ''}`;
 }
 
@@ -403,10 +404,11 @@ function renderStatus(): void {
     <div class="who"><b>${esc(v.me.name)}</b><span>${esc(v.me.roleLabel)}</span>
       ${v.me.allegiance === 'BLACK' ? '<span class="chip BLACK">Thief</span>' : ''}
       ${v.me.terminated ? `<span class="chip terminated">${v.me.resigned ? 'Resigned' : 'Terminated'}</span>` : ''}
-      <span id="lock" class="chip lock" hidden></span></div>
+      <span id="timers" class="timers"></span></div>
     <div class="clock"><span id="phase" class="phase"></span><span id="pace" class="pace"></span><b id="elapsed"></b><span class="ends" title="The game ends at this time">/ ${fmtClock(v.durationSec)}</span></div>
-    <div class="throughput" title="Every payment settled today, however it counts"><span id="thr"></span></div>
+    <div class="throughput"><span id="thr" title="Every payment settled today, however it counts"></span><span id="workload" class="workload" title="What the whole bank has waiting at each step"></span></div>
     ${banner}`;
+  renderTimers();
   updateClock();
   renderEnd();
 }
@@ -485,9 +487,131 @@ function updateClock(): void {
   pace.className = `pace ${v.pace}`;
   $('elapsed').textContent = fmtClock(v.t);
   $('thr').textContent = `Settled today: ${money(v.settled)}`;
-  const lock = $('lock');
-  lock.hidden = v.me.lockedForSec <= 0;
-  lock.textContent = `Workstation locked ${v.me.lockedForSec}s`;
+  // A countdown started, ended or was cancelled: redraw what shows them, then turn every gauge.
+  if (timerKey(v) !== shownTimers) {
+    renderRail();
+    renderTimers();
+  }
+  updateKitJobs();
+  updateWorkload();
+  updateTraceCooldown();
+  updateGauges(v.t);
+}
+
+/** The bank's workload, for everyone: each step's queue, coloured by how many are waiting per person working it. */
+function updateWorkload(): void {
+  const el = $('workload');
+  const html = view()
+    .workload.map((x) => `<span class="wl ${x.level ?? ''}">${esc(x.label)} <b>${x.count}</b></span>`)
+    .join('<i>·</i>');
+  if (el.dataset.html !== html) {
+    el.dataset.html = html;
+    el.innerHTML = html;
+  }
+}
+
+/** Master Log: while the trace engine cools down, the Trace button is disabled with a countdown ring beside it. */
+function updateTraceCooldown(): void {
+  const c = view().traceCooldown;
+  const html = c ? gauge(c) : '';
+  for (const slot of document.querySelectorAll<HTMLElement>('.trace-cool')) {
+    if (slot.dataset.html !== html) {
+      slot.dataset.html = html;
+      slot.innerHTML = html;
+    }
+    slot.closest('.cmd-card')?.querySelectorAll<HTMLButtonElement>('button[data-cmd="trace"]').forEach((b) => (b.disabled = !!c));
+  }
+}
+
+// ---- Countdown gauges ---------------------------------------------------------------------
+/**
+ * A radial countdown: the ring empties and the number counts down to `c.until` (updateGauges turns it every
+ * clock tick). A permanent one (`until` null) is a full ring with no number.
+ */
+function gauge(c: Countdown): string {
+  const live = c.until !== null;
+  return `<span class="gauge ${live ? 'live' : 'perm'}"${live ? ` data-until="${c.until}" data-total="${c.total}"` : ''}>` +
+    '<svg viewBox="0 0 36 36" aria-hidden="true"><circle class="track" cx="18" cy="18" r="15.9"/>' +
+    '<circle class="arc" cx="18" cy="18" r="15.9" pathLength="100" stroke-dasharray="100 100" transform="rotate(-90 18 18)"/></svg>' +
+    '<b></b></span>';
+}
+
+/** A gauge with what it counts down to. `tone`: warn (amber), bad (red) or kit (the hidden host's purple). */
+const timer = (c: Countdown, label: string, tone: string): string => `<span class="timer ${tone}">${gauge(c)}<span>${esc(label)}</span></span>`;
+
+function updateGauges(t: number): void {
+  for (const bar of document.querySelectorAll<HTMLElement>('.kbar.live')) {
+    const left = Math.max(0, Number(bar.dataset.until) - t);
+    bar.querySelector('i')!.style.width = `${(100 * (1 - Math.min(1, left / Number(bar.dataset.total)))).toFixed(1)}%`;
+    const secs = bar.parentElement?.querySelector('.left');
+    if (secs) secs.textContent = `${Math.ceil(left)}s`;
+  }
+  for (const g of document.querySelectorAll<HTMLElement>('.gauge.live')) {
+    const left = Math.max(0, Number(g.dataset.until) - t);
+    const frac = Math.min(1, left / Number(g.dataset.total));
+    g.querySelector('.arc')!.setAttribute('stroke-dasharray', `${(frac * 100).toFixed(1)} 100`);
+    g.querySelector('b')!.textContent = String(Math.ceil(left));
+    g.classList.toggle('low', frac <= 0.25);
+    g.closest<HTMLElement>('.timer')?.toggleAttribute('hidden', left <= 0);
+  }
+}
+
+/** Which countdowns are showing, so the clock redraws them only when one starts or stops. */
+let shownTimers = '';
+const timerKey = (v: PlayerView): string => JSON.stringify([v.table.map((p) => [p.terminated, p.lock, p.block]), v.timers]);
+
+/** The status bar's countdowns: this workstation locked, blocked or rerouted, a revocation this player can stop, an alert mute. */
+function renderTimers(): void {
+  const v = view();
+  const mine = v.table.find((p) => p.id === v.me.id);
+  $('timers').innerHTML =
+    (mine?.block ? timer(mine.block, 'Workstation blocked', 'bad') : '') +
+    (mine?.lock ? timer(mine.lock, 'Workstation locked', 'warn') : '') +
+    v.timers.map((x) => timer(x, x.label, { REVOKE: 'bad', MUTE: 'kit', REROUTE: 'warn' }[x.kind])).join('');
+  shownTimers = timerKey(v);
+  updateGauges(v.t);
+}
+
+// ---- Kit jobs: Code crack and Unlock workstation ------------------------------------------------
+/**
+ * Each job's card holds a progress bar while it runs (a `.kit-progress` slot, filled here every clock tick
+ * and only rewritten when the job changes). When one ends, its result goes in every open terminal on its page.
+ */
+/** A crack's code so far ("1 2 _ _"), with the digit being cracked now blinking. */
+function crackDigits(detail: string): string {
+  const next = detail.split(' ').indexOf('_');
+  return detail.split(' ').map((d, i) => (i === next ? '<span class="blink">_</span>' : esc(d))).join(' ');
+}
+
+const kitSeen: Record<PlayerId, Record<string, boolean>> = {}; // seat > job id > done when last seen
+function updateKitJobs(): void {
+  const v = view();
+  const seen = (kitSeen[selected] ??= {});
+  for (const j of v.kitJobs) {
+    if (seen[j.id] === false && j.done && j.result) { // seen running, now ended
+      for (const w of wins()) {
+        const r = route(w);
+        if (r?.kind !== 'module' || r.system !== 'HIDDEN_HOST' || r.module !== (j.kind === 'PROXY' ? 'INFILTRATION' : 'ACCESS')) continue;
+        w.out.push({ cls: j.result.includes('stopped') ? 'bad' : 'ok', text: `[${fmtClock(v.t)}] ${j.result}` });
+        if (w.out.length > TERMINAL_LINES) w.out.splice(0, w.out.length - TERMINAL_LINES);
+        renderTerminal(w);
+      }
+    }
+    seen[j.id] = j.done;
+  }
+  for (const slot of document.querySelectorAll<HTMLElement>('.kit-progress[data-kit]')) {
+    const j = v.kitJobs.find((x) => x.kind === slot.dataset.kit && !x.done);
+    const html = j
+      ? `<div class="kbar live" data-until="${j.until}" data-total="${j.total}"><i></i></div>` +
+        `<div class="kinfo"><span>${esc(j.label)}</span>${j.detail ? `<code>${crackDigits(j.detail)}</code>` : ''}<b class="left"></b></div>`
+      : '';
+    if (slot.dataset.html !== html) {
+      slot.dataset.html = html;
+      slot.innerHTML = html;
+    }
+    // Only one runs at a time: its start button waits until it ends.
+    slot.closest('.cmd-card')?.querySelectorAll<HTMLButtonElement>('button[data-cmd]').forEach((b) => (b.disabled = !!j));
+  }
 }
 
 // ---- Game: employee sidebar ------------------------------------------------------------
@@ -498,6 +622,7 @@ function renderRail(): void {
       const side = god && game ? game.players[p.id].allegiance : null;
       return `<div class="pl ${p.id === selected ? 'me' : ''}">
         <span class="nm">${esc(p.name)}${p.id === selected ? ' <small>(you)</small>' : ''}</span><span class="rl">${esc(p.roleLabel)}${p.terminated ? ` <b class="gone">${p.resigned ? 'Resigned' : 'Terminated'}</b>` : ''}</span>
+        ${p.block || p.lock ? `<span class="st">${p.block ? timer(p.block, 'Blocked', 'bad') : ''}${p.lock ? timer(p.lock, 'Locked out', 'warn') : ''}</span>` : ''}
         ${side === 'BLACK' ? `<i class="tag BLACK" title="Sandbox: allegiance">Thief</i>` : ''}
       </div>`;
     })
@@ -559,7 +684,7 @@ function openWindow(kind: Win['kind'], first?: Route): Win {
   const list = wins();
   const { w: dw, h: dh } = deskSize();
   const w = Math.max(340, Math.min(640, dw - 20));
-  const h = Math.max(220, Math.min(500, dh - 20));
+  const h = Math.max(220, Math.min(560, dh - 20)); // tall enough for a page with one row of tools (e.g. Master Log) to need no scrollbar
   const off = (list.length % 6) * 28;
   const win: Win = {
     id: ++winSeq,
@@ -1153,7 +1278,8 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         'Create proxy',
         'WRITE',
         input(w, 'proxyIp', 'Proxy IP (unused)', '10.1.0.77', true, true) +
-          btns(btn(w, 'createProxy', 'Set up proxy · loud', 'loud', true)),
+          btns(btn(w, 'createProxy', 'Set up proxy · loud', 'loud', true)) +
+          '<div class="kit-progress full" data-kit="PROXY"></div>',
         `${w.id}:createProxy`,
       ) +
       card(
@@ -1194,7 +1320,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         `${w.id}:spoof`,
       ) +
       card(
-        'Scam request',
+        'Scam account request',
         'WRITE',
         input(w, 'scamCust', 'From customer', 'Tanaka Holdings or CU3', true, true) +
           select(
@@ -1267,8 +1393,8 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         .systems.filter((sys) => !sys.hidden)
         .flatMap((sys) => sys.modules.map((m) => ({ value: `${sys.id}.${m.id}`, label: `${sys.label} / ${m.label}` })));
       return (
-        card('Code crack', 'WRITE', select(w, 'crackTarget', 'Module', mods, true) + btns(btn(w, 'crack', 'Start crack · noisy per digit', '', true)), `${w.id}:crack`) +
-        card('Unlock workstation', 'WRITE', input(w, 'unlockIp', 'Workstation', '10.1.0.12', true, true) + btns(btn(w, 'unlock', 'Unlock (30s) · loud', 'loud', true)), `${w.id}:unlock`) +
+        card('Code crack', 'WRITE', select(w, 'crackTarget', 'Module', mods, true) + btns(btn(w, 'crack', 'Start crack · noisy per digit', '', true)) + '<div class="kit-progress full" data-kit="CRACK"></div>', `${w.id}:crack`) +
+        card('Unlock workstation', 'WRITE', input(w, 'unlockIp', 'Workstation', '10.1.0.12', true, true) + btns(btn(w, 'unlock', 'Unlock · loud', 'loud', true)) + '<div class="kit-progress full" data-kit="UNLOCK"></div>', `${w.id}:unlock`) +
         card('Lockout bomb', 'WRITE', input(w, 'bombIp', 'Workstation', '10.1.0.12', true, true) + btns(btn(w, 'bomb', 'Lock them out · noisy', '', true)), `${w.id}:bomb`)
       );
     },
@@ -1284,11 +1410,13 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       const mods = view()
         .systems.filter((sys) => !sys.hidden)
         .flatMap((sys) => sys.modules.filter((m) => !(sys.id === 'SECURITY' && m.id === 'FIREWALL')).map((m) => ({ value: `${sys.id}.${m.id}`, label: `${sys.label} / ${m.label}` })));
+      // One address, three ways to act on it; revoking asks for a confirmation first.
       const confirming = w.form['p:revConfirm'] === 'YES';
-      const revoke = confirming
-        ? `<p class="warn full">This action is irreversible. After a ${view().settings.revokeCountdownSec}s countdown, <b>${esc(w.form['p:revAddr'] ?? '')}</b> loses all access permanently (a workstation's owner also loses every credential). It can only be cancelled from the Firewall before then.</p>` +
+      const block = confirming
+        ? `<p class="warn full">This action is irreversible. After a ${view().settings.revokeCountdownSec}s countdown, <b>${esc(w.form['p:blockAddr'] ?? '')}</b> loses all access permanently (a workstation's owner also loses every credential). It can only be cancelled from the Firewall before then.</p>` +
           btns(btn(w, 'revokeConfirm', 'Confirm: revoke all access', 'danger') + btn(w, 'revokeBack', 'Back', 'alt'))
-        : input(w, 'revAddr', 'Address', 'workstation or system', true, true) + btns(btn(w, 'revokeAsk', 'Revoke all access…', 'danger', true));
+        : input(w, 'blockAddr', 'Address', 'workstation or system', true, true) +
+          btns(btn(w, 'block', `Block for ${view().settings.blockSec}s`, 'danger', true) + btn(w, 'unblock', 'Unblock', 'alt', true) + btn(w, 'revokeAsk', 'Revoke all access…', 'danger', true));
       return (
         card('View firewall status', 'READ', btn(w, 'view', 'Status, blocks and revocations')) +
         card(
@@ -1303,13 +1431,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
             ),
           `${w.id}:module:OFFLINE`,
         ) +
-        card(
-          `Block an address (${view().settings.blockSec}s)`,
-          'WRITE',
-          input(w, 'blockAddr', 'Address', 'workstation or system', true, true) + btns(btn(w, 'block', 'Block', 'danger', true) + btn(w, 'unblock', 'Unblock', 'alt', true)),
-          `${w.id}:block`,
-        ) +
-        card('Revoke all access', 'WRITE', revoke, confirming ? undefined : `${w.id}:revokeAsk`) +
+        card('Block Address', 'WRITE', block, confirming ? undefined : `${w.id}:block`) +
         card('Cancel a revocation', 'WRITE', input(w, 'revId', 'Revocation', 'R1', true, true) + btns(btn(w, 'cancelRev', 'Cancel it', '', true)), `${w.id}:cancelRev`)
       );
     },
@@ -1322,7 +1444,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       else if (cmd === 'block') fw('BLOCK_ADDRESS', { address: f('blockAddr') }, ['blockAddr']);
       else if (cmd === 'unblock') fw('UNBLOCK_ADDRESS', { address: f('blockAddr') }, ['blockAddr']);
       else if (cmd === 'cancelRev') fw('CANCEL_REVOCATION', { revocationId: f('revId') }, ['revId']);
-      else if (cmd === 'revokeAsk' && f('revAddr').trim()) {
+      else if (cmd === 'revokeAsk' && f('blockAddr').trim()) {
         w.form['p:revConfirm'] = 'YES';
         renderWin(w);
       } else if (cmd === 'revokeBack') {
@@ -1330,7 +1452,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         renderWin(w);
       } else if (cmd === 'revokeConfirm') {
         w.form['p:revConfirm'] = 'NO';
-        fw('REVOKE_ALL_ACCESS', { address: f('revAddr') }, ['revAddr']);
+        fw('REVOKE_ALL_ACCESS', { address: f('blockAddr') }, ['blockAddr']);
         renderWin(w);
       }
     },
@@ -1345,7 +1467,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
           .map(([show, label]) => btn(w, `view:${show}`, label, w.form['p:logFilter'] === show ? '' : 'alt'))
           .join('') + checkbox(w, 'monitor', 'Auto-update every second (only opening the view is logged)'),
       ) +
-      card('Trace a log entry', 'WRITE', input(w, 'logId', 'Log entry', 'L12 or 12', true, true) + btns(btn(w, 'trace', 'Trace', '', true)), `${w.id}:trace`),
+      card('Trace a log entry', 'WRITE', input(w, 'logId', 'Log entry', 'L12 or 12', true, true) + btns(btn(w, 'trace', 'Trace', '', true) + '<span class="trace-cool" title="Trace engine cooling down"></span>'), `${w.id}:trace`),
     run: (w, cmd, arg) => {
       if (cmd === 'view') {
         w.form['p:logFilter'] = arg ?? w.form['p:logFilter'] ?? 'PLAYERS';
@@ -1888,19 +2010,19 @@ function openPage(r: Extract<Route, { kind: 'module' }>): void {
 /** The hidden host's page labels: their pop-ups get the host's look, so an operative spots them at once. */
 const HOST_PAGES = new Set(findSystem('HIDDEN_HOST')!.modules.map((m) => m.label));
 
-/** A pop-up. With `go`, clicking it opens that page; any click dismisses it. */
+/** A pop-up. Any click dismisses it; with `go`, a click anywhere but its × (top right) also opens that page. */
 function toast(text: string, page: string, error = false, host = false, go?: Extract<Route, { kind: 'module' }>): void {
   const box = document.getElementById('toasts');
   if (!box) return;
   const el = document.createElement('button');
   el.className = `toast${error ? ' err' : ''}${host ? ' host' : ''}`;
-  el.innerHTML = `<b>${esc(page)}</b><span>${esc(text)}</span>`;
+  el.innerHTML = `<b>${esc(page)}</b><span>${esc(text)}</span><i class="x" title="Close" aria-label="Close">×</i>`;
   const close = (): void => {
     el.classList.add('out');
     setTimeout(() => el.remove(), 200);
   };
-  el.addEventListener('click', () => {
-    if (go) openPage(go);
+  el.addEventListener('click', (e) => {
+    if (go && !(e.target as HTMLElement).closest('.x')) openPage(go);
     close();
   });
   if (go) el.title = `Open ${page}`;

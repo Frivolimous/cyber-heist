@@ -42,7 +42,7 @@ import { notify } from './notify';
 import { thiefTargetMet } from './ending';
 import { parseTrace } from './perception';
 import type { AutomationFact, ChangeRow, CustomerRow, PageData, PaymentRow, RequestRow } from './perception';
-import type { AccountChange, ClientRequest, CodeCrack, Credential, Customer, Message, RequestKind, Revocation, GameState, LogEntry, Player, RoleId, SystemId, Transaction, TxEvent, TxStatus, WorkstationUnlock } from './types';
+import type { AccountChange, ClientRequest, CodeCrack, Credential, Customer, Message, RequestKind, Revocation, GameState, LogEntry, Player, RoleId, SystemId, Transaction, TxEvent, TxStatus, WorkstationUnlock, Proxy } from './types';
 
 export interface Ctx {
   s: GameState;
@@ -752,7 +752,8 @@ H['CLIENT_DATA.CUSTOMER_RECORDS.ADD_ACCOUNT'] = (c, q) => {
   if (x.accounts.includes(acc)) return bad(`${acc} is already on ${x.id}.`);
   if (accountOwner(c.s, acc)) return bad(`${acc} belongs to another customer.`);
   const primary = str(q, 'makePrimary').toUpperCase() === 'YES';
-  const req = linkedRequest(c, q, ['ADD_ACCOUNT', 'ADD_AND_PRIMARY']);
+  // Adding as primary also answers "make this account primary" when it is not on file (it has to be added first).
+  const req = linkedRequest(c, q, primary ? ['ADD_ACCOUNT', 'ADD_AND_PRIMARY', 'SET_PRIMARY'] : ['ADD_ACCOUNT', 'ADD_AND_PRIMARY']);
   if (typeof req === 'string') return bad(req);
   x.accounts.push(acc);
   const ids = [recordAccountChange(c, x, 'ADD_ACCOUNT', acc, x.primary, req).id];
@@ -804,7 +805,7 @@ H['CLIENT_DATA.CUSTOMER_RECORDS.REMOVE_ACCOUNT'] = (c, q) => {
 
 // ---- Client Data: Verification ---------------------------------------------------------------------
 
-const allChanges = (s: GameState): AccountChange[] => s.customers.flatMap((x) => x.history).sort((a, b) => a.t - b.t || Number(a.id.slice(3)) - Number(b.id.slice(3)));
+export const allChanges = (s: GameState): AccountChange[] => s.customers.flatMap((x) => x.history).sort((a, b) => a.t - b.t || Number(a.id.slice(3)) - Number(b.id.slice(3)));
 
 function changeRow(c: Ctx, h: AccountChange): ChangeRow {
   const x = c.s.customers.find((y) => y.id === h.customerId);
@@ -1296,6 +1297,7 @@ function addressInUse(s: GameState, ip: string): boolean {
 
 /** Why a proxy cannot be used right now, if it cannot. A reroute of `exceptRerouteFrom` (being renewed) does not count. */
 export function proxyUnavailable(s: GameState, ip: string, t: number, exceptRerouteFrom?: string): string | null {
+  if (s.proxies.some((x) => x.ip === ip && !x.ready)) return 'still being set up';
   if (activeBlock(s, ip)) return 'blocked by the firewall';
   if (Object.values(s.players).some((p) => p.ip === ip)) return 'used by a planted user';
   if (s.reroutes.some((r) => r.toIp === ip && r.until > t && r.fromIp !== exceptRerouteFrom)) return 'carrying a reroute';
@@ -1315,10 +1317,35 @@ H['HIDDEN_HOST.INFILTRATION.CREATE_PROXY'] = (c, q) => {
   const ip = str(q, 'ip');
   if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip) || ip.split('.').some((n) => Number(n) > 255)) return bad('Enter an IP address, e.g. 10.1.0.77.');
   if (addressInUse(c.s, ip)) return bad(`${ip} is already in use on the network. A proxy needs an unused address.`);
-  c.s.proxies.push({ ip, t: c.t, createdBy: c.actor.id });
+  // One proxy set up at a time, like a code crack.
+  const pending = c.s.proxies.find((x) => !x.ready);
+  if (pending) return bad(`Proxy ${pending.ip} is still being set up. Only one can be set up at a time.`);
+  const sec = c.s.config.proxySetupSec;
+  const px: Proxy = { ip, t: c.t, readyAt: c.t + sec, ready: false, createdBy: c.actor.id };
+  c.s.proxies.push(px);
   raiseExposure(c, 3);
-  return good(`Proxy ${ip} is set up. Reroute IP and Create user can use it now.`);
+  if (sec <= 0) {
+    px.ready = true;
+    return good(proxyReadyText(ip));
+  }
+  return good(`Proxy ${ip} is being set up: ready in ${sec}s. Watch its progress here.`);
 };
+
+const proxyReadyText = (ip: string): string => `Proxy ${ip} is set up. Reroute IP and Create user can use it now.`;
+
+/** Mutating: proxies whose setup time has run out become usable, and their operative is told. */
+export function advanceProxies(s: GameState): void {
+  const t = gameTime(s);
+  for (const px of s.proxies) {
+    if (px.ready || px.readyAt > t) continue;
+    px.ready = true;
+    px.result = proxyReadyText(px.ip);
+    const actor = s.players[px.createdBy];
+    if (!actor) continue;
+    note(actor, px.readyAt, px.result);
+    notify(s, 'HIDDEN_HOST', 'INFILTRATION', px.result, { to: actor.id });
+  }
+}
 
 H['HIDDEN_HOST.INFILTRATION.CREATE_USER'] = (c, q) => {
   const name = str(q, 'name').slice(0, 24);
@@ -1334,7 +1361,7 @@ H['HIDDEN_HOST.INFILTRATION.CREATE_USER'] = (c, q) => {
 
 // ---- Access -------------------------------------------------------------------
 /** A partly-recovered code: revealed digits shown, the rest as underscores ("3 7 _ _"). */
-const maskedCode = (code: string, revealed: number): string => code.split('').map((d, i) => (i < revealed ? d : '_')).join(' ');
+export const maskedCode = (code: string, revealed: number): string => code.split('').map((d, i) => (i < revealed ? d : '_')).join(' ');
 
 /**
  * Advances every running Code crack (called from the engine's time loop). Each due reveal recovers one more
@@ -1351,6 +1378,10 @@ export function advanceCracks(s: GameState): void {
     // A revoked IP (permanent block) cuts the bank off, not the host, so only a timed block stops a crack.
     if (!cred || cred.status !== 'ACTIVE' || !actor || (block && block.until !== null)) {
       k.done = true; // aborted: credential revoked, or the source was blocked
+      if (!actor) continue;
+      k.result = `Code crack ${k.id} on ${k.credentialId} stopped: ${block ? 'your workstation was blocked' : 'the credential was revoked'}.`;
+      note(actor, t, k.result);
+      notify(s, 'HIDDEN_HOST', 'ACCESS', k.result, { to: actor.id });
       continue;
     }
     while (!k.done && k.nextRevealAt <= t && k.revealed < 4) {
@@ -1369,7 +1400,7 @@ export function advanceCracks(s: GameState): void {
       if (complete) {
         k.done = true;
         if (!actor.heldCredentialIds.includes(cred.id)) actor.heldCredentialIds.push(cred.id);
-        const done = `Code crack ${k.id} complete: ${cred.id} code is ${cred.code}.`;
+        const done = (k.result = `Code crack ${k.id} complete: ${cred.id} code is ${cred.code}.`);
         note(actor, revealAt, done);
         notify(s, 'HIDDEN_HOST', 'ACCESS', done, { to: actor.id });
       }
@@ -1391,7 +1422,7 @@ H['HIDDEN_HOST.ACCESS.CRACK_CODE'] = (c, q) => {
   const cred = pick(c.s, creds);
   const crack: CodeCrack = { id: nextId(c.s, 'crack', 'K'), actorId: c.actor.id, credentialId: cred.id, revealed: 0, nextRevealAt: c.t + c.s.config.crackRevealSec, done: false };
   c.s.cracks.push(crack);
-  return good(`Code crack ${crack.id} started on ${cred.id} (${scopeLabel(cred)}). A digit about every ${c.s.config.crackRevealSec}s — watch your activity log or notifications.`);
+  return good(`Code crack ${crack.id} started on ${cred.id} (${scopeLabel(cred)}). A digit about every ${c.s.config.crackRevealSec}s — watch its progress here.`);
 };
 
 /**
@@ -1408,7 +1439,7 @@ export function advanceUnlocks(s: GameState): void {
     const blocked = [actor.ip, u.fromIp, target.ip].find((ip) => activeBlock(s, ip));
     if (blocked) {
       u.done = true;
-      const stopped = `Unlock ${u.id} on ${target.name}'s workstation stopped: ${blocked} was blocked.`;
+      const stopped = (u.result = `Unlock ${u.id} on ${target.name}'s workstation stopped: ${blocked} was blocked.`);
       note(actor, t, stopped);
       notify(s, 'HIDDEN_HOST', 'ACCESS', stopped, { to: actor.id });
       continue;
@@ -1417,7 +1448,7 @@ export function advanceUnlocks(s: GameState): void {
     u.done = true;
     const cred = createCredential(s, { owner: target.id, system: 'WORKSTATION', module: null, permission: 'WRITE', issuedBy: null });
     actor.heldCredentialIds.push(cred.id);
-    const done = `Unlock ${u.id} complete: ${target.name}'s workstation (${target.ip}) opens with ${cred.id}, code ${cred.code}.`;
+    const done = (u.result = `Unlock ${u.id} complete: ${target.name}'s workstation (${target.ip}) opens with ${cred.id}, code ${cred.code}.`);
     note(actor, u.doneAt, done);
     notify(s, 'HIDDEN_HOST', 'ACCESS', done, { to: actor.id });
   }
@@ -1429,12 +1460,14 @@ H['HIDDEN_HOST.ACCESS.UNLOCK_WORKSTATION'] = (c, q) => {
   if (!target) return bad('No workstation with that address.');
   if (target.id === c.actor.id) return bad('That is your own workstation.');
   if (activeBlock(c.s, ip)) return bad(`No route to ${ip}.`);
-  if (c.s.unlocks.some((u) => !u.done && u.actorId === c.actor.id && u.targetId === target.id)) return bad(`You are already unlocking ${ip}.`);
+  // One unlock at a time, like a code crack.
+  const running = c.s.unlocks.find((u) => !u.done);
+  if (running) return bad(`Unlock ${running.id} (${nameOf(c.s, running.targetId)}'s workstation) is still running. Only one can run at a time.`);
   const sec = c.s.config.unlockSec;
   const u: WorkstationUnlock = { id: nextId(c.s, 'unlock', 'U'), actorId: c.actor.id, targetId: target.id, fromIp: effectiveIp(c.s, c.actor, c.t), doneAt: c.t + sec, done: false };
   c.s.unlocks.push(u);
   exposeEntry(c.s, c.log(), 3, 'WORKSTATION_UNLOCK', `Workstation unlock in progress on ${ip} (${target.name}): a new login completes in ${sec}s`);
-  return good(`Unlock ${u.id} started on ${target.name}'s workstation. The new code arrives in ${sec}s, unless either end is blocked first — watch your activity log or notifications.`);
+  return good(`Unlock ${u.id} started on ${target.name}'s workstation. The new code arrives in ${sec}s, unless either end is blocked first — watch its progress here.`);
 };
 
 H['HIDDEN_HOST.ACCESS.LOCKOUT_BOMB'] = (c, q) => {
@@ -1468,7 +1501,7 @@ H['HIDDEN_HOST.CLEANUP.LOG_WIPER'] = (c, q) => {
   return good(`Wiped ${id} from the Master Log. The gap in the ids stays, and it can still be traced for now.`);
 };
 
-const ALERT_MUTE_SEC = 10;
+export const ALERT_MUTE_SEC = 10;
 H['HIDDEN_HOST.CLEANUP.ALERT_MUTE'] = (c) => {
   c.s.alertMuteUntil = Math.max(c.s.alertMuteUntil, c.t + ALERT_MUTE_SEC);
   raiseExposure(c, 3); // tier 3: this alert (and any tier 3-4) is never muted, so the mute cannot hide the loud stuff
@@ -1546,10 +1579,10 @@ H['HIDDEN_HOST.SOCIAL.SCAM_REQUEST'] = (c, q) => {
   c.s.requests.push(req);
   // Logged and notified exactly like a real incoming request, so nothing sets it apart.
   requestReceived(c.s, req);
-  note(c.actor, c.t, `Planted scam request ${req.id} from ${cust.name} (${payee ? `pay ${money(amount!)} to ${payee.name}${urgent ? ', urgent' : ''}` : `${kind} ${account}`}).`);
+  note(c.actor, c.t, `Planted scam account request ${req.id} from ${cust.name} (${payee ? `pay ${money(amount!)} to ${payee.name}${urgent ? ', urgent' : ''}` : `${kind} ${account}`}).`);
   raiseExposure(c, 2);
   const to = cust.bankerId ? nameOf(c.s, cust.bankerId) : 'their banker';
-  return good(`Scam request ${req.id} planted, from ${cust.name} to ${to}.`, [`"${text}"`]);
+  return good(`Scam account request ${req.id} planted, from ${cust.name} to ${to}.`, [`"${text}"`]);
 };
 
 H['HIDDEN_HOST.INFILTRATION.REROUTE_IP'] = (c, q) => {
@@ -1565,7 +1598,7 @@ H['HIDDEN_HOST.INFILTRATION.REROUTE_IP'] = (c, q) => {
   // One reroute per address: a new one replaces any that is still running. Written before the log entry, so
   // rerouting the host already hides its address in this very action's record.
   c.s.reroutes = c.s.reroutes.filter((r) => r.fromIp !== fromIp);
-  c.s.reroutes.push({ fromIp, toIp, until: c.t + seconds, byPlayerId: c.actor.id });
+  c.s.reroutes.push({ fromIp, toIp, until: c.t + seconds, seconds, byPlayerId: c.actor.id });
   raiseExposure(c, 2);
   const what = host ? 'the server\'s address' : station!.id === c.actor.id ? 'your activity' : `activity from ${fromIp}`;
   return good(`For ${seconds}s ${what} appears as proxy ${toIp}.`);

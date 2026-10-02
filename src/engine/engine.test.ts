@@ -21,7 +21,8 @@ class Sim {
   sec = 0;
   /** `warm`: start with some work waiting (3 automatic payments, 2 requests), as most tests need; a real game starts empty. */
   constructor(config: Partial<GameConfig> = {}, seed = 42, warm = true) {
-    this.s = createGame({ seed, players: PLAYERS, now: T0, config: { automation: MANUAL, ...config } });
+    // Proxies are ready at once unless a test is about their setup time.
+    this.s = createGame({ seed, players: PLAYERS, now: T0, config: { automation: MANUAL, proxySetupSec: 0, ...config } });
     if (!warm) return;
     for (let i = 0; i < 3; i++) spawnNpc(this.s);
     for (let i = 0; i < 2; i++) spawnRequest(this.s);
@@ -1870,7 +1871,7 @@ test('Social / Spoofed message: lands in the recipient inbox but not the imperso
   assert.match(sim.s.alerts.find((a) => a.kind === 'UNAUTHORIZED_ACTION')!.message, /^Suspicious server activity$/);
 });
 
-test('Social / Scam request: plants an open Client Request in the banker\'s queue, indistinguishable in the log', () => {
+test('Social / Scam account request: plants an open Client Request in the banker\'s queue, indistinguishable in the log', () => {
   const sim = new Sim();
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
   grantMasterAccess(sim.s, black.id);
@@ -2440,7 +2441,7 @@ test('notifications: each role starts with its usual bells on, all on pages it c
   };
   for (const p of Object.values(sim.s.players)) {
     // Operatives also start with the hidden host's bells: Host Log, Blacknet and their kit's, if it has one.
-    const kit = Object.values(sim.s.credentials).filter((c) => c.owner === p.id && c.module === 'ACCESS').map(() => 'HIDDEN_HOST.ACCESS');
+    const kit = Object.values(sim.s.credentials).filter((c) => c.owner === p.id && (c.module === 'ACCESS' || c.module === 'INFILTRATION')).map((c) => `HIDDEN_HOST.${c.module}`);
     const host = p.allegiance === 'BLACK' ? ['HIDDEN_HOST.HOST_LOG', 'HIDDEN_HOST.BLACKNET', ...kit] : [];
     assert.deepEqual(p.watching, [...expected[p.role], ...host], p.role);
     for (const key of p.watching) {
@@ -2571,7 +2572,7 @@ test('termination: a planted user with no credentials yet is not terminated, but
   assert.equal(sim.s.players[fake.id].terminated?.reason, 'CREDENTIALS');
 });
 
-test('Social / Scam request can ask for a payment; paying it never counts for the bank', () => {
+test('Social / Scam account request can ask for a payment; paying it never counts for the bank', () => {
   const sim = new Sim();
   const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
   grantMasterAccess(sim.s, black.id);
@@ -2700,21 +2701,25 @@ test('two-player test: one Personal Banker and one A&R, no Thieves, a 3-player e
   assert.throws(() => createGame({ seed: 1, players: [{ id: 'a', name: 'A' }], now: T0, scenario: 'DUO' }), /exactly 2/);
 });
 
-test('solo test: scripted regular employees work the bank, and the IT bot traces the human the moment it can', () => {
+test('solo test: five bot regular employees work the bank, and the IT bot traces an alert it sees', () => {
   let s = createGame({ seed: 5, players: [{ id: 'me', name: 'Me' }], now: T0, scenario: 'SOLO' });
   const me = s.players.me;
   assert.equal(me.allegiance, 'BLACK');
   assert.equal(me.role, 'ACCOUNTS_RECEIVABLES');
   assert.equal(Object.values(s.players).filter((p) => p.bot && p.allegiance === 'WHITE').length, 5);
   assert.equal(s.config.whiteTarget, DEFAULT_CONFIG.whiteTargetPerPlayer * 6);
-  // A wrong code raises an alert; the IT bot traces it and finds the human's workstation.
+  assert.equal(s.bots?.level, 'STANDARD');
+  assert.ok(Object.values(s.players).every((p) => !p.bot || !p.tutorial), 'no tutorials for bots');
+  // A wrong code raises an alert; the IT bot sees it when it next checks the alerts, traces it, and finds the human.
   const r = applyAction(s, { type: 'EXECUTE', playerId: 'me', code: '0000', system: 'CLIENT_DATA', module: 'CUSTOMER_RECORDS', fn: 'VIEW_CUSTOMERS' }, T0 + 1000);
-  s = tick(r.state, T0 + 2000);
+  s = r.state;
+  for (let t = 2; t <= 90 && !s.scenario!.traceLog.length; t++) s = tick(s, T0 + t * 1000);
   const sc = s.scenario!;
   assert.equal(sc.traceLog.length, 1);
   assert.deepEqual(sc.traceLog[0].exposes, ['IP']);
-  assert.equal(sc.exposedIpAt, 2);
+  assert.ok(sc.exposedIpAt! > 1 && sc.exposedIpAt! <= 90);
   assert.equal(sc.exposedHostAt, null);
+  for (let t = Math.ceil(sc.exposedIpAt!) + 1; t <= 300; t++) s = tick(s, T0 + t * 1000); // the host ticks often; bots act on each tick
   // The bots act on requests and move payments through to settlement.
   for (let t = 3; t <= 300; t++) s = tick(s, T0 + t * 1000); // the host ticks often; bots act on each tick
   assert.ok(s.requests.some((q) => q.status === 'DONE' && s.players[q.closedBy!]?.bot), 'a banker bot did a request');
@@ -3134,4 +3139,75 @@ test('modes: Noob is easier, Expert has no checklists, and an explicit setting w
   const thief = Object.values(expert.players).find((p) => p.allegiance === 'BLACK')!;
   assert.equal(getPlayerView(expert, thief.id).heist, null);
   assert.equal(getPlayerView(expert, thief.id).tutorial, null);
+});
+
+test('countdowns in the view: lockouts and blocks on the employee list for everyone, a revocation for Firewall readers', () => {
+  const sim = new Sim().at(10);
+  const [pb, other] = sim.byRole('PERSONAL_BANKER');
+  const it = sim.byRole('IT_SPECIALIST')[0];
+  sim.s.players[pb.id].lockedUntil = 30;
+  sim.s.blocks.push({ address: other.ip, until: 70, byOwner: it.id, actualPlayerId: it.id });
+  sim.s.revocations.push({ id: 'R1', address: other.ip, startedAt: 10, executeAt: 40, byOwner: it.id, actualPlayerId: it.id, status: 'PENDING', cancelledBy: null });
+  const row = (viewer: string, id: string) => getPlayerView(sim.s, viewer).table.find((p) => p.id === id)!;
+  assert.deepEqual(row(it.id, pb.id).lock, { until: 30, total: sim.s.config.lockoutSec });
+  assert.deepEqual(row(pb.id, other.id).block, { until: 70, total: sim.s.config.blockSec }, 'everyone sees it');
+  assert.equal(row(pb.id, it.id).lock, null);
+  assert.deepEqual(getPlayerView(sim.s, it.id).timers.map((x) => x.id), ['R1']);
+  assert.deepEqual(getPlayerView(sim.s, pb.id).timers, [], 'only Firewall readers see the countdown');
+  sim.at(31);
+  assert.equal(row(it.id, pb.id).lock, null, 'gone once it runs out');
+  sim.s.alertMuteUntil = 36;
+  const thieves = Object.values(sim.s.players).filter((p) => p.allegiance === 'BLACK');
+  for (const p of thieves) assert.ok(getPlayerView(sim.s, p.id).timers.some((x) => x.kind === 'MUTE'), 'every Thief sees the mute');
+  const white = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE')!;
+  assert.ok(!getPlayerView(sim.s, white.id).timers.some((x) => x.kind === 'MUTE'), 'the bank does not');
+  sim.s.reroutes.push({ fromIp: white.ip, toIp: '10.9.9.9', until: 41, seconds: 10, byPlayerId: thieves[0].id });
+  assert.deepEqual(getPlayerView(sim.s, white.id).timers.find((x) => x.kind === 'REROUTE'), { id: 'REROUTE', kind: 'REROUTE', label: 'IP rerouted', until: 41, total: 10 }, 'its owner sees a reroute, innocent or not');
+  assert.ok(!getPlayerView(sim.s, thieves[0].id).timers.some((x) => x.kind === 'REROUTE'), 'not whoever set it up');
+});
+
+test('Infiltration / Create proxy: usable only once its setup time runs out, one at a time, and its operative is told', () => {
+  const sim = new Sim({ proxySetupSec: 10 }).at(5);
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  grantMasterAccess(sim.s, black.id);
+  const proxy = (ip: string) => hostRun(sim, black.id, 'CREATE_PROXY', { ip });
+  assert.ok(proxy('10.9.0.50').ok);
+  assert.match(proxy('10.9.0.51').message, /still being set up/, 'one at a time');
+  assert.match(hostRun(sim, black.id, 'REROUTE_IP', { proxy: '10.9.0.50', seconds: '10' }).message, /still being set up/);
+  const job = () => getPlayerView(sim.s, black.id).kitJobs.find((j) => j.kind === 'PROXY')!;
+  assert.deepEqual([job().until, job().total, job().done], [15, 10, false]);
+  sim.at(15);
+  assert.equal(job().done, true);
+  assert.match(job().result!, /set up/);
+  assert.ok(hostRun(sim, black.id, 'REROUTE_IP', { proxy: '10.9.0.50', seconds: '10' }).ok);
+});
+
+test('workload in the view: every step\'s queue for everyone, coloured per person working it, and settlements still reversible', () => {
+  const sim = new Sim().at(5);
+  const pb = sim.byRole('PERSONAL_BANKER')[0];
+  const ar = sim.byRole('ACCOUNTS_RECEIVABLES')[0];
+  const wl = (pid: string) => Object.fromEntries(getPlayerView(sim.s, pid).workload.map((x) => [x.label, x]));
+  assert.deepEqual(wl(pb.id), wl(ar.id), 'the same for everyone');
+  assert.equal(wl(pb.id).Risk.count, sim.s.transactions.filter((tx) => tx.status === 'QUEUED').length);
+  assert.equal(wl(pb.id).Requests.count, sim.s.requests.filter((r) => r.status === 'OPEN').length);
+  const ars = sim.byRole('ACCOUNTS_RECEIVABLES').length;
+  const queued = sim.s.transactions.filter((tx) => tx.status === 'QUEUED');
+  for (const tx of queued) tx.status = 'AUTHORIZED';
+  assert.equal(wl(pb.id).Settle.level, queued.length / ars < 2 ? 'calm' : queued.length / ars < 4 ? 'busy' : 'swamped');
+  const tx = queued[0];
+  tx.status = 'SETTLED';
+  tx.settledAt = 5;
+  assert.equal(wl(pb.id).Clawback.count, 1);
+  sim.at(5 + sim.s.config.reversalWindowSec + 1);
+  assert.equal(wl(pb.id).Clawback.count, 0, 'out of the reversal window');
+});
+
+test('trace cooldown in the view: only for whoever traced, while it lasts', () => {
+  const sim = new Sim().at(5);
+  const [mgr] = sim.byRole('BANK_MANAGER');
+  assert.equal(getPlayerView(sim.s, mgr.id).traceCooldown, null);
+  sim.s.players[mgr.id].lastTraceAt = 5;
+  assert.deepEqual(getPlayerView(sim.s, mgr.id).traceCooldown, { until: 5 + sim.s.config.traceCooldownSec, total: sim.s.config.traceCooldownSec });
+  sim.at(5 + sim.s.config.traceCooldownSec);
+  assert.equal(getPlayerView(sim.s, mgr.id).traceCooldown, null);
 });

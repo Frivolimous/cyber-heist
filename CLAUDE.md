@@ -68,12 +68,16 @@ alert that points at the entry without containing the leak; the trace reveals mo
 Adding a kit tool touches: catalog `fns`, a handler that calls `raiseExposure`, `HIDDEN_ACTIVITY` wording
 in engine.ts, and a `MODULE_PAGES` entry in the sandbox.
 
-**Bot perception (bot mode, docs/BotMode.md; not playable yet).** Every bank READ handler also returns
-`data` (`PageData`, perception.ts): the same rows as its lines, as data, with names as the records show them
-and no ground truth. Bots must read the bank only through it (senses.ts `look`, which opens the page with
-the bot's own code) plus their own PlayerView. When you change a bank view's text, change its data too;
-perception.test.ts checks them against each other for every seat. The SOLO bots in autopilot.ts still read
-raw state and are due to be replaced.
+**Bots (bot mode, docs/BotMode.md; for now the solo Thief test's seats).** botkit.ts: what every bot has
+(stats, memory, evidence, pages); bots.ts: jobs and turns; detective.ts: catching tampering; chatter.ts: the
+message forms bots write and read; reading.ts: reading a request. Every bank READ handler also
+returns `data` (`PageData`, perception.ts): the same rows as its lines, as data, with names as the records show
+them and no ground truth. Bots (bots.ts) decide only from it (senses.ts `look`, which opens the page with the
+bot's own code), their own PlayerView, and memory of their own actions; reading.ts reads a request from its
+words. When you change a bank view's text, change its data too (perception.test.ts checks them for every
+seat); when you change a request's wording, check bots.test.ts still reads it. bots.ts must not read raw
+records (`s.requests`, `s.customers`...): a test greps for it. Bot randomness has its own stream
+(`s.bots.rngState`), so bots never shift the bank's.
 
 **Game screen and sandbox (`src/sandbox/main.ts`).** The yellow bar at the top is dev tooling (seat switcher, speed,
 player count, seed, Ground truth); everything below it is the player's screen. Module pages come from
@@ -91,8 +95,8 @@ tabs). The game screen (main.ts) runs in one of three modes set by app.ts in mod
 sandbox host, or remote seat; on a remote seat there is no `GameState`, so screen code reads only
 `view()` and plays actions through `act()`. Anything the screen needs must be in `PlayerView`.
 
-**Dev tooling that must not leak to players.** Test scenarios (`scenario` in `createGame`, bots in
-`autopilot.ts`), Download state, and the watcher link (`?watch=CODE&key=K`, host.ts `publishWatch`,
+**Dev tooling that must not leak to players.** Test scenarios (`scenario` in `createGame`, the solo
+test's bots), Download state, and the watcher link (`?watch=CODE&key=K`, host.ts `publishWatch`,
 `games/{code}/watch/{key}`) are for the designer only; the watcher must be removed before any public
 release and never mentioned in player-facing text.
 

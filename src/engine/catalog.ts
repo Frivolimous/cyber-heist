@@ -363,7 +363,7 @@ export const SYSTEMS: SystemDef[] = [
           ),
           fn(
             'SCAM_REQUEST',
-            'Scam request',
+            'Scam account request',
             'WRITE',
             'Plant a fake Client Request from a customer to their banker: "we moved banks, make account X our primary", or "please pay $400,000 to Y from our main account". It is worded like real requests and looks like any other request in the queue.',
             [
@@ -551,6 +551,7 @@ export const MODES: Record<GameMode, { label: string; config: Partial<GameConfig
 
 export const DEFAULT_CONFIG: GameConfig = {
   mode: 'NORMAL',
+  botLevel: 'STANDARD',
   durationSec: 20 * 60,
   whiteTargetPerPlayer: 13_000_000,
   blackTargetPerThief: 1_000_000,
@@ -589,5 +590,6 @@ export const DEFAULT_CONFIG: GameConfig = {
   blockSec: 60,
   revokeCountdownSec: 30,
   unlockSec: 30,
+  proxySetupSec: 10,
   crackRevealSec: 15,
 };

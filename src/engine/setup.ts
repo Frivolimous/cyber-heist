@@ -6,6 +6,7 @@ import { createCredential, createWorkstationCredential } from './credentials';
 import { FIRST_PAYMENT_SEC } from './bank';
 import { HOST_WATCH_DEFAULT, WATCHABLE } from './notify';
 import { startTutorials } from './tutorial';
+import { createBots } from './bots';
 import { assignBankers, assignContacts, FIRST_REQUEST_SEC, scheduleFirstRequests, schedulePhishing } from './requests';
 import { pick, rand, randInt, shuffle } from './rng';
 import type { GameConfig, GameState, Player, RoleId, ScenarioKind, WealthTier } from './types';
@@ -185,7 +186,7 @@ export function createGame(o: NewGameOptions): GameState {
     blacknet: [],
     totals: { processed: 0, stolen: 0 },
     hiddenHost: '', // set below
-    scenario: scenario && { kind: scenario, exposedIpAt: null, exposedHostAt: null, traced: [], handled: [], traceLog: [] },
+    scenario: scenario && { kind: scenario, exposedIpAt: null, exposedHostAt: null, traceLog: [] },
     counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, req: 0, change: 0, revoke: 0, host: 0, player: 0, crack: 0, notice: 0, wcred: 0, xcred: 0, unlock: 0 },
   };
 
@@ -308,6 +309,8 @@ export function createGame(o: NewGameOptions): GameState {
   assignContacts(s, PERSON_CUSTOMERS);
   schedulePhishing(s);
   scheduleFirstRequests(s);
+  const botIds = s.playerOrder.filter((id) => s.players[id].bot);
+  if (botIds.length) s.bots = createBots(s, botIds, config.botLevel ?? 'STANDARD');
   startTutorials(s);
   // Every workstation's own login, drawn from a side stream so the game's main random sequence is unchanged.
   const side = { rngState: (s.rngState ^ 0x2545f491) | 0 };

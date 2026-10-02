@@ -81,11 +81,20 @@ button:disabled { cursor: default; opacity: 0.4; }
 .pace.MEDIUM { background: #5c4a14; color: #ffd98a; }
 .pace.BUSY { background: #7a2418; color: #ffb3a8; }
 .pace.CLOSED { background: #2c3446; color: #9aa6bb; }
-.throughput span { font-size: 12px; color: #b9c6dc; }
+.throughput { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; }
+.throughput > span { font-size: 12px; color: #b9c6dc; }
+/* the bank's workload: one pill per step, coloured by how swamped it is */
+.workload { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.workload > i { font-style: normal; color: #4d5f80; }
+.wl { padding: 1px 8px; border-radius: 10px; white-space: nowrap; color: #b9c6dc; }
+.wl b { font: 700 12px var(--mono); color: #eef2f8; }
+.wl.busy { background: #5c4a14; color: #ffd98a; }
+.wl.busy b { color: #ffe3a8; }
+.wl.swamped { background: #7a2418; color: #ffb3a8; }
+.wl.swamped b { color: #ffd0c8; }
 .chip { font-size: 12px; padding: 1px 8px; border-radius: 10px; color: #fff; }
 .chip.WHITE { background: var(--bank-side); }
 .chip.BLACK { background: var(--thief-side); }
-.chip.lock { background: var(--amber); }
 .banner { grid-column: 1 / -1; border-radius: 4px; padding: 8px 12px; font-weight: 600; }
 .banner.white { background: #d6edf4; color: #0e3d4d; }
 .banner.black { background: #f7d9d5; color: #5c120c; }
@@ -304,6 +313,10 @@ table.cred .rev { text-decoration: line-through; color: var(--muted); }
 .toast.err b { color: var(--amber); }
 .toast.host { background: rgba(26, 12, 20, 0.97); border-color: #5a2a3a; border-left-color: #e0445c; }
 .toast.host b { color: #ff7a8c; }
+/* the close corner: a generous top-right hit area, so a tap there only dismisses */
+.toast { position: relative; padding-right: 34px; }
+.toast .x { position: absolute; top: 0; right: 0; width: 34px; height: 30px; display: grid; place-items: center; font: 400 18px/1 var(--sans); font-style: normal; color: #8fa0bf; border-top-right-radius: 8px; }
+.toast .x:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
 .toast.out { opacity: 0; transform: translateY(6px) scale(0.97); transition: opacity 0.2s, transform 0.2s; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(14px) scale(0.9); } to { opacity: 1; transform: none; } }
 
@@ -516,3 +529,39 @@ fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
 .noroute.proxy h2 { color: var(--win-title); font-family: var(--mono); }
 .noroute .relay { font-weight: 600; color: var(--muted); }
 .noroute .relay.on { color: var(--thief-side); }
+
+/* ---- Countdown gauges: a ring that empties as the number counts down (updateGauges in main.ts) ---- */
+.timers { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.timer { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 2px 9px 2px 3px; border-radius: 14px; white-space: nowrap; }
+.timer[hidden] { display: none; }
+.timer.warn { background: #5c4a14; color: #ffd98a; }
+.timer.bad { background: #7a2418; color: #ffb3a8; }
+.timer.kit { background: #3d2466; color: #d9c2ff; }
+.gauge { position: relative; display: inline-grid; place-items: center; width: 24px; height: 24px; flex: none; }
+.gauge svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.gauge circle { fill: none; stroke-width: 3.5; }
+.gauge .track { stroke: currentColor; opacity: 0.25; }
+.gauge .arc { stroke: currentColor; stroke-linecap: round; transition: stroke-dasharray 0.4s linear; }
+.gauge b { position: relative; font: 700 10px/1 var(--mono); }
+.gauge.low .arc, .gauge.low b { color: #ff6b5b; stroke: #ff6b5b; }
+.gauge.perm .arc { stroke-dasharray: 100 100; }
+/* on an employee's card in the sidebar, seen by everyone */
+.pl .st { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.pl .st .timer { font-size: 11px; padding: 1px 8px 1px 2px; }
+.pl .st .gauge { width: 20px; height: 20px; }
+.pl .st .gauge b { font-size: 9px; }
+
+/* a running Code crack or Unlock workstation, inside its tool card (updateKitJobs in main.ts) */
+.kit-progress:empty { display: none; }
+.kit-progress { flex-basis: 100%; display: grid; gap: 4px; margin-top: 4px; }
+.kbar { height: 8px; border-radius: 4px; background: rgba(160, 120, 255, 0.18); overflow: hidden; }
+.kbar i { display: block; height: 100%; width: 0; background: #9d6bff; border-radius: 4px; transition: width 0.4s linear; }
+.kinfo { display: flex; gap: 10px; align-items: baseline; font-size: 12px; }
+.kinfo code { font: 700 13px var(--mono); letter-spacing: 0.1em; color: #d9c2ff; }
+.kinfo .left { margin-left: auto; font: 600 12px var(--mono); }
+.kinfo .blink { animation: kit-blink 1s steps(1) infinite; }
+@keyframes kit-blink { 50% { opacity: 0; } }
+
+/* Master Log: the trace cooldown ring beside the disabled Trace button */
+.trace-cool { display: inline-flex; align-items: center; color: var(--muted); }
+.trace-cool:empty { display: none; }

@@ -3,7 +3,7 @@
 
 import { CREDENTIAL_SHARING_ENABLED, findFn, findSystem, SYSTEMS } from './catalog';
 import { runAutomation, spawnNpc } from './bank';
-import { runAutopilot } from './autopilot';
+import { runBots } from './bots';
 import { advanceRequests, scheduleRequest, spawnFirstRequest, spawnRequest } from './requests';
 import { advanceTutorials, finishBankerTutorials, trackTutorial } from './tutorial';
 import {
@@ -28,7 +28,7 @@ import {
   targetLabel,
 } from './core';
 import { findCredentialByCode } from './credentials';
-import { advanceCracks, advanceUnlocks, credScopeText, HANDLERS } from './handlers';
+import { advanceCracks, advanceProxies, advanceUnlocks, credScopeText, HANDLERS } from './handlers';
 import { canWriteModule, notify, WATCHABLE } from './notify';
 import { bankShutDown, checkEnd, closeOfBusiness, hostShutDown, resign, TERMINATED_TEXT } from './ending';
 import { nextArrival } from './pacing';
@@ -79,10 +79,11 @@ export function advanceState(s: GameState, now: number): void {
   runDueRevocations(s);
   advanceCracks(s);
   advanceUnlocks(s);
+  advanceProxies(s);
   advanceRequests(s);
   runAutomation(s);
   advanceTutorials(s); // after automation: what is left waiting is left for people
-  runAutopilot(s, execute);
+  runBots(s, execute, sendMessage);
   checkWin(s);
   if (s.status === 'RUNNING' && targetT >= endT) closeOfBusiness(s);
 }

@@ -4,7 +4,7 @@
 // a custom game still scales with its table. The last settings used are remembered in this browser.
 
 import './settings.css';
-import { DEFAULT_CONFIG, MODES } from '../engine';
+import { BOT_LEVELS, DEFAULT_CONFIG, MODES } from '../engine';
 import type { Automation, GameConfig } from '../engine';
 
 interface Field {
@@ -70,10 +70,16 @@ const GROUPS: { title: string; note?: string; fields: Field[] }[] = [
       { key: 'blockSec', label: 'Firewall block length (s)' },
       { key: 'revokeCountdownSec', label: 'Revoke countdown (s)' },
       { key: 'unlockSec', label: 'Unlock workstation time (s)' },
+      { key: 'proxySetupSec', label: 'Create proxy time (s)' },
       { key: 'crackRevealSec', label: 'Code crack: seconds per digit' },
       { key: 'reversalWindowSec', label: 'Reversal window (s)' },
       { key: 'recentModifySec', label: 'A changed primary counts as recent for (s)' },
     ],
+  },
+  {
+    title: 'Bots',
+    note: 'Only the single-player test has bots.',
+    fields: [{ key: 'botLevel', label: 'Bot level', select: Object.keys(BOT_LEVELS) }],
   },
   {
     title: 'Automation at the start',

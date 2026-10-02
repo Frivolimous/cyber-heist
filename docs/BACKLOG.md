@@ -6,8 +6,8 @@ Move an item out of here when it ships. Firebase, the lobby and real multiplayer
 ## Bot mode
 
 - **Bot mode and single player** (co-op stealth: every Thief human, every regular employee a bot, with
-  difficulty levels; single player is 1 human + 5 bots). Designed, not built: the spec, symptom table and
-  build phases are in [BotMode.md](BotMode.md).
+  difficulty levels; single player is 1 human + 5 bots). In progress: bots that do their jobs and catch the primary swap (steps 2-3) run the solo Thief
+  test; the rest of the symptom table is next. The spec, symptom table and build phases are in [BotMode.md](BotMode.md).
 
 ## Loose ends in shipped features
 
@@ -42,6 +42,12 @@ Move an item out of here when it ships. Firebase, the lobby and real multiplayer
     (accounts, credentials). Logged, with a short countdown that can be cancelled, like "revoke all
     access". Build only if cleaning up after sabotage feels tedious rather than tense in playtests.
   - **Server status** and anything else: to be fleshed out if needed.
+
+## Thief tools
+
+- **Add a delay and a progress gauge to the other Thief tools**, like Code crack and Unlock workstation
+  (a progress bar in the tool card, its button disabled while it runs, the result printed in the terminal
+  when it ends). Which tools, and how long each takes: to decide.
 
 ## Playtest watch list
 

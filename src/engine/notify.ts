@@ -29,6 +29,7 @@ export const WATCHABLE: Record<string, string> = {
   'HIDDEN_HOST.TARGET_LEDGER': 'money lands in a Target Ledger account, or one is added to a customer, removed, made primary or replaced as primary',
   // Kits with timed tools: the operative who started one hears when it finishes (the same words as their activity note).
   'HIDDEN_HOST.ACCESS': 'a code crack or workstation unlock you started finishes or is stopped',
+  'HIDDEN_HOST.INFILTRATION': 'a proxy you set up is ready',
 };
 
 /** The hidden host's bells that start on for every Thief (the Target Ledger's starts off). */
