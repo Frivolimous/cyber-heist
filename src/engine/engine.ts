@@ -23,12 +23,13 @@ import {
   money,
   nameOf,
   nextId,
+  normCred,
   note,
   ok,
   targetLabel,
 } from './core';
 import { findCredentialByCode } from './credentials';
-import { advanceCracks, advanceProxies, advanceUnlocks, credScopeText, HANDLERS } from './handlers';
+import { advanceCracks, advanceProxies, advanceTraces, advanceUnlocks, credScopeText, HANDLERS, isSecurityWrite } from './handlers';
 import { canWriteModule, notify, WATCHABLE } from './notify';
 import { bankShutDown, checkEnd, closeOfBusiness, hostShutDown, resign, TERMINATED_TEXT } from './ending';
 import { nextArrival } from './pacing';
@@ -40,6 +41,7 @@ import type {
   ExecuteAction,
   GameState,
   LogEntry,
+  PendingAction,
   Player,
 } from './types';
 
@@ -80,6 +82,8 @@ export function advanceState(s: GameState, now: number): void {
   advanceCracks(s);
   advanceUnlocks(s);
   advanceProxies(s);
+  advanceTraces(s);
+  advancePendingActions(s);
   advanceRequests(s);
   runAutomation(s);
   advanceTutorials(s); // after automation: what is left waiting is left for people
@@ -299,6 +303,27 @@ function run(
 
   p.failStreak = 0;
 
+  // A timed Security write: checked and logged now, carried out when its time is up (bots act at once, for now).
+  const delay = p.bot ? 0 : (SECURITY_DELAY[`${a.system}.${a.module}.${a.fn}`]?.(s, a.params ?? {}) ?? 0) * s.config.securityDelayScale;
+  if (delay > 0) return startTimed(s, p, a, def, handler, label, cred, owner, open, delay);
+  return perform(s, p, a, def, handler, label, cred, owner, open);
+}
+
+/** Runs the function itself and records it (the Master Log entry, notifications, the activity note). */
+function perform(
+  s: GameState,
+  p: Player,
+  a: ExecuteAction,
+  def: NonNullable<ReturnType<typeof findFn>>,
+  handler: (typeof HANDLERS)[string],
+  label: string,
+  cred: Credential,
+  owner: Player,
+  open: boolean,
+  finishing = false, // a timed action finishing: its alerts and notification went out when it started
+): ActionResult {
+  const t = gameTime(s);
+  const where = `${a.system}.${a.module}.${a.fn}`;
   const st: { logged: LogEntry | null } = { logged: null };
   const hidden = a.system === 'HIDDEN_HOST';
   const writeAccessLog = (detail?: string): LogEntry => {
@@ -319,6 +344,7 @@ function run(
     system: a.system,
     module: a.module,
     log: (detail) => (st.logged ??= writeAccessLog(detail)),
+    quietAlerts: finishing,
     strike: (reason) => {
       const message = `${owner.name} failed a decryption attempt on ${label}`;
       const entry = addLog(s, { actor: owner.id, kind: 'DECRYPT_FAIL', message, sourceIp: effectiveIp(s, p, t), actualPlayerId: p.id });
@@ -337,13 +363,205 @@ function run(
   if (res.ok && !st.logged) st.logged = writeAccessLog(res.logDetail);
   if (res.ok && hidden && st.logged) st.logged.leak ??= blacknetLeak(s, a.fn);
   // "Any activity" pages notify with the Master Log line (it names the credential owner, not who typed).
-  if (res.ok && st.logged && !hidden && ANY_ACTIVITY.includes(keyOf(a.system, a.module))) {
+  if (res.ok && st.logged && !hidden && !finishing && ANY_ACTIVITY.includes(keyOf(a.system, a.module))) {
     notify(s, a.system, a.module, st.logged.message, { owner: owner.id });
   }
 
   const via = open ? 'open access (no code)' : owner.id === p.id ? `your credential ${cred.id}` : `${owner.name}'s credential ${cred.id}`;
   note(p, t, `${res.ok ? 'OK' : 'FAILED'}: ${def.label} on ${label} using ${via}${res.ok ? '' : ' - ' + res.message}`, res.ok ? undefined : typedOf(a));
   return { ok: res.ok, message: res.message, lines: res.lines, data: res.data };
+}
+
+// ---- Timed Security writes ------------------------------------------------------
+type Params = Record<string, string>;
+
+/**
+ * How long each Security write and Thief kit tool takes, in seconds (scaled by config.securityDelayScale;
+ * missing = instant). Drastic moves take longer, undoing is quick. Revoke all access and the revocation of a
+ * Firewall or Permissions write credential have their own countdowns; Trace (traceDelaySec), Create proxy
+ * (proxySetupSec), Code crack and Unlock workstation have their own timers.
+ */
+const SECURITY_DELAY: Record<string, (s: GameState, q: Params) => number> = {
+  'SECURITY.FIREWALL.SET_MODULE_STATUS': (_s, q) => (q.status === 'OFFLINE' ? 5 : 2),
+  'SECURITY.FIREWALL.SET_SECURITY': (_s, q) => (q.security === 'OFF' ? 5 : 2),
+  'SECURITY.FIREWALL.BLOCK_ADDRESS': () => 2,
+  'SECURITY.FIREWALL.UNBLOCK_ADDRESS': () => 2,
+  'SECURITY.FIREWALL.CANCEL_REVOCATION': () => 2,
+  'SECURITY.EMPLOYEE_RECORDS.RESET_LOCKOUT': () => 2,
+  'SECURITY.PERMISSIONS.CREATE_CREDENTIAL': () => 5,
+  'SECURITY.PERMISSIONS.REVOKE_CREDENTIAL': (s, q) => {
+    const cr = s.credentials[normCred(q.credentialId ?? '')];
+    return cr && isSecurityWrite(cr) ? 0 : 2; // those count down 30s anyway
+  },
+  'SECURITY.PERMISSIONS.CANCEL_REVOKE': () => 2,
+  'HIDDEN_HOST.INFILTRATION.REROUTE_IP': () => 2,
+  'HIDDEN_HOST.INFILTRATION.CREATE_USER': () => 5,
+  'HIDDEN_HOST.SOCIAL.SPOOFED_MESSAGE': () => 2,
+  'HIDDEN_HOST.SOCIAL.SCAM_REQUEST': () => 2,
+  'HIDDEN_HOST.CLEANUP.LOG_WIPER': () => 5,
+  'HIDDEN_HOST.CLEANUP.ALERT_MUTE': () => 2,
+  'HIDDEN_HOST.ACCESS.LOCKOUT_BOMB': () => 2,
+};
+
+const moduleName = (q: Params): string => {
+  const [sys, mod] = (q.target ?? '').split('.');
+  return targetLabel(sys, mod);
+};
+
+/** What a timed Security write is called: `short` on its progress bar, `initiated` in the Master Log when it starts. */
+const TIMED_TEXT: Record<string, (s: GameState, q: Params) => { short: string; initiated: string }> = {
+  'SECURITY.FIREWALL.SET_MODULE_STATUS': (_s, q) =>
+    q.status === 'OFFLINE'
+      ? { short: `${moduleName(q)} offline`, initiated: `initiated taking ${moduleName(q)} offline` }
+      : { short: `${moduleName(q)} online`, initiated: `initiated bringing ${moduleName(q)} back online` },
+  'SECURITY.FIREWALL.SET_SECURITY': (_s, q) =>
+    q.security === 'OFF'
+      ? { short: `${moduleName(q)} full access`, initiated: `initiated switching security off for ${moduleName(q)}` }
+      : { short: `${moduleName(q)} security on`, initiated: `initiated switching security back on for ${moduleName(q)}` },
+  'SECURITY.FIREWALL.BLOCK_ADDRESS': (_s, q) => ({ short: `Block ${q.address}`, initiated: `initiated a firewall block on ${q.address}` }),
+  'SECURITY.FIREWALL.UNBLOCK_ADDRESS': (_s, q) => ({ short: `Unblock ${q.address}`, initiated: `initiated unblocking ${q.address}` }),
+  'SECURITY.FIREWALL.CANCEL_REVOCATION': (_s, q) => ({ short: `Cancel ${q.revocationId}`, initiated: `initiated cancelling revocation ${q.revocationId}` }),
+  'SECURITY.EMPLOYEE_RECORDS.RESET_LOCKOUT': (_s, q) => ({ short: `Unlock ${q.address}`, initiated: `initiated a lockout reset on ${q.address}` }),
+  'SECURITY.PERMISSIONS.CREATE_CREDENTIAL': (s, q) => ({ short: `Credential for ${nameOf(s, q.owner)}`, initiated: `initiated a new credential for ${nameOf(s, q.owner)}` }),
+  'SECURITY.PERMISSIONS.REVOKE_CREDENTIAL': (_s, q) => ({ short: `Revoke ${normCred(q.credentialId ?? '')}`, initiated: `initiated revoking credential ${normCred(q.credentialId ?? '')}` }),
+  'SECURITY.PERMISSIONS.CANCEL_REVOKE': (_s, q) => ({ short: `Keep ${normCred(q.credentialId ?? '')}`, initiated: `initiated cancelling the revocation of ${normCred(q.credentialId ?? '')}` }),
+  // Kit tools: only `short` is used (the host's own records are written as usual, when they start).
+  'HIDDEN_HOST.INFILTRATION.REROUTE_IP': (_s, q) => ({ short: `Reroute ${q.source || 'your IP'} via ${q.proxy}`, initiated: '' }),
+  'HIDDEN_HOST.INFILTRATION.CREATE_USER': (_s, q) => ({ short: `Plant ${q.name}`, initiated: '' }),
+  'HIDDEN_HOST.SOCIAL.SPOOFED_MESSAGE': (_s, q) => ({ short: `Message to ${q.to}`, initiated: '' }),
+  'HIDDEN_HOST.SOCIAL.SCAM_REQUEST': (_s, q) => ({ short: `Scam request from ${q.customer}`, initiated: '' }),
+  'HIDDEN_HOST.CLEANUP.LOG_WIPER': (_s, q) => ({ short: `Wipe ${q.logId}`, initiated: '' }),
+  'HIDDEN_HOST.CLEANUP.ALERT_MUTE': () => ({ short: 'Alert mute', initiated: '' }),
+  'HIDDEN_HOST.ACCESS.LOCKOUT_BOMB': (_s, q) => ({ short: `Lockout bomb on ${q.target}`, initiated: '' }),
+};
+
+/**
+ * Starts a timed Security write. It is tried on a copy of the game first, so a mistake is refused at once; if it
+ * would work, the Master Log gets an "initiated" entry now, with the alerts it would raise, and it is carried
+ * out when its time is up (advancePendingActions). One of each per player at a time.
+ */
+function startTimed(
+  s: GameState,
+  p: Player,
+  a: ExecuteAction,
+  def: NonNullable<ReturnType<typeof findFn>>,
+  handler: (typeof HANDLERS)[string],
+  label: string,
+  cred: Credential,
+  owner: Player,
+  open: boolean,
+  delay: number,
+): ActionResult {
+  const t = gameTime(s);
+  const key = `${a.system}.${a.module}.${a.fn}`;
+  const pending = (s.pendingActions ??= []);
+  const running = pending.find((x) => !x.done && x.actorId === p.id && `${x.system}.${x.module}.${x.fn}` === key);
+  if (running) return fail(`${running.label} is still running (${Math.ceil(running.doneAt - t)}s).`);
+  const params = a.params ?? {};
+  // Dry run on a copy: the same checks and the same answer, and nothing changes for real.
+  const copy = structuredClone(s);
+  const tried = perform(copy, copy.players[p.id], a, def, handler, label, open ? cred : copy.credentials[cred.id], open ? owner : copy.players[owner.id], open);
+  if (!tried.ok) {
+    note(p, t, `FAILED: ${def.label} on ${label} - ${tried.message}`, typedOf(a));
+    return tried;
+  }
+  const text = TIMED_TEXT[key]?.(s, params) ?? { short: def.label, initiated: `initiated ${def.label.toLowerCase()}` };
+  if (a.system === 'HIDDEN_HOST') copyRecords(s, copy); // the host's usual records, written now
+  else startRecords(s, copy, a, p, owner, open, text.initiated);
+  const job: PendingAction = {
+    id: nextId(s, 'job', 'J'),
+    actorId: p.id,
+    credentialId: open ? 'OPEN' : cred.id,
+    system: a.system,
+    module: a.module,
+    fn: a.fn,
+    params,
+    label: text.short,
+    startedAt: t,
+    doneAt: t + delay,
+    done: false,
+  };
+  pending.push(job);
+  const via = open ? 'open access (no code)' : owner.id === p.id ? `your credential ${cred.id}` : `${owner.name}'s credential ${cred.id}`;
+  note(p, t, `STARTED: ${def.label} on ${label} using ${via} (${delay}s)`);
+  return ok(`${text.short}: started, done in ${delay}s. Watch its progress here.`);
+}
+
+/**
+ * A Security write starting: an "initiated" Master Log entry, and the alerts its dry run raised worded as
+ * started, so whoever watches can react in time (and the page's bell, for Firewall and Permissions).
+ */
+function startRecords(s: GameState, copy: GameState, a: ExecuteAction, p: Player, owner: Player, open: boolean, initiated: string): void {
+  const entry = addLog(s, { actor: owner.id, kind: 'ACCESS', message: `${owner.name} ${initiated}${open ? ' (open access)' : ''}`, sourceIp: effectiveIp(s, p, gameTime(s)), actualPlayerId: p.id });
+  for (const al of copy.alerts.filter((x) => Number(x.id.slice(1)) > s.counters.alert)) {
+    addAlert(s, al.kind, `${al.message.split(': ')[0]}: ${owner.name} ${initiated}`, entry.id, al.tier, owner.id);
+  }
+  if (ANY_ACTIVITY.includes(keyOf(a.system, a.module))) notify(s, a.system, a.module, entry.message, { owner: owner.id });
+}
+
+/**
+ * A kit tool starting: the records its dry run wrote (the "Unknown server activity" entry, the host's own log,
+ * any exposure alert) are taken over as they are, so the bank sees it now and can react in time.
+ */
+function copyRecords(s: GameState, copy: GameState): void {
+  const newer = <T extends { id: string }>(list: T[], since: number): T[] => list.filter((x) => Number(x.id.slice(1)) > since);
+  for (const e of newer(copy.logs, s.counters.log)) s.logs.push(e);
+  for (const al of newer(copy.alerts, s.counters.alert)) {
+    s.alerts.push(al);
+    notify(s, 'SECURITY', 'MASTER_LOG', al.message);
+  }
+  for (const h of newer(copy.hostLog, s.counters.host)) {
+    s.hostLog.push(h);
+    if (h.alert) notify(s, 'HIDDEN_HOST', 'HOST_LOG', h.message);
+  }
+  s.counters.log = copy.counters.log;
+  s.counters.alert = copy.counters.alert;
+  s.counters.host = copy.counters.host;
+}
+
+/**
+ * Mutating: timed Security writes whose time is up are carried out (their completion is logged; their alerts
+ * already went out). One stops instead if its actor is blocked or gone, its page went offline, its code was
+ * revoked, or, used with security off, security came back on.
+ */
+function advancePendingActions(s: GameState): void {
+  const t = gameTime(s);
+  for (const job of s.pendingActions ?? []) {
+    if (job.done) continue;
+    const p = s.players[job.actorId];
+    const mod = s.modules[keyOf(job.system, job.module)];
+    const open = job.credentialId === 'OPEN';
+    const cred = open ? null : s.credentials[job.credentialId];
+    // A revoked IP (a permanent block) cuts a workstation off from the bank, not from the hidden host.
+    const block = p ? activeBlock(s, p.ip) : undefined;
+    const hidden = job.system === 'HIDDEN_HOST';
+    const why =
+      !p || (p.terminated && !hidden) ? 'you were disabled'
+      : block && (!hidden || block.until !== null) ? 'your workstation was blocked'
+      : activeBlock(s, systemAddress(s, job.system)) ? `${targetLabel(job.system, job.module)} was blocked`
+      : mod.status === 'OFFLINE' ? `${targetLabel(job.system, job.module)} went offline`
+      : !open && cred?.status !== 'ACTIVE' ? 'the credential was revoked'
+      : open && !mod.open ? 'security came back on'
+      : null;
+    if (!why && job.doneAt > t) continue;
+    job.done = true;
+    if (!p) continue;
+    if (why) {
+      job.ok = false;
+      job.result = `${job.label} stopped: ${why}.`;
+      note(p, t, job.result);
+      continue;
+    }
+    const a: ExecuteAction = { type: 'EXECUTE', playerId: p.id, code: '', system: job.system, module: job.module, fn: job.fn, params: job.params };
+    const def = findFn(job.system, job.module, job.fn)!;
+    const handler = HANDLERS[`${job.system}.${job.module}.${job.fn}`];
+    const owner = open ? anonymous(p) : s.players[cred!.owner];
+    if (hidden) s.recordsOff = true; // its records were written when it started
+    const res = perform(s, p, a, def, handler, targetLabel(job.system, job.module), open ? openCredential(s, a) : cred!, owner, open, true);
+    s.recordsOff = false;
+    job.ok = res.ok;
+    job.result = res.ok ? res.message : `${job.label} failed: ${res.message}`;
+  }
 }
 
 function shareCredential(s: GameState, p: Player, credentialId: string, toId: string): ActionResult {

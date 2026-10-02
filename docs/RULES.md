@@ -116,18 +116,24 @@ Normal target is about 70-95% of what is possible and the Noob one about 60-75%.
 - **Countdown gauges** (a ring that empties as the seconds count down). On the employee list, everyone
   sees who is **Locked out** or **Blocked** by the Firewall, as the table would hear it on the call anyway
   (a block shows on whoever's real address it cuts off). The status bar shows your own lockout or block, a
-  pending **revoke all access** if you can read the Firewall (so you can cancel it), **IP rerouted** while
+  pending **revoke all access** if you can read the Firewall (so you can cancel it), a Firewall or
+  Permissions write credential counting down to its revocation (**Revoke C12**) if you can read Permissions
+  or it is yours, **IP rerouted** while
   an Infiltration / Reroute IP is on your own workstation (whoever set it up, so a framed employee sees it
   too), and, for every Thief, **Alerts muted** while a Cleanup / Alert mute lasts. While your trace engine
   cools down, the Master Log's Trace button is disabled with a countdown ring beside it. A running **Code
-  crack**, **Unlock workstation** or **Create proxy** shows as a progress bar in its own tool card (a crack's
+  crack**, **Unlock workstation**, **Create proxy** or **Trace** shows as a progress bar in its own tool card (a crack's
   digits so far, and the seconds left), with its button disabled; when it ends, its result is printed in
   that page's terminal.
 - **The bank's workload** (status bar, the same for everyone): what is waiting at each step, **Requests**
-  (open), **Verify** (account changes not yet verified), **Risk** (to score), **Approve** (scored or held),
-  **Settle** (approved), and **Clawback** (settled, still inside the reversal window). Each step goes amber at
+  (open), **Acct Verify** (account changes not yet verified), **Risk** (to score), **Approve** (scored or held),
+  **Settle** (approved), and **Recently Settled** (still inside the reversal window). Each step goes amber at
   2 waiting per person who works it and red at 4 (Personal Bankers: requests and approvals; Accounts &
-  Receivables: verification, risk and settlement). Clawback is a plain count.
+  Receivables: verification, risk and settlement). Recently Settled is a plain count.
+- **Module lights.** A bank module's state, as the Firewall set it, shows as a light in its tile's top
+  right corner (the word is its tooltip) and, with the word, on its page's credential line: green
+  **Online**, red **Offline**, blue **Full access** (security off). It says nothing about your own code.
+  The hidden host's modules have none.
 - **The day starts empty:** nothing is waiting at the start. The first automatic payment arrives at
   **10s** (`FIRST_PAYMENT_SEC`, bank.ts). Each Personal Banker's **first request** arrives between 10s and
   50s (spread evenly, `FIRST_REQUESTS_WINDOW`); the regular client requests start at **90s**
@@ -369,7 +375,7 @@ setting in words, with the form to change it (Save, or Cancel) under the credent
 A max amount of 0 (or NONE) switches that stage off. A stage's bell stays quiet for payments its
 automation will take. Money settled by automation counts like any other.
 
-Settled payments can be reversed for 3 minutes, if the account paid still holds the money.
+Settled payments can be reversed for 2 minutes (`reversalWindowSec`), if the account paid still holds the money.
 
 Each stage has its own read view (needs READ on that module), filtered **Pending** ("what's waiting for
 me?") or **All** ("what did I just do?"):
@@ -403,11 +409,25 @@ of "potential targets for fraudulent transactions").
 - The Firewall itself cannot be taken offline (avoids unrecoverable soft-locks).
 - Security has four modules: **Firewall**, **Master Log**, **Employee Records**, **Permissions**. (Intrusion
   Detection was merged into the Master Log.)
+- **Security writes take time** (engine.ts `SECURITY_DELAY`, scaled by `securityDelayScale`): taking a module
+  **Offline** or to **Full access** 5s, back **Online** 2s; **Block** and **Unblock** 2s; **Cancel a
+  revocation** (Firewall) 2s; **Reset a lockout** 2s; **Issue a credential** 5s; **Revoke a credential** 2s
+  (a Firewall or Permissions write credential instead counts down 30s, as before); cancelling a credential's
+  revocation 2s. **Revoke all access** keeps its 30s countdown and **Trace** its own 10s + 20s. Each is
+  checked when it starts, so a mistake is refused at once with no record. If it would work, the Master Log
+  gets an entry right away ("Mike initiated a firewall block on 10.1.0.12") with the alert it raises, and it
+  is carried out when its time is up, logged again as done ("Mike blocked 10.1.0.12 for 60s") with no second
+  alert. Its card shows a progress bar, its buttons are disabled meanwhile (one of each at a time per
+  player), and the result is printed in the terminal. It stops if the actor's workstation is blocked, the
+  page goes offline, the credential used is revoked, or, used with security off, security comes back on.
 - **Firewall**:
   - **Status**: every bank module (online/offline, security on/off) first, then pending revocations and
     active blocks.
-  - **Take a module offline / bring it online.**
-  - **Security off / on** for a module: with security off, the module needs no code; its use is logged
+  - **Control a module** (three buttons, the three states of its light, coloured like it; the chosen
+    module's current state is filled): **Offline**, **Online** (back online with security on) or **Full
+    access** (online with security off). Each is logged and alerted like the switch it uses (Online from
+    Full access switches security back on, and so on).
+  - **Full access** (security off) for a module: the module needs no code; its use is logged
     as "Anonymous ... (open access)" (the workstation is still stored for Trace) and open use has full
     access to that module. The Firewall's own security cannot be switched off.
   - **Block Address** (one tool, one address, three buttons): **Block for 60s** (`blockSec`), **Unblock** it
@@ -457,7 +477,14 @@ of "potential targets for fraudulent transactions").
 - A module taken offline rejects all use. While the **Master Log** is offline nothing is recorded but
   log ids keep counting, so the gap is visible.
 - **Trace** (in the **Master Log**; IT Specialists and the Bank Manager hold Master Log write): reveals
-  the source IP of one log entry. Entry must be under 3 minutes old, 30s cooldown per player. Employee
+  the source IP of one log entry. Entry must be under 3 minutes old when the trace starts. A trace takes
+  **10s** (`traceDelaySec`; a progress bar in the Trace card, the answer printed in the terminal when it
+  lands), then a **20s** cooldown per player (`traceCooldownSec`, counted from when it ends). The answer is
+  the log as it was when the trace started, so nothing done meanwhile changes it (a wiped entry still
+  traces); taking the Master Log offline or blocking the tracer's workstation during the 10s stops it. A
+  trace of a relay entry (the hidden host's traffic) raises a Host Log alert when it starts ("Relay entry
+  L42: Mike started a trace (it lands in 10s)"), so operatives can react, and another when it lands with
+  what the bank learned. Traces of any other entry are not announced. Employee
   Records list every registered IP, so a trace can identify a person. That is strong on purpose; whoever
   traces could itself be a Thief who lies about the result.
 
@@ -770,7 +797,15 @@ have no timed tools, so no bell.
   with the customer it is on (marked `(primary)` when it is that customer's primary) or `floating`, and
   its balance, with how much of it is stolen (balance less opening balance). It can auto-update every second
   like Blacknet.
-- **Kit tools** (tier in brackets):
+- **Kit tools** (tier in brackets). Most take a moment (engine.ts `SECURITY_DELAY`, scaled by
+  `securityDelayScale`): **Reroute IP**, **Spoofed message**, **Scam account request**, **Alert mute** and
+  **Lockout bomb** 2s; **Create user** and **Log wiper** 5s (Create proxy, Code crack and Unlock workstation
+  have their own timers, below). Each is checked when it starts, so a mistake is refused at once with no
+  record. Its usual records (the "Unknown server activity" entry, the Host Log line, any exposure alert, and
+  for a Lockout bomb its spoofed failed logins) are written when it **starts**, so the bank can react in time;
+  its effect lands when its time is up, with no second record. Like Security writes it shows a progress bar
+  in its card (one of each at a time per operative) and prints its result in the terminal, and it stops if
+  the operative's workstation gets a timed block or the host is blocked.
   - **Infiltration / Create proxy** (3): set up a typed, unused IP address as a proxy. An address already
     on the network (a workstation, planted or real, a bank system, the host, another proxy) is refused.
     It takes **10s** to set up (`proxySetupSec`; a progress bar in its card, the terminal says when it is

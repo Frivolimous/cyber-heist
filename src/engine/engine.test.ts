@@ -21,8 +21,8 @@ class Sim {
   sec = 0;
   /** `warm`: start with some work waiting (3 automatic payments, 2 requests), as most tests need; a real game starts empty. */
   constructor(config: Partial<GameConfig> = {}, seed = 42, warm = true) {
-    // Proxies are ready at once unless a test is about their setup time.
-    this.s = createGame({ seed, players: PLAYERS, now: T0, config: { automation: MANUAL, proxySetupSec: 0, ...config } });
+    // Proxies, traces and Security writes are instant unless a test is about how long they take.
+    this.s = createGame({ seed, players: PLAYERS, now: T0, config: { automation: MANUAL, proxySetupSec: 0, traceDelaySec: 0, securityDelayScale: 0, ...config } });
     if (!warm) return;
     for (let i = 0; i < 3; i++) spawnNpc(this.s);
     for (let i = 0; i < 2; i++) spawnRequest(this.s);
@@ -3197,9 +3197,9 @@ test('workload in the view: every step\'s queue for everyone, coloured per perso
   const tx = queued[0];
   tx.status = 'SETTLED';
   tx.settledAt = 5;
-  assert.equal(wl(pb.id).Clawback.count, 1);
+  assert.equal(wl(pb.id)['Recently Settled'].count, 1);
   sim.at(5 + sim.s.config.reversalWindowSec + 1);
-  assert.equal(wl(pb.id).Clawback.count, 0, 'out of the reversal window');
+  assert.equal(wl(pb.id)['Recently Settled'].count, 0, 'out of the reversal window');
 });
 
 test('trace cooldown in the view: only for whoever traced, while it lasts', () => {
@@ -3210,4 +3210,120 @@ test('trace cooldown in the view: only for whoever traced, while it lasts', () =
   assert.deepEqual(getPlayerView(sim.s, mgr.id).traceCooldown, { until: 5 + sim.s.config.traceCooldownSec, total: sim.s.config.traceCooldownSec });
   sim.at(5 + sim.s.config.traceCooldownSec);
   assert.equal(getPlayerView(sim.s, mgr.id).traceCooldown, null);
+});
+
+test('Trace takes time: the answer is the log as it was when it started, the cooldown runs from when it ends, and the Master Log going offline stops it', () => {
+  const sim = new Sim({ traceDelaySec: 10, traceCooldownSec: 20 }).at(5);
+  const [mgr] = sim.byRole('BANK_MANAGER');
+  const code = sim.code(mgr.id, 'SECURITY', 'MASTER_LOG');
+  assert.ok(sim.run(mgr.id, code, 'SECURITY', 'MASTER_LOG', 'VIEW_LOG').ok);
+  const entry = sim.s.logs.at(-1)!;
+  const trace = () => sim.run(mgr.id, code, 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: entry.id });
+  const started = trace();
+  assert.ok(started.ok && /started/.test(started.message), started.message);
+  assert.match(trace().message, /still running/);
+  const job = () => getPlayerView(sim.s, mgr.id).kitJobs.find((j) => j.kind === 'TRACE')!;
+  assert.deepEqual([job().until, job().total, job().done], [15, 10, false]);
+  const ip = entry.sourceIp;
+  entry.sourceIp = '10.9.9.9'; // whatever happens to the log meanwhile, the answer is from the start
+  sim.at(15);
+  assert.equal(job().done, true);
+  assert.equal(job().result, `Trace ${entry.id}: origin workstation ${ip}`);
+  assert.equal(sim.s.players[mgr.id].lastTraceAt, 15);
+  sim.at(30);
+  assert.match(trace().message, /cooling down \(5s\)/, 'cooldown counts from the end');
+  sim.at(35);
+  assert.ok(trace().ok);
+  sim.s.modules['SECURITY.MASTER_LOG'].status = 'OFFLINE';
+  sim.at(37);
+  assert.match(getPlayerView(sim.s, mgr.id).kitJobs.filter((j) => j.kind === 'TRACE').at(-1)!.result!, /stopped: the Master Log went offline/);
+});
+
+test('Host Log: a timed trace of a relay entry alerts the host when it starts and again when it lands', () => {
+  const sim = new Sim({ traceDelaySec: 10 });
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const [analyst] = sim.byRole('BANK_MANAGER');
+  const host = (module: string) => sim.code(black.id, 'HIDDEN_HOST', module);
+  const alerts = () => sim.run(black.id, host('HOST_LOG'), 'HIDDEN_HOST', 'HOST_LOG', 'VIEW_HOST_LOG', { show: 'ALERTS' }).lines!;
+  sim.at(3);
+  sim.run(black.id, host('BLACKNET'), 'HIDDEN_HOST', 'BLACKNET', 'POST_MESSAGE', { text: 'hello' });
+  const relay = sim.s.logs.filter((l) => l.kind === 'HIDDEN_ACCESS').at(-1)!;
+  assert.ok(sim.run(analyst.id, sim.code(analyst.id, 'SECURITY', 'MASTER_LOG'), 'SECURITY', 'MASTER_LOG', 'TRACE', { logId: relay.id }).ok);
+  assert.deepEqual(alerts().length, 1);
+  assert.ok(alerts()[0].includes(`Relay entry ${relay.id}: ${analyst.name} started a trace (it lands in 10s).`), alerts()[0]);
+  sim.at(13);
+  assert.equal(alerts().length, 2);
+  assert.ok(alerts()[1].includes(`Relay entry ${relay.id} was traced by ${analyst.name}. The bank learned: `), alerts()[1]);
+});
+
+test('timed Security writes: refused at once if they would fail, logged and alerted as initiated when they start, carried out when their time is up', () => {
+  const sim = new Sim({ securityDelayScale: 1 }).at(5);
+  const [it] = sim.byRole('IT_SPECIALIST');
+  const target = sim.byRole('PERSONAL_BANKER')[0];
+  const code = sim.code(it.id, 'SECURITY', 'FIREWALL');
+  const fw = (fn: string, params: Record<string, string>) => sim.run(it.id, code, 'SECURITY', 'FIREWALL', fn, params);
+  const logs = sim.s.logs.length;
+  assert.match(fw('UNBLOCK_ADDRESS', { address: target.ip }).message, /not blocked/, 'a mistake is refused at once');
+  assert.equal(sim.s.logs.length, logs, 'and leaves no trace');
+  const alerts = sim.s.alerts.length;
+  assert.ok(fw('BLOCK_ADDRESS', { address: target.ip }).ok);
+  assert.equal(sim.s.logs.at(-1)!.message, `${it.name} initiated a firewall block on ${target.ip}`);
+  assert.equal(sim.s.alerts.length, alerts + 1);
+  assert.match(sim.s.alerts.at(-1)!.message, /Suspicious security activity: .* initiated a firewall block/);
+  assert.equal(sim.s.blocks.length, 0, 'not blocked yet');
+  assert.match(fw('BLOCK_ADDRESS', { address: '10.9.9.9' }).message, /still running/, 'one at a time');
+  sim.at(7);
+  assert.ok(sim.s.blocks.some((b) => b.address === target.ip), 'blocked when its time is up');
+  assert.equal(sim.s.logs.at(-1)!.message, `${it.name} blocked ${target.ip} for ${sim.s.config.blockSec}s`);
+  assert.equal(sim.s.alerts.length, alerts + 1, 'no second alert');
+  const job = getPlayerView(sim.s, it.id).kitJobs.find((j) => j.kind === 'SECURITY.FIREWALL.BLOCK_ADDRESS')!;
+  assert.deepEqual([job.done, job.ok], [true, true]);
+});
+
+test('timed Security writes stop if the actor is blocked meanwhile', () => {
+  const sim = new Sim({ securityDelayScale: 1 }).at(5);
+  const [it, it2] = sim.byRole('IT_SPECIALIST');
+  const victim = sim.byRole('PERSONAL_BANKER')[0];
+  assert.ok(sim.run(it.id, sim.code(it.id, 'SECURITY', 'FIREWALL'), 'SECURITY', 'FIREWALL', 'SET_MODULE_STATUS', { target: 'TRANSACTIONS.RISK_CHECK', status: 'OFFLINE' }).ok);
+  sim.s.blocks.push({ address: it.ip, until: 60, byOwner: (it2 ?? victim).id, actualPlayerId: (it2 ?? victim).id });
+  sim.at(11);
+  assert.equal(sim.s.modules['TRANSACTIONS.RISK_CHECK'].status, 'ONLINE');
+  const job = getPlayerView(sim.s, it.id).kitJobs.find((j) => j.kind === 'SECURITY.FIREWALL.SET_MODULE_STATUS')!;
+  assert.deepEqual([job.ok, job.result], [false, 'Risk Check offline stopped: your workstation was blocked.']);
+});
+
+test('a credential counting down to its revocation shows in the status bar of Permissions readers and its owner', () => {
+  const sim = new Sim().at(5);
+  const [mgr] = sim.byRole('BANK_MANAGER');
+  const [it] = sim.byRole('IT_SPECIALIST');
+  const pb = sim.byRole('PERSONAL_BANKER')[0];
+  const cred = Object.values(sim.s.credentials).find((c) => c.owner === it.id && c.system === 'SECURITY' && c.permission === 'WRITE' && (c.module === null || c.module === 'FIREWALL'))!;
+  assert.ok(sim.run(mgr.id, sim.code(mgr.id, 'SECURITY', 'PERMISSIONS'), 'SECURITY', 'PERMISSIONS', 'REVOKE_CREDENTIAL', { credentialId: cred.id }).ok);
+  const gauge = (pid: string) => getPlayerView(sim.s, pid).timers.find((x) => x.id === `revoke:${cred.id}`);
+  assert.deepEqual(gauge(mgr.id), { id: `revoke:${cred.id}`, kind: 'REVOKE', label: `Revoke ${cred.id}`, until: 5 + sim.s.config.revokeCountdownSec, total: sim.s.config.revokeCountdownSec });
+  assert.ok(gauge(it.id), 'its owner');
+  assert.equal(gauge(pb.id), undefined, 'not someone who cannot read Permissions');
+  sim.at(5 + sim.s.config.revokeCountdownSec + 1);
+  assert.equal(gauge(mgr.id), undefined, 'gone once it is revoked');
+});
+
+test('timed kit tools: the host\'s usual records are written when they start, the effect lands when their time is up, with no second record', () => {
+  const sim = new Sim({ securityDelayScale: 1 }).at(5);
+  const black = Object.values(sim.s.players).find((p) => p.allegiance === 'BLACK')!;
+  const victim = Object.values(sim.s.players).find((p) => p.allegiance === 'WHITE')!;
+  grantMasterAccess(sim.s, black.id);
+  const logs = sim.s.logs.length;
+  const alerts = sim.s.alerts.length;
+  const hostLog = sim.s.hostLog.length;
+  assert.ok(sim.run(black.id, sim.code(black.id, 'HIDDEN_HOST', null), 'HIDDEN_HOST', 'ACCESS', 'LOCKOUT_BOMB', { target: victim.ip }).ok);
+  assert.ok(sim.s.logs.slice(logs).some((l) => l.kind === 'HIDDEN_ACCESS' && l.exposure === 2), 'its traceable entry, now');
+  assert.ok(sim.s.alerts.length > alerts, 'and its alerts');
+  assert.ok(sim.s.hostLog.length > hostLog);
+  assert.equal(sim.s.players[victim.id].lockedUntil, 0, 'not locked out yet');
+  const counts = [sim.s.logs.length, sim.s.alerts.length, sim.s.hostLog.length];
+  sim.at(7);
+  assert.ok(sim.s.players[victim.id].lockedUntil > 7, 'locked out when its time is up');
+  assert.deepEqual([sim.s.logs.length, sim.s.alerts.length, sim.s.hostLog.length], counts, 'no second record');
+  const job = getPlayerView(sim.s, black.id).kitJobs.find((j) => j.kind === 'HIDDEN_HOST.ACCESS.LOCKOUT_BOMB')!;
+  assert.deepEqual([job.done, job.ok], [true, true]);
 });

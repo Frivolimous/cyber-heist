@@ -63,6 +63,8 @@ const GROUPS: { title: string; note?: string; fields: Field[] }[] = [
   {
     title: 'Security timing',
     fields: [
+      { key: 'traceDelaySec', label: 'Trace time (s)' },
+      { key: 'securityDelayScale', label: 'Security and kit action time (x, 0 = instant)' },
       { key: 'traceCooldownSec', label: 'Trace cooldown (s)' },
       { key: 'traceMaxAgeSec', label: 'Trace age limit (s)' },
       { key: 'lockoutAfterFails', label: 'Wrong codes before a lockout', int: true, min: 1 },

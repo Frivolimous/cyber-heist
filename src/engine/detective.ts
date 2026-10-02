@@ -412,7 +412,7 @@ export function securityTasks(tn: Turn): Task[] {
   if (!isEnforcer(tn)) return [];
   const out: Task[] = [];
   const c = tn.s.config;
-  const canTrace = tn.t - tn.mem.lastTraceAt >= c.traceCooldownSec;
+  const canTrace = tn.t - tn.mem.lastTraceAt >= c.traceDelaySec + c.traceCooldownSec; // a bot's trace is instant for now
   // 0. Code cracks: the alert names the credential; revoke it and give its owner a new one.
   if (tn.mem.pendingCracks.length) {
     if (!fresh(tn, 'CREDENTIALS', 20)) return [{ needs: 'CREDENTIALS' }];

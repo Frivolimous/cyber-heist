@@ -8,6 +8,11 @@ Move an item out of here when it ships. Firebase, the lobby and real multiplayer
 - **Bot mode and single player** (co-op stealth: every Thief human, every regular employee a bot, with
   difficulty levels; single player is 1 human + 5 bots). In progress: bots that do their jobs and catch the primary swap (steps 2-3) run the solo Thief
   test; the rest of the symptom table is next. The spec, symptom table and build phases are in [BotMode.md](BotMode.md).
+- **Bots that wait for a trace.** A human's trace now takes `traceDelaySec` (10s) and lands later; a bot's is
+  still instant (handlers.ts TRACE: `c.actor.bot`), keeping the engine busy for the trace time plus the
+  cooldown so its rhythm is unchanged. Bots should start a trace, remember it, and read the answer when it
+  lands (from their own view's `kitJobs`), like a human. The same goes for any other timed tool a bot uses,
+  including the timed Security writes (engine.ts `SECURITY_DELAY`: a bot's are instant for now, `p.bot`).
 
 ## Loose ends in shipped features
 

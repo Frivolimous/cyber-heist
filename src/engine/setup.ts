@@ -173,6 +173,8 @@ export function createGame(o: NewGameOptions): GameState {
     proxies: [],
     cracks: [],
     unlocks: [],
+    traces: [],
+    pendingActions: [],
     alertMuteUntil: 0,
     automation: { ...config.automation },
     hostLog: [],
@@ -187,7 +189,7 @@ export function createGame(o: NewGameOptions): GameState {
     totals: { processed: 0, stolen: 0 },
     hiddenHost: '', // set below
     scenario: scenario && { kind: scenario, exposedIpAt: null, exposedHostAt: null, traceLog: [] },
-    counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, req: 0, change: 0, revoke: 0, host: 0, player: 0, crack: 0, notice: 0, wcred: 0, xcred: 0, unlock: 0 },
+    counters: { log: 0, alert: 0, cred: 0, tx: 0, msg: 0, req: 0, change: 0, revoke: 0, host: 0, player: 0, crack: 0, notice: 0, wcred: 0, xcred: 0, unlock: 0, trace: 0, job: 0 },
   };
 
   for (const sys of SYSTEMS) for (const m of sys.modules) s.modules[keyOf(sys.id, m.id)] = { status: 'ONLINE', open: false, encryption: [] };

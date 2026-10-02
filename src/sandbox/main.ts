@@ -493,17 +493,18 @@ function updateClock(): void {
     renderTimers();
   }
   updateKitJobs();
+  updateModuleLights();
   updateWorkload();
   updateTraceCooldown();
   updateGauges(v.t);
 }
 
-/** The bank's workload, for everyone: each step's queue, coloured by how many are waiting per person working it. */
+/** The bank's workload, for everyone: each step's label stacked over its count, coloured by how many are waiting per person working it. */
 function updateWorkload(): void {
   const el = $('workload');
   const html = view()
-    .workload.map((x) => `<span class="wl ${x.level ?? ''}">${esc(x.label)} <b>${x.count}</b></span>`)
-    .join('<i>·</i>');
+    .workload.map((x) => `<span class="wl ${x.level ?? ''}"><small>${esc(x.label)}</small><b>${x.count}</b></span>`)
+    .join('');
   if (el.dataset.html !== html) {
     el.dataset.html = html;
     el.innerHTML = html;
@@ -513,13 +514,14 @@ function updateWorkload(): void {
 /** Master Log: while the trace engine cools down, the Trace button is disabled with a countdown ring beside it. */
 function updateTraceCooldown(): void {
   const c = view().traceCooldown;
+  const busy = !!c || view().kitJobs.some((j) => j.kind === 'TRACE' && !j.done); // a trace running (its progress bar) or cooling down
   const html = c ? gauge(c) : '';
   for (const slot of document.querySelectorAll<HTMLElement>('.trace-cool')) {
     if (slot.dataset.html !== html) {
       slot.dataset.html = html;
       slot.innerHTML = html;
     }
-    slot.closest('.cmd-card')?.querySelectorAll<HTMLButtonElement>('button[data-cmd="trace"]').forEach((b) => (b.disabled = !!c));
+    slot.closest('.cmd-card')?.querySelectorAll<HTMLButtonElement>('button[data-cmd="trace"]').forEach((b) => (b.disabled = busy));
   }
 }
 
@@ -577,6 +579,9 @@ function renderTimers(): void {
  * Each job's card holds a progress bar while it runs (a `.kit-progress` slot, filled here every clock tick
  * and only rewritten when the job changes). When one ends, its result goes in every open terminal on its page.
  */
+/** The progress bar slot for a card's timed Security writes (SYSTEM.MODULE.FN each): filled by updateKitJobs. */
+const timedSlot = (...kinds: string[]): string => `<div class="kit-progress full" data-kit="${kinds.join(' ')}"></div>`;
+
 /** A crack's code so far ("1 2 _ _"), with the digit being cracked now blinking. */
 function crackDigits(detail: string): string {
   const next = detail.split(' ').indexOf('_');
@@ -591,8 +596,10 @@ function updateKitJobs(): void {
     if (seen[j.id] === false && j.done && j.result) { // seen running, now ended
       for (const w of wins()) {
         const r = route(w);
-        if (r?.kind !== 'module' || r.system !== 'HIDDEN_HOST' || r.module !== (j.kind === 'PROXY' ? 'INFILTRATION' : 'ACCESS')) continue;
-        w.out.push({ cls: j.result.includes('stopped') ? 'bad' : 'ok', text: `[${fmtClock(v.t)}] ${j.result}` });
+        // The page its result is printed on: a Security write's is its own (SYSTEM.MODULE.FN).
+        const page = ({ CRACK: 'HIDDEN_HOST.ACCESS', UNLOCK: 'HIDDEN_HOST.ACCESS', PROXY: 'HIDDEN_HOST.INFILTRATION', TRACE: 'SECURITY.MASTER_LOG' } as Record<string, string>)[j.kind] ?? j.kind.split('.').slice(0, 2).join('.');
+        if (r?.kind !== 'module' || `${r.system}.${r.module}` !== page) continue;
+        w.out.push({ cls: j.ok === false ? 'bad' : 'ok', text: `[${fmtClock(v.t)}] ${j.result}` });
         if (w.out.length > TERMINAL_LINES) w.out.splice(0, w.out.length - TERMINAL_LINES);
         renderTerminal(w);
       }
@@ -600,7 +607,8 @@ function updateKitJobs(): void {
     seen[j.id] = j.done;
   }
   for (const slot of document.querySelectorAll<HTMLElement>('.kit-progress[data-kit]')) {
-    const j = v.kitJobs.find((x) => x.kind === slot.dataset.kit && !x.done);
+    const kinds = slot.dataset.kit!.split(' '); // a card can run several (Block / Unblock)
+    const j = v.kitJobs.find((x) => kinds.includes(x.kind) && !x.done);
     const html = j
       ? `<div class="kbar live" data-until="${j.until}" data-total="${j.total}"><i></i></div>` +
         `<div class="kinfo"><span>${esc(j.label)}</span>${j.detail ? `<code>${crackDigits(j.detail)}</code>` : ''}<b class="left"></b></div>`
@@ -610,7 +618,7 @@ function updateKitJobs(): void {
       slot.innerHTML = html;
     }
     // Only one runs at a time: its start button waits until it ends.
-    slot.closest('.cmd-card')?.querySelectorAll<HTMLButtonElement>('button[data-cmd]').forEach((b) => (b.disabled = !!j));
+    slot.closest('.cmd-card')?.querySelectorAll<HTMLButtonElement>('button[data-cmd], button[data-act^="mcmd:"]').forEach((b) => (b.disabled = !!j));
   }
 }
 
@@ -670,6 +678,63 @@ function moduleAccess(v: PlayerView, system: string, module: string): 'WRITE' | 
   return covering.length ? 'READ' : 'NONE';
 }
 const ACCESS_TEXT = { WRITE: 'Read & write', READ: 'Read only', NONE: 'No access' } as const;
+
+/** Full access: the module is online with its security off, so no code is needed (offline wins over it). */
+const fullAccess = (v: PlayerView, key: string): boolean => v.openModules.includes(key) && !v.offlineModules.includes(key);
+
+/** A bank module's state as the Firewall set it: green online, red offline, blue full access (security off). */
+function moduleState(v: PlayerView, key: string): { cls: string; text: string } {
+  if (v.offlineModules.includes(key)) return { cls: 'red', text: 'Offline' };
+  if (v.openModules.includes(key)) return { cls: 'blue', text: 'Full access' };
+  return { cls: 'green', text: 'Online' };
+}
+
+/**
+ * Firewall / Control a module: puts a module in one of its light's three states, with only the switches it
+ * needs (Offline: take it offline; Online: back online, security on; Full access: online, security off).
+ */
+async function setModuleState(w: Win, target: string, state: string): Promise<void> {
+  const v = view();
+  const offline = v.offlineModules.includes(target);
+  const open = v.openModules.includes(target);
+  const fw = (fn: string, params: Record<string, string>): Promise<boolean> => execute(w, 'SECURITY', 'FIREWALL', fn, { target, ...params });
+  if (state === 'OFFLINE') {
+    await fw('SET_MODULE_STATUS', { status: 'OFFLINE' });
+    return;
+  }
+  if (offline && !(await fw('SET_MODULE_STATUS', { status: 'ONLINE' }))) return;
+  if (state === 'ONLINE' && open) await fw('SET_SECURITY', { security: 'ON' });
+  else if (state === 'FULL' && !open) await fw('SET_SECURITY', { security: 'OFF' });
+  // Already in that state: the switch it would use says so ("already online" / "security is already off").
+  else if (!offline) await (state === 'FULL' ? fw('SET_SECURITY', { security: 'OFF' }) : fw('SET_MODULE_STATUS', { status: 'ONLINE' }));
+}
+
+/** The light for a bank module's state (its tile, and its page's credential line); filled by updateModuleLights. */
+const moduleLight = (key: string): string => `<span class="mod-light" data-light="${key}"><i></i><span></span></span>`;
+
+/**
+ * Module states change when someone else acts at the Firewall: keep the open windows' lights current, and
+ * redraw a page whose security was switched off or on (its credential choice is disabled while security is off).
+ */
+function updateModuleLights(): void {
+  const v = view();
+  // Firewall / Control a module: fill the button for the chosen module's state now.
+  for (const card of document.querySelectorAll<HTMLElement>('.cmd-card:has(button[data-cmd^="state:"])')) {
+    const target = card.querySelector<HTMLSelectElement>('select[data-f="p:target"]')?.value ?? '';
+    const now = { red: 'OFFLINE', green: 'ONLINE', blue: 'FULL' }[moduleState(v, target).cls];
+    card.querySelectorAll<HTMLButtonElement>('button[data-cmd^="state:"]').forEach((b) => b.classList.toggle('current', b.dataset.cmd === `state:${now}`));
+  }
+  for (const sec of document.querySelectorAll<HTMLElement>('.mod-cred[data-open-key]')) {
+    const w = winById(Number(sec.dataset.win));
+    if (w && sec.dataset.open !== (fullAccess(v, sec.dataset.openKey!) ? '1' : '0')) renderWin(w);
+  }
+  for (const el of document.querySelectorAll<HTMLElement>('[data-light]')) {
+    const st = moduleState(v, el.dataset.light!);
+    el.className = `mod-light ${st.cls}`;
+    el.lastElementChild!.textContent = st.text; // shown on a page's credential line; on a tile only as its tooltip
+    el.title = st.text;
+  }
+}
 
 function winTitle(w: Win): string {
   if (w.kind === 'personal') return 'My workstation';
@@ -942,6 +1007,7 @@ function renderWin(w: Win): void {
   const scroller = (): HTMLElement | null => el!.querySelector<HTMLElement>('.mod-top') ?? el!.querySelector<HTMLElement>('.wbody');
   const prevScroll = scroller()?.scrollTop ?? 0;
   el.innerHTML = titleBar(w) + (w.kind === 'personal' ? personalHtml(w) : browserHtml(w)) + resizeHandles();
+  updateModuleLights(); // fill the new page's module lights at once
   const out = el.querySelector('.out');
   if (out) out.scrollTop = out.scrollHeight;
   const body = scroller();
@@ -1003,7 +1069,9 @@ function browserHtml(w: Win): string {
         .map((m) => {
           const a = moduleAccess(view(), sys.id, m.id);
           const kit = sys.id === 'HIDDEN_HOST' && HOST_KITS.includes(m.id);
-          return `<button class="tile ${kit ? 'kit' : ''} ${a === 'NONE' ? 'locked' : ''}" data-act="wgo:${w.id}:${sys.id}:${m.id}"><b>${esc(m.label)}</b><i class="perm ${a}">${ACCESS_TEXT[a]}</i></button>`;
+          // Bank modules also show their Firewall state: a light in the corner (the hidden host is not the bank's to control).
+          const state = sys.hidden ? '' : moduleLight(`${sys.id}.${m.id}`);
+          return `<button class="tile ${kit ? 'kit' : ''} ${a === 'NONE' ? 'locked' : ''}" data-act="wgo:${w.id}:${sys.id}:${m.id}">${state}<b>${esc(m.label)}</b><i class="perm ${a}">${ACCESS_TEXT[a]}</i></button>`;
         })
         .join('')}</div>`)}`;
     } else if (MODULE_PAGES[`${r.system}.${r.module}`]) {
@@ -1035,25 +1103,29 @@ function credLabel(c: Cred): string {
  * Credential dropdown + code box. Lists only active credentials that `applies` accepts, then "Manual code".
  * With no such credentials the first option is "No credentials granted". Only "Manual code" makes the
  * code box editable. Starts on the first credential `prefer` accepts (else the first listed); with none to
- * list, on "No code needed" when security is off, else on "Manual code", ready to type.
+ * list, on "Manual code", ready to type. While `openKey`'s security is off, no code is sent: the dropdown and
+ * the code box are both blank and disabled.
  */
 function credentialFields(w: Win, v: PlayerView, applies: (c: Cred) => boolean, prefer?: (c: Cred) => boolean, openKey?: string): string {
   const list = v.me.credentials.filter((c) => c.status === 'ACTIVE' && applies(c));
-  const open = openKey !== undefined && v.openModules.includes(openKey);
+  const open = openKey !== undefined && fullAccess(v, openKey);
   const opts: [string, string][] = [
-    ...(open ? [['open', 'No code needed (security is off)'] as [string, string]] : []),
     ...(list.length ? list.map((c): [string, string] => [c.id, credLabel(c)]) : [['none', 'No credentials granted'] as [string, string]]), ['manual', 'Manual code']];
   if (!opts.some(([id]) => id === w.form.credSel)) {
-    w.form.credSel = (prefer && list.find(prefer)?.id) || (open ? 'open' : list[0]?.id) || 'manual';
+    w.form.credSel = (prefer && list.find(prefer)?.id) || list[0]?.id || 'manual';
   }
   const sel = w.form.credSel;
   const manual = sel === 'manual';
-  w.form.code = manual ? (w.form.manualCode ?? '') : (list.find((c) => c.id === sel)?.code ?? '');
+  // Security off: no code is sent (the use is logged as Anonymous), so the choice is disabled and the code hidden.
+  w.form.code = open ? '' : manual ? (w.form.manualCode ?? '') : (list.find((c) => c.id === sel)?.code ?? '');
+  // A bank module's state (the hidden host's modules are not the Firewall's to switch).
+  const light = openKey === undefined || openKey.startsWith('HIDDEN_HOST.') ? '' : moduleLight(openKey);
   return `<div class="cred-row">
-      <label class="field grow"><span>Credential</span><select data-f="credSel" aria-label="Credential" class="${sel === 'none' ? 'none' : ''}">${opts
-        .map(([id, label]) => `<option value="${id}" class="${id === 'none' ? 'none' : ''}" ${id === sel ? 'selected' : ''}>${esc(label)}</option>`)
-        .join('')}</select></label>
-      <label class="field"><span>4-digit code</span><input class="mono code" data-f="code" aria-label="4-digit code" maxlength="4" inputmode="numeric" value="${esc(w.form.code)}" ${manual ? 'placeholder="0000"' : 'readonly tabindex="-1"'} autocomplete="off"></label>
+      <label class="field grow"><span>Credential</span><select data-f="credSel" aria-label="Credential" class="${sel === 'none' ? 'none' : ''}" ${open ? 'disabled title="Security is off: no code needed"' : ''}>${open
+        ? '<option value="" selected></option>' // blank while security is off
+        : opts.map(([id, label]) => `<option value="${id}" class="${id === 'none' ? 'none' : ''}" ${id === sel ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>
+      <label class="field"><span>4-digit code</span><input class="mono code" data-f="code" aria-label="4-digit code" maxlength="4" inputmode="numeric" value="${esc(w.form.code)}" ${open ? 'disabled' : manual ? 'placeholder="0000"' : 'readonly tabindex="-1"'} autocomplete="off"></label>
+      ${light}
     </div>`;
 }
 
@@ -1259,7 +1331,10 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       card(
         'View host log',
         'READ',
-        btn(w, 'view:ALL', 'Everything') + btn(w, 'view:ALERTS', 'Alerts', 'alt') + checkbox(w, 'monitor', 'Auto-update every second (only opening the view is logged)'),
+        // Like the Master Log: all white, and the last one pressed (the one the auto-update keeps refreshing) is blue.
+        ([['ALL', 'Everything'], ['ALERTS', 'Alerts']] as const)
+          .map(([show, label]) => btn(w, `view:${show}`, label, w.form['p:hostFilter'] === show ? '' : 'alt'))
+          .join('') + checkbox(w, 'monitor', 'Auto-update every second (only opening the view is logged)'),
       ),
     run: (w, _cmd, arg) => {
       w.form['p:hostFilter'] = arg ?? w.form['p:hostFilter'] ?? 'ALL';
@@ -1288,7 +1363,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         input(w, 'rerouteFrom', 'Reroute IP (blank: your own)', 'your workstation', true) +
           select(w, 'rerouteProxy', 'Appear as proxy', proxyOptions(), true) +
           input(w, 'rerouteSec', 'Seconds (1-60)', '10') +
-          btns(btn(w, 'reroute', 'Reroute · noisy', '', true)),
+          btns(btn(w, 'reroute', 'Reroute · noisy', '', true)) + timedSlot('HIDDEN_HOST.INFILTRATION.REROUTE_IP'),
         `${w.id}:reroute`,
       ) +
       card(
@@ -1297,7 +1372,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         input(w, 'newName', 'Name', 'Dana Pruitt') +
           select(w, 'newRole', 'Role', ROLE_ORDER.map((id) => ({ value: id, label: ROLES[id].label })), true) +
           select(w, 'newProxy', 'At proxy', proxyOptions(), true) +
-          btns(btn(w, 'createUser', 'Add user · noisy', '', true)),
+          btns(btn(w, 'createUser', 'Add user · noisy', '', true)) + timedSlot('HIDDEN_HOST.INFILTRATION.CREATE_USER'),
         `${w.id}:createUser`,
       ),
     run: (w, cmd) => {
@@ -1316,7 +1391,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         input(w, 'spoofTo', 'To (employee)', 'Sarah') +
           input(w, 'spoofFrom', 'Appear from', 'Mike', true) +
           input(w, 'spoofText', 'Message', 'say something', true, true) +
-          btns(btn(w, 'spoof', 'Send · noisy', '', true)),
+          btns(btn(w, 'spoof', 'Send · noisy', '', true)) + timedSlot('HIDDEN_HOST.SOCIAL.SPOOFED_MESSAGE'),
         `${w.id}:spoof`,
       ) +
       card(
@@ -1336,7 +1411,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
             true,
           ) +
           input(w, 'scamAcct', 'Account', '18392') +
-          btns(btn(w, 'scam', 'Plant request · noisy', '', true)),
+          btns(btn(w, 'scam', 'Plant request · noisy', '', true)) + timedSlot('HIDDEN_HOST.SOCIAL.SCAM_REQUEST'),
         `${w.id}:scam`,
       ) +
       card(
@@ -1375,12 +1450,12 @@ const MODULE_PAGES: Record<string, ModulePage> = {
   },
   'HIDDEN_HOST.CLEANUP': {
     commands: (w) =>
-      card('Log wiper', 'WRITE', input(w, 'wipeId', 'Log entry', 'L12', true, true) + btns(btn(w, 'wipe', 'Wipe entry · noisy', '', true)), `${w.id}:wipe`) +
+      card('Log wiper', 'WRITE', input(w, 'wipeId', 'Log entry', 'L12', true, true) + btns(btn(w, 'wipe', 'Wipe entry · noisy', '', true)) + timedSlot('HIDDEN_HOST.CLEANUP.LOG_WIPER'), `${w.id}:wipe`) +
       card(
         'Alert mute',
         'WRITE',
         `<p class="hint full">Hides the bank's minor alerts for 10s. Loud and reckless alerts, including this tool's own, still get through.</p>` +
-          btns(btn(w, 'mute', 'Mute alerts (10s) · loud', 'loud')),
+          btns(btn(w, 'mute', 'Mute alerts (10s) · loud', 'loud')) + timedSlot('HIDDEN_HOST.CLEANUP.ALERT_MUTE'),
       ),
     run: (w, cmd) => {
       if (cmd === 'wipe') runFresh(w, 'HIDDEN_HOST', 'CLEANUP', 'LOG_WIPER', { logId: w.form['p:wipeId'] ?? '' }, ['wipeId']);
@@ -1395,7 +1470,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
       return (
         card('Code crack', 'WRITE', select(w, 'crackTarget', 'Module', mods, true) + btns(btn(w, 'crack', 'Start crack · noisy per digit', '', true)) + '<div class="kit-progress full" data-kit="CRACK"></div>', `${w.id}:crack`) +
         card('Unlock workstation', 'WRITE', input(w, 'unlockIp', 'Workstation', '10.1.0.12', true, true) + btns(btn(w, 'unlock', 'Unlock · loud', 'loud', true)) + '<div class="kit-progress full" data-kit="UNLOCK"></div>', `${w.id}:unlock`) +
-        card('Lockout bomb', 'WRITE', input(w, 'bombIp', 'Workstation', '10.1.0.12', true, true) + btns(btn(w, 'bomb', 'Lock them out · noisy', '', true)), `${w.id}:bomb`)
+        card('Lockout bomb', 'WRITE', input(w, 'bombIp', 'Workstation', '10.1.0.12', true, true) + btns(btn(w, 'bomb', 'Lock them out · noisy', '', true)) + timedSlot('HIDDEN_HOST.ACCESS.LOCKOUT_BOMB'), `${w.id}:bomb`)
       );
     },
     run: (w, cmd) => {
@@ -1416,7 +1491,8 @@ const MODULE_PAGES: Record<string, ModulePage> = {
         ? `<p class="warn full">This action is irreversible. After a ${view().settings.revokeCountdownSec}s countdown, <b>${esc(w.form['p:blockAddr'] ?? '')}</b> loses all access permanently (a workstation's owner also loses every credential). It can only be cancelled from the Firewall before then.</p>` +
           btns(btn(w, 'revokeConfirm', 'Confirm: revoke all access', 'danger') + btn(w, 'revokeBack', 'Back', 'alt'))
         : input(w, 'blockAddr', 'Address', 'workstation or system', true, true) +
-          btns(btn(w, 'block', `Block for ${view().settings.blockSec}s`, 'danger', true) + btn(w, 'unblock', 'Unblock', 'alt', true) + btn(w, 'revokeAsk', 'Revoke all access…', 'danger', true));
+          btns(btn(w, 'block', `Block for ${view().settings.blockSec}s`, 'danger', true) + btn(w, 'unblock', 'Unblock', 'alt', true) + btn(w, 'revokeAsk', 'Revoke all access…', 'danger', true)) +
+          timedSlot('SECURITY.FIREWALL.BLOCK_ADDRESS', 'SECURITY.FIREWALL.UNBLOCK_ADDRESS');
       return (
         card('View firewall status', 'READ', btn(w, 'view', 'Status, blocks and revocations')) +
         card(
@@ -1424,23 +1500,23 @@ const MODULE_PAGES: Record<string, ModulePage> = {
           'WRITE',
           select(w, 'target', 'Module', mods, true) +
             btns(
-              btn(w, 'module:OFFLINE', 'Take offline', 'danger', true) +
-                btn(w, 'module:ONLINE', 'Bring online', 'alt', true) +
-                btn(w, 'security:OFF', 'Security off', 'danger', true) +
-                btn(w, 'security:ON', 'Security on', 'alt', true),
-            ),
-          `${w.id}:module:OFFLINE`,
+              // The three states its light shows: Offline, Online, Full access (online with security off).
+              // Coloured like the light; the one matching the chosen module's state now is filled (updateModuleLights).
+              btn(w, 'state:OFFLINE', 'Offline', 'st red', true) +
+                btn(w, 'state:ONLINE', 'Online', 'st green', true) +
+                btn(w, 'state:FULL', 'Full access', 'st blue', true),
+            ) + timedSlot('SECURITY.FIREWALL.SET_MODULE_STATUS', 'SECURITY.FIREWALL.SET_SECURITY'),
+          `${w.id}:state:OFFLINE`,
         ) +
         card('Block Address', 'WRITE', block, confirming ? undefined : `${w.id}:block`) +
-        card('Cancel a revocation', 'WRITE', input(w, 'revId', 'Revocation', 'R1', true, true) + btns(btn(w, 'cancelRev', 'Cancel it', '', true)), `${w.id}:cancelRev`)
+        card('Cancel a revocation', 'WRITE', input(w, 'revId', 'Revocation', 'R1', true, true) + btns(btn(w, 'cancelRev', 'Cancel it', '', true)) + timedSlot('SECURITY.FIREWALL.CANCEL_REVOCATION'), `${w.id}:cancelRev`)
       );
     },
     run: (w, cmd, arg) => {
       const f = (k: string): string => w.form[`p:${k}`] ?? '';
       const fw = (fn: string, params: Record<string, string>, clear: string[] = []) => runFresh(w, 'SECURITY', 'FIREWALL', fn, params, clear);
       if (cmd === 'view') execute(w, 'SECURITY', 'FIREWALL', 'VIEW_STATUS', {});
-      else if (cmd === 'module') execute(w, 'SECURITY', 'FIREWALL', 'SET_MODULE_STATUS', { target: f('target'), status: arg ?? '' });
-      else if (cmd === 'security') execute(w, 'SECURITY', 'FIREWALL', 'SET_SECURITY', { target: f('target'), security: arg ?? '' });
+      else if (cmd === 'state') void setModuleState(w, f('target'), arg ?? '');
       else if (cmd === 'block') fw('BLOCK_ADDRESS', { address: f('blockAddr') }, ['blockAddr']);
       else if (cmd === 'unblock') fw('UNBLOCK_ADDRESS', { address: f('blockAddr') }, ['blockAddr']);
       else if (cmd === 'cancelRev') fw('CANCEL_REVOCATION', { revocationId: f('revId') }, ['revId']);
@@ -1467,7 +1543,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
           .map(([show, label]) => btn(w, `view:${show}`, label, w.form['p:logFilter'] === show ? '' : 'alt'))
           .join('') + checkbox(w, 'monitor', 'Auto-update every second (only opening the view is logged)'),
       ) +
-      card('Trace a log entry', 'WRITE', input(w, 'logId', 'Log entry', 'L12 or 12', true, true) + btns(btn(w, 'trace', 'Trace', '', true) + '<span class="trace-cool" title="Trace engine cooling down"></span>'), `${w.id}:trace`),
+      card('Trace a log entry', 'WRITE', input(w, 'logId', 'Log entry', 'L12 or 12', true, true) + btns(btn(w, 'trace', 'Trace', '', true) + '<span class="trace-cool" title="Trace engine cooling down"></span>') + '<div class="kit-progress full" data-kit="TRACE"></div>', `${w.id}:trace`),
     run: (w, cmd, arg) => {
       if (cmd === 'view') {
         w.form['p:logFilter'] = arg ?? w.form['p:logFilter'] ?? 'PLAYERS';
@@ -1487,7 +1563,7 @@ const MODULE_PAGES: Record<string, ModulePage> = {
   'SECURITY.EMPLOYEE_RECORDS': {
     commands: (w) =>
       card('View employees', 'READ', btn(w, 'view', 'All employees')) +
-      card('Reset a lockout', 'WRITE', input(w, 'lockAddr', 'Workstation', '10.1.0.12', true, true) + btns(btn(w, 'reset', 'Unlock now', '', true)), `${w.id}:reset`),
+      card('Reset a lockout', 'WRITE', input(w, 'lockAddr', 'Workstation', '10.1.0.12', true, true) + btns(btn(w, 'reset', 'Unlock now', '', true)) + timedSlot('SECURITY.EMPLOYEE_RECORDS.RESET_LOCKOUT'), `${w.id}:reset`),
     run: (w, cmd) => {
       if (cmd === 'view') execute(w, 'SECURITY', 'EMPLOYEE_RECORDS', 'VIEW_EMPLOYEES', {});
       else runFresh(w, 'SECURITY', 'EMPLOYEE_RECORDS', 'RESET_LOCKOUT', { address: w.form['p:lockAddr'] ?? '' }, ['lockAddr']);
@@ -1511,7 +1587,8 @@ const MODULE_PAGES: Record<string, ModulePage> = {
           'Revoke a credential',
           'WRITE',
           input(w, 'credentialId', 'Credential', 'C12 or 12', true, true) +
-            btns(btn(w, 'revoke', 'Revoke', 'danger', true) + btn(w, 'cancelRevoke', 'Cancel a revocation', 'alt', true)),
+            btns(btn(w, 'revoke', 'Revoke', 'danger', true) + btn(w, 'cancelRevoke', 'Cancel a revocation', 'alt', true)) +
+            timedSlot('SECURITY.PERMISSIONS.REVOKE_CREDENTIAL', 'SECURITY.PERMISSIONS.CANCEL_REVOKE'),
           `${w.id}:revoke`,
         ) +
         card(
@@ -1520,7 +1597,8 @@ const MODULE_PAGES: Record<string, ModulePage> = {
           select(w, 'owner', 'Issue to', people, true) +
             select(w, 'scope', 'Access to', scopes, true) +
             select(w, 'permission', 'Permission', access, true) +
-            btns(btn(w, 'create', 'Issue credential', '', true)),
+            btns(btn(w, 'create', 'Issue credential', '', true)) +
+            timedSlot('SECURITY.PERMISSIONS.CREATE_CREDENTIAL'),
           `${w.id}:create`,
         )
       );
@@ -1692,7 +1770,9 @@ function modulePageHtml(w: Win, r: ModuleRoute): string {
   const v = view();
   const page = MODULE_PAGES[`${r.system}.${r.module}`];
   // The credential row stays put at the top, the commands scroll under it.
-  const cred = `<section class="mod-cred" aria-label="Credential">${credentialFields(
+  // data-open: whether it was in full access when drawn, so updateModuleLights redraws the page when that changes.
+  const key = `${r.system}.${r.module}`;
+  const cred = `<section class="mod-cred" aria-label="Credential" data-win="${w.id}" data-open-key="${key}" data-open="${fullAccess(v, key) ? 1 : 0}">${credentialFields(
     w,
     v,
     (c) => c.system === r.system && (c.module === null || c.module === r.module),
@@ -2535,6 +2615,7 @@ app.addEventListener('input', (e) => {
     } else if (key === 'code') {
       if (w.form.credSel === 'manual') w.form.manualCode = w.form.code = el.value;
     } else w.form[key] = el instanceof HTMLInputElement && el.type === 'checkbox' ? (el.checked ? 'YES' : 'NO') : el.value;
+    if (key === 'p:target') updateModuleLights(); // Control a module: show the newly chosen module's state
     if (key === 'p:monitor' && w.form[key] === 'YES') {
       const r = route(w);
       if (r?.kind === 'module') MODULE_PAGES[`${r.system}.${r.module}`]?.run(w, 'view');

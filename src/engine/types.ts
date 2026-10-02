@@ -50,7 +50,9 @@ export interface GameConfig {
   recentModifySec: number; // hidden risk assessment flags primary accounts changed this recently
   reversalWindowSec: number; // how long a settled payment can be reversed
   traceMaxAgeSec: number; // TRACE only works on log entries this young
-  traceCooldownSec: number;
+  traceCooldownSec: number; // after a trace ends, before the next one
+  traceDelaySec: number; // how long a trace takes
+  securityDelayScale: number; // scales how long Security writes and kit tools take (engine.ts SECURITY_DELAY); 0 = instant
   lockoutAfterFails: number; // consecutive failures before a workstation locks
   lockoutSec: number;
   automation: Automation; // the payment stages' automation at the start of the game (players change it in play)
@@ -142,6 +144,43 @@ export interface CodeCrack {
   nextRevealAt: number; // game seconds
   done: boolean; // completed, or aborted (credential revoked / source blocked)
   result?: string; // how it ended, once done (the operative's screen prints it)
+}
+
+/**
+ * A trace running (Master Log / Trace, traceDelaySec): its answer is worked out when it starts, from the log as it
+ * was then, and given when it ends. Taking the Master Log offline or blocking the tracer's workstation stops it.
+ */
+export interface PendingTrace {
+  id: string; // T1
+  actorId: PlayerId; // who typed it (the result goes to them)
+  ownerName: string; // the credential owner the host is told traced it
+  logId: string;
+  startedAt: number;
+  doneAt: number;
+  message: string; // the answer
+  hostNote: string | null; // what the host's operatives are told when it lands (a relay entry)
+  done: boolean;
+  result?: string; // what the tracer was told when it ended
+}
+
+/**
+ * A Security write still running (engine.ts SECURITY_DELAY): checked and logged as "initiated" when it started,
+ * carried out when its time is up, or stopped if the actor is blocked, the page goes offline or the code dies.
+ */
+export interface PendingAction {
+  id: string; // J1
+  actorId: PlayerId;
+  credentialId: string; // 'OPEN' for open access
+  system: SystemId;
+  module: string;
+  fn: string;
+  params: Record<string, string>;
+  label: string; // short, for the progress bar ("Block 10.1.0.12")
+  startedAt: number;
+  doneAt: number;
+  done: boolean;
+  ok?: boolean; // how it ended
+  result?: string;
 }
 
 /** A running Unlock workstation (Access kit): after a delay the target gets a new workstation credential. */
@@ -461,6 +500,10 @@ export interface GameState {
   proxies: Proxy[];
   cracks: CodeCrack[];
   unlocks: WorkstationUnlock[];
+  traces: PendingTrace[];
+  pendingActions: PendingAction[];
+  /** Transient: a timed kit tool finishing; its records were written when it started, so none are written now. */
+  recordsOff?: boolean;
   alertMuteUntil: number; // game seconds: while now < this, tier 1-2 alerts are suppressed (Cleanup / Alert mute)
   automation: Automation; // the payment stages' current automation (starts as config.automation)
   hostLog: HostLogEntry[];
@@ -486,7 +529,7 @@ export interface GameState {
   hiddenHost: string;
   scenario: ScenarioState | null; // a dev test scenario, or null in a real game
   bots?: BotsState; // the bot seats' minds (bots.ts); absent when nobody is a bot
-  counters: { log: number; alert: number; cred: number; tx: number; msg: number; req: number; change: number; revoke: number; host: number; player: number; crack: number; notice: number; wcred: number; xcred: number; unlock: number };
+  counters: { log: number; alert: number; cred: number; tx: number; msg: number; req: number; change: number; revoke: number; host: number; player: number; crack: number; notice: number; wcred: number; xcred: number; unlock: number; trace: number; job: number };
 }
 
 // ---- Actions -------------------------------------------------------------

@@ -147,7 +147,7 @@ const JOBS: Record<RoleId, (c: GameConfig, n: number) => JobDescription> = {
       'Everyone else to report what looks wrong: you see the logs, they see the money.',
     ],
     rules: [
-      `A trace reveals which workstation made a log entry. Entries must be under ${secs(c.traceMaxAgeSec)} old, and you can trace once every ${secs(c.traceCooldownSec)}. Employee Records list every workstation's IP.`,
+      `A trace reveals which workstation made a log entry. Entries must be under ${secs(c.traceMaxAgeSec)} old. A trace takes ${secs(c.traceDelaySec)}, and you can start another ${secs(c.traceCooldownSec)} after it ends. Employee Records list every workstation's IP.`,
       '"Unknown server activity" comes from an unregistered host. Tracing it gives only a partial clue, unless an alert points at it.',
       `A block lasts ${secs(c.blockSec)}. A blocked workstation cannot use any system.`,
       `"Revoke all access" is permanent once its ${secs(c.revokeCountdownSec)} countdown ends; only the Firewall can cancel it, and only one can count down at a time. Revoking a workstation terminates its owner for good. Revoking the unregistered host shuts it down and the bank wins, unless the Thieves' goal is already met; revoking one of the bank's own systems shuts the bank down, and everybody loses.`,
@@ -173,7 +173,7 @@ const JOBS: Record<RoleId, (c: GameConfig, n: number) => JobDescription> = {
     ],
     rules: [
       'A payment is paid into the payee\'s primary account at the moment it settles. A primary changed just before settlement is the classic way money goes missing.',
-      `A trace reveals which workstation made a log entry. Entries must be under ${secs(c.traceMaxAgeSec)} old, and you can trace once every ${secs(c.traceCooldownSec)}.`,
+      `A trace reveals which workstation made a log entry. Entries must be under ${secs(c.traceMaxAgeSec)} old. A trace takes ${secs(c.traceDelaySec)}, and you can start another ${secs(c.traceCooldownSec)} after it ends.`,
       `A settled payment can be reversed for ${secs(c.reversalWindowSec)}.`,
       `Settlement settles approved payments up to ${money(c.automation.settleMax)} by itself; you can change the amount (0 switches it off).`,
       'You can issue a credential in anyone\'s name. Its owner is told.',

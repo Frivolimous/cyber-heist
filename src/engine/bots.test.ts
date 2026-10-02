@@ -250,13 +250,13 @@ test('"make this account primary" for an account not on file is answered by addi
   const mule = s.targets[0].account;
   const scamCode = codeFor(s, s.players.me, 'HIDDEN_HOST', 'SOCIAL', 'SCAM_REQUEST')!;
   let r = applyAction(s, { type: 'EXECUTE', playerId: 'me', code: scamCode, system: 'HIDDEN_HOST', module: 'SOCIAL', fn: 'SCAM_REQUEST', params: { customer: cust.id, kind: 'SET_PRIMARY', account: mule.slice(4) } }, T0 + 100_000);
-  s = r.state;
+  s = tick(r.state, T0 + 103_000); // a scam request lands when its time is up
   const req = s.requests.at(-1)!;
   const code = codeFor(s, s.players.bot1, 'CLIENT_DATA', 'CUSTOMER_RECORDS', 'ADD_ACCOUNT')!;
-  r = applyAction(s, { type: 'EXECUTE', playerId: 'bot1', code, system: 'CLIENT_DATA', module: 'CUSTOMER_RECORDS', fn: 'ADD_ACCOUNT', params: { requestId: req.id, customerId: cust.id, account: mule.slice(4), makePrimary: 'YES' } }, T0 + 101_000);
+  r = applyAction(s, { type: 'EXECUTE', playerId: 'bot1', code, system: 'CLIENT_DATA', module: 'CUSTOMER_RECORDS', fn: 'ADD_ACCOUNT', params: { requestId: req.id, customerId: cust.id, account: mule.slice(4), makePrimary: 'YES' } }, T0 + 104_000);
   assert.ok(r.result.ok, r.result.message);
   assert.equal(r.state.requests.find((x) => x.id === req.id)!.status, 'DONE');
   // Without "make it primary" it is still the wrong kind.
-  const plain = applyAction(s, { type: 'EXECUTE', playerId: 'bot1', code, system: 'CLIENT_DATA', module: 'CUSTOMER_RECORDS', fn: 'ADD_ACCOUNT', params: { requestId: req.id, customerId: cust.id, account: mule.slice(4) } }, T0 + 101_000);
+  const plain = applyAction(s, { type: 'EXECUTE', playerId: 'bot1', code, system: 'CLIENT_DATA', module: 'CUSTOMER_RECORDS', fn: 'ADD_ACCOUNT', params: { requestId: req.id, customerId: cust.id, account: mule.slice(4) } }, T0 + 104_000);
   assert.equal(plain.result.ok, false);
 });

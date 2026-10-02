@@ -83,11 +83,13 @@ button:disabled { cursor: default; opacity: 0.4; }
 .pace.CLOSED { background: #2c3446; color: #9aa6bb; }
 .throughput { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; }
 .throughput > span { font-size: 12px; color: #b9c6dc; }
-/* the bank's workload: one pill per step, coloured by how swamped it is */
-.workload { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.workload > i { font-style: normal; color: #4d5f80; }
-.wl { padding: 1px 8px; border-radius: 10px; white-space: nowrap; color: #b9c6dc; }
-.wl b { font: 700 12px var(--mono); color: #eef2f8; }
+/* the bank's workload: each step's label stacked over its count (a two-word label takes two lines), so the
+   counts line up along the bottom; a cell is tinted by how swamped its step is */
+.workload { display: flex; align-items: stretch; gap: 2px; padding: 3px; border: 1px solid #2a3b5c; border-radius: 8px; background: #111d33; }
+.workload:empty { display: none; }
+.wl { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; padding: 2px 7px; border-radius: 5px; color: #8fa0bf; }
+.wl small { width: min-content; text-align: center; font-size: 9px; font-weight: 600; line-height: 1.15; text-transform: uppercase; letter-spacing: 0.04em; }
+.wl b { font: 700 15px/1.1 var(--mono); color: #eef2f8; }
 .wl.busy { background: #5c4a14; color: #ffd98a; }
 .wl.busy b { color: #ffe3a8; }
 .wl.swamped { background: #7a2418; color: #ffb3a8; }
@@ -554,10 +556,14 @@ fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
 /* a running Code crack or Unlock workstation, inside its tool card (updateKitJobs in main.ts) */
 .kit-progress:empty { display: none; }
 .kit-progress { flex-basis: 100%; display: grid; gap: 4px; margin-top: 4px; }
-.kbar { height: 8px; border-radius: 4px; background: rgba(160, 120, 255, 0.18); overflow: hidden; }
-.kbar i { display: block; height: 100%; width: 0; background: #9d6bff; border-radius: 4px; transition: width 0.4s linear; }
+/* bank pages: the window blue; the hidden host: purple */
+.kbar { height: 8px; border-radius: 4px; background: #dfe6f1; overflow: hidden; }
+.kbar i { display: block; height: 100%; width: 0; background: var(--win-title); border-radius: 4px; transition: width 0.4s linear; }
+.win.host .kbar { background: rgba(160, 120, 255, 0.18); }
+.win.host .kbar i { background: #9d6bff; }
 .kinfo { display: flex; gap: 10px; align-items: baseline; font-size: 12px; }
-.kinfo code { font: 700 13px var(--mono); letter-spacing: 0.1em; color: #d9c2ff; }
+.kinfo code { font: 700 13px var(--mono); letter-spacing: 0.1em; }
+.win.host .kinfo code { color: #d9c2ff; }
 .kinfo .left { margin-left: auto; font: 600 12px var(--mono); }
 .kinfo .blink { animation: kit-blink 1s steps(1) infinite; }
 @keyframes kit-blink { 50% { opacity: 0; } }
@@ -565,3 +571,33 @@ fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
 /* Master Log: the trace cooldown ring beside the disabled Trace button */
 .trace-cool { display: inline-flex; align-items: center; color: var(--muted); }
 .trace-cool:empty { display: none; }
+
+/* module tiles: the state light alone in the top right corner (its word is the tooltip) */
+.tile { position: relative; }
+.tile .mod-light { position: absolute; top: 10px; right: 10px; }
+.tile .mod-light span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* a bank module's state light (its tile and its page's credential line): green online, red offline, blue full access */
+.mod-light { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.cred-row .mod-light { align-self: center; margin-top: 16px; }
+.mod-light i { width: 10px; height: 10px; border-radius: 50%; background: #9aa3b2; }
+.mod-light.green i { background: #22b35e; box-shadow: 0 0 6px #22b35e; }
+.mod-light.green { color: #1d6b3a; }
+.mod-light.red i { background: #e0443a; box-shadow: 0 0 6px #e0443a; }
+.mod-light.red { color: #8a1f14; }
+.mod-light.blue i { background: #3a7bf0; box-shadow: 0 0 6px #3a7bf0; }
+.mod-light.blue { color: #1f47a8; }
+
+/* Firewall / Control a module: buttons coloured like the module light; the chosen module's state now is filled */
+.cmd-btn.st { background: #fff; }
+.cmd-btn.st.red { color: #b3261e; border-color: #e3a6a0; }
+.cmd-btn.st.green { color: #1d6b3a; border-color: #9fd3b2; }
+.cmd-btn.st.blue { color: #1f47a8; border-color: #a9bff0; }
+.cmd-btn.st.red:hover { background: #fbeceb; }
+.cmd-btn.st.green:hover { background: #e8f6ed; }
+.cmd-btn.st.blue:hover { background: #e9effc; }
+.cmd-btn.st.current { color: #fff; }
+.cmd-btn.st.red.current { background: #d2392f; border-color: #d2392f; }
+.cmd-btn.st.green.current { background: #22a356; border-color: #22a356; }
+.cmd-btn.st.blue.current { background: #3a6fe0; border-color: #3a6fe0; }
+.tile:has(.mod-light) > b { padding-right: 16px; } /* the name never runs under the light */

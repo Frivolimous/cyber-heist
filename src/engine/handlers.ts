@@ -42,7 +42,7 @@ import { notify } from './notify';
 import { thiefTargetMet } from './ending';
 import { parseTrace } from './perception';
 import type { AutomationFact, ChangeRow, CustomerRow, PageData, PaymentRow, RequestRow } from './perception';
-import type { AccountChange, ClientRequest, CodeCrack, Credential, Customer, Message, RequestKind, Revocation, GameState, LogEntry, Player, RoleId, SystemId, Transaction, TxEvent, TxStatus, WorkstationUnlock, Proxy } from './types';
+import type { AccountChange, ClientRequest, CodeCrack, Credential, Customer, Message, RequestKind, Revocation, GameState, LogEntry, Player, RoleId, SystemId, Transaction, TxEvent, TxStatus, WorkstationUnlock, Proxy, PendingTrace } from './types';
 
 export interface Ctx {
   s: GameState;
@@ -56,6 +56,8 @@ export interface Ctx {
   log(detail?: string): LogEntry;
   /** Count a failed guess toward workstation lockout and raise an alert. */
   strike(reason: string): void;
+  /** A timed Security write finishing: its alerts were raised when it started, so raise none now. */
+  quietAlerts?: boolean;
 }
 
 export interface HandlerResult {
@@ -103,6 +105,7 @@ const H: Record<string, Handler> = {};
  */
 function securityAlert(c: Ctx, detail: string, level: 'SUSPICIOUS' | 'FATAL'): void {
   const entry = c.log(detail);
+  if (c.quietAlerts) return; // raised when the timed action started
   const what = level === 'FATAL' ? 'Fatal security activity' : 'Suspicious security activity';
   addAlert(c.s, `SECURITY_${level}`, `${what}: ${c.owner.name} ${detail}`, entry.id, level === 'FATAL' ? 3 : 2, c.owner.id);
 }
@@ -420,22 +423,64 @@ H['SECURITY.MASTER_LOG.TRACE'] = (c, q) => {
   const id = normLog(str(q, 'logId'));
   const e = c.s.logs.find((x) => x.id === id);
   if (!e) return bad(`No such log entry: ${id}.`);
-  const wait = c.actor.lastTraceAt + c.s.config.traceCooldownSec - c.t;
+  const cfg = c.s.config;
+  const running = (c.s.traces ??= []).find((x) => !x.done && x.actorId === c.actor.id);
+  if (running) return bad(`Trace ${running.id} on ${running.logId} is still running (${Math.ceil(running.doneAt - c.t)}s).`);
+  // lastTraceAt is when the last trace ended: the cooldown runs from there.
+  const wait = c.actor.lastTraceAt + cfg.traceCooldownSec - c.t;
   if (wait > 0) return bad(`Trace engine cooling down (${Math.ceil(wait)}s).`);
-  if (c.t - e.t > c.s.config.traceMaxAgeSec) return bad('That entry is too old to trace.');
-  c.actor.lastTraceAt = c.t;
-  const traced = (message: string): HandlerResult => page(message, undefined, { page: 'TRACE', logId: e.id, clue: parseTrace(message) }, `ran a trace on ${e.id}`);
-  if (!e.sourceIp) return traced(`Trace ${e.id}: system event, no workstation origin.`);
-  // Hidden host traffic is relayed. What a trace returns escalates with the action's exposure tier.
-  if (e.kind === 'HIDDEN_ACCESS') {
+  if (c.t - e.t > cfg.traceMaxAgeSec) return bad('That entry is too old to trace.');
+  // The answer comes from the log as it is now, whatever happens before the trace ends.
+  let message = `Trace ${e.id}: origin workstation ${e.sourceIp}`;
+  let hostNote: string | null = null;
+  if (!e.sourceIp) message = `Trace ${e.id}: system event, no workstation origin.`;
+  else if (e.kind === 'HIDDEN_ACCESS') {
+    // Hidden host traffic is relayed. What a trace returns escalates with the action's exposure tier.
     e.clue ??= exposureClue(c.s, e); // tracing it again gives the same clue
     const clue = e.clue + (e.leak ? ` ${e.leak}` : '');
-    // The host notices: operatives see who traced it and what the bank learned.
-    addHostLog(c.s, `Relay entry ${e.id} was traced by ${c.owner.name}. The bank learned: ${clue}`, true);
-    return traced(`Trace ${e.id}: routed through a relay. ${clue}`);
+    message = `Trace ${e.id}: routed through a relay. ${clue}`;
+    // The host notices when it lands: operatives see who traced it and what the bank learned.
+    hostNote = `Relay entry ${e.id} was traced by ${c.owner.name}. The bank learned: ${clue}`;
   }
-  return traced(`Trace ${e.id}: origin workstation ${e.sourceIp}`);
+  const traced = (): HandlerResult => page(message, undefined, { page: 'TRACE', logId: e.id, clue: parseTrace(message) }, `ran a trace on ${e.id}`);
+  // Instant when the setting is 0, and for bots for now (BACKLOG: bots that wait for a trace). Either way
+  // the trace engine is busy for the whole trace time plus the cooldown.
+  if (cfg.traceDelaySec <= 0 || c.actor.bot) {
+    c.actor.lastTraceAt = c.t + Math.max(0, cfg.traceDelaySec);
+    if (hostNote) addHostLog(c.s, hostNote, true);
+    return traced();
+  }
+  const tr: PendingTrace = { id: nextId(c.s, 'trace', 'T'), actorId: c.actor.id, ownerName: c.owner.name, logId: e.id, startedAt: c.t, doneAt: c.t + cfg.traceDelaySec, message, hostNote, done: false };
+  c.s.traces.push(tr);
+  // A relay entry: the host notices the trace starting too (a Host Log alert), so its operatives can react.
+  if (hostNote) addHostLog(c.s, `Relay entry ${e.id}: ${c.owner.name} started a trace (it lands in ${cfg.traceDelaySec}s).`, true);
+  return good(`Trace ${tr.id} on ${e.id} started: the answer comes in ${cfg.traceDelaySec}s. Watch its progress here.`, undefined, `ran a trace on ${e.id}`);
 };
+
+/**
+ * Mutating: traces whose time is up give their answer (to the tracer, and a relay entry's to the host), or stop
+ * if the Master Log went offline or the tracer's workstation was blocked meanwhile.
+ */
+export function advanceTraces(s: GameState): void {
+  const t = gameTime(s);
+  for (const tr of s.traces ?? []) {
+    if (tr.done) continue;
+    const actor = s.players[tr.actorId];
+    const offline = s.modules['SECURITY.MASTER_LOG']?.status === 'OFFLINE';
+    const blocked = !actor || actor.terminated || activeBlock(s, actor.ip);
+    if (!offline && !blocked && tr.doneAt > t) continue;
+    tr.done = true;
+    const at = offline || blocked ? t : tr.doneAt;
+    if (!actor) continue;
+    actor.lastTraceAt = at;
+    if (offline || blocked) tr.result = `Trace ${tr.id} on ${tr.logId} stopped: ${offline ? 'the Master Log went offline' : 'your workstation was blocked'}.`;
+    else {
+      tr.result = tr.message;
+      if (tr.hostNote) addHostLog(s, tr.hostNote, true);
+    }
+    note(actor, at, tr.result);
+  }
+}
 
 // ---- Client Data ------------------------------------------------------------
 // ---- Client Requests -----------------------------------------------------------------------------

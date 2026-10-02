@@ -330,7 +330,8 @@ function itTasks(tn: Turn): Task[] {
   }
   const c = tn.s.config;
   // An incident waiting for its trace has the trace engine first.
-  if (!tracesWaiting(tn) && tn.t - tn.mem.lastTraceAt >= c.traceCooldownSec) {
+  // A bot's trace is instant for now but keeps the engine busy for the trace time plus the cooldown.
+  if (!tracesWaiting(tn) && tn.t - tn.mem.lastTraceAt >= c.traceDelaySec + c.traceCooldownSec) {
     const traceable = (logId: string | null, at: number): logId is string =>
       !!logId && !tn.mem.mine.includes(logId) && !tn.mem.traced.includes(logId) && tn.t - at <= c.traceMaxAgeSec - 5;
     const alert = [...(page(tn, 'ALERTS', 'ALERTS')?.rows ?? [])].reverse().find((a) => traceable(a.logId, a.t));

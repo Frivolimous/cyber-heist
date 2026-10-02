@@ -38,6 +38,7 @@ export function nextId(s: GameState, kind: keyof GameState['counters'], prefix: 
 
 /** Appends to the Master Log. While the Master Log is offline entries are dropped (ids still advance = visible gap). */
 export function addLog(s: GameState, e: Omit<LogEntry, 'id' | 't'>): LogEntry {
+  if (s.recordsOff) return { id: 'L0', t: gameTime(s), ...e }; // written when the timed tool started
   const entry: LogEntry = { id: nextId(s, 'log', 'L'), t: gameTime(s), ...e };
   if (s.modules[keyOf('SECURITY', 'MASTER_LOG')].status === 'ONLINE') s.logs.push(entry);
   return entry;
@@ -49,6 +50,7 @@ export function addLog(s: GameState, e: Omit<LogEntry, 'id' | 't'>): LogEntry {
  */
 export function addAlert(s: GameState, kind: string, message: string, logId: string | null, tier = 2, owner: string | null = null): Alert | null {
   const t = gameTime(s);
+  if (s.recordsOff) return null; // raised when the timed tool started
   if (tier <= 2 && t < s.alertMuteUntil) return null; // muted: dropped entirely, no id consumed
   const a: Alert = { id: nextId(s, 'alert', 'A'), t, kind, message, logId, tier };
   s.alerts.push(a);
@@ -160,6 +162,7 @@ export function effectiveHost(s: GameState, t: number): string {
 
 /** Adds an entry to the hidden host's own log. */
 export function addHostLog(s: GameState, message: string, alert = false): void {
+  if (s.recordsOff) return; // written when the timed tool started
   s.hostLog.push({ id: nextId(s, 'host', 'H'), t: gameTime(s), message, alert });
   if (alert) notify(s, 'HIDDEN_HOST', 'HOST_LOG', message); // the bank traced the host, or an alert points at it
 }
