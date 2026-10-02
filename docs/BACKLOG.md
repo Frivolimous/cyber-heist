@@ -31,6 +31,10 @@ Move an item out of here when it ships. Firebase, the lobby and real multiplayer
 - **Removing planted users.** Infiltration / Create user plants a fake employee, but there is no way to
   remove one: regular employees can only revoke its credentials (which terminates it once it has any).
 
+- **Console follow-ups.** Not in the first version: live monitors (Master Log, Blacknet) that refresh in
+  the console; `load` on a workstation or proxy address (it says "not a system"); tab completion of command
+  names. Engine messages that say "watch its progress here" read oddly in the console.
+
 ## Bank and customers
 
 - **Spoofing a customer.** Customers write personal messages ("Cody (Cobalt Payroll)"), so Social /

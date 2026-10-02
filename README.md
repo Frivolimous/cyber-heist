@@ -117,6 +117,9 @@ Full rules and tuning: [docs/RULES.md](docs/RULES.md).
   a system, the module list included.
 - **My workstation** in the taskbar holds your profile and job description, credentials, activity log
   and messages.
+- **The console** (press **`**): a command line for every function of every loaded system, using your
+  own credentials for you. It loads the bank when first opened; `help` lists what you can run, e.g.
+  `view_queue --all` or `reject 14 duplicate payment`. Load the unregistered host by its address.
 - **The bell** at the right of a page's breadcrumbs switches its notifications on or off (write access
   only). They pop up at the bottom right, above the taskbar, and vanish after 5s; tapping one opens its page.
 - **Modes**, next to Custom settings: Noob (for new players: a lower bank target, customers more patient),
@@ -181,6 +184,7 @@ src/engine/
   engine.test.ts  tests
 src/sandbox/
   main.ts         the game screen (offline sandbox, online sandbox host, one remote seat, or the watcher: see mode.ts)
+  terminal.ts     the console's command parser (pure, tested); console.ts draws it
   dump.ts         Download state (dev)
   settings.ts     the Custom settings form (sandbox and host lobby)
 src/net/

@@ -757,6 +757,30 @@ credentials, so only they can switch its bells on; its pop-ups have the host's d
 Thief keeps the hidden host's bells (the host still answers them) and loses the bank's. The other kits
 have no timed tools, so no bell.
 
+## The console
+
+A command line for power users, not mentioned anywhere on the player's screen: the **`** key opens and
+closes it (unless you are typing in a field). It runs exactly the same functions as the module pages, through the
+same checks and logs; nothing about the rules changes, it is only faster to drive.
+
+- **First open:** it logs in (lists your keyring) and runs `load all`, which loads every bank system. The
+  unregistered host is never part of `load all`: `load <address>` loads it (or any system) by its address,
+  and an address the screen does not know goes to the network like the address bar (so connecting to the
+  host leaves its usual "Unknown workstation connected" entry). `unload [address|all]`, `keys`, `help`,
+  `clear`, `exit`.
+- **Commands:** `[module] function [values] [--option] [name=value] [-c CODE]`, any case, `-` or `_`.
+  The module is optional (function names are unique). Values fill the function's required values in order,
+  then its optional ones; extra words run on into the last text value (a reason, a message). `--all`,
+  `--high` and so on pick the one value that has that option (`--make-primary` sets a YES/NO value to YES);
+  `name=value` sets anything. Amounts take `400k`, `1.5m`, `$1,000,000`. `help <function>` shows its values.
+- **The keyring:** without `-c`, the console uses the narrowest active credential **of your own** that
+  covers the function. Someone else's credential you hold is used only when you type its code with `-c`, so
+  the console never puts another name in the logs for you. On a module whose security is off it sends no
+  code (the use is anonymous). Every command echoes which credential it ran with. If nothing of yours covers
+  it, the console says so and sends nothing (no failed attempt is logged).
+- **History:** up and down recall earlier lines, with any `-c` code removed.
+- Timed actions print when they finish, as in a page's terminal. Live monitors do not refresh in the console.
+
 ## Workstations
 
 - Every player's workstation IP is an address. Typing it into a window's address bar shows a locked

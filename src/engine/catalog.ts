@@ -282,7 +282,7 @@ export const SYSTEMS: SystemDef[] = [
         label: 'Blacknet',
         fns: [
           fn('READ_MESSAGES', 'Read messages', 'READ', 'The operatives message board.', [limit]),
-          fn('POST_MESSAGE', 'Post message', 'WRITE', 'Post under the credential owner\'s alias.'),
+          fn('POST_MESSAGE', 'Post message', 'WRITE', 'Post under the credential owner\'s alias.', [{ name: 'text', label: 'Message', kind: 'text' }]),
         ],
       },
       {
@@ -328,7 +328,7 @@ export const SYSTEMS: SystemDef[] = [
             'WRITE',
             'For a number of seconds, make an address appear as one of the proxies in every log, alert and trace: your own workstation, any other workstation, or the server itself. A proxy that is blocked, carrying another reroute or used by a planted user is unavailable.',
             [
-              { name: 'source', label: 'Reroute IP (blank: your own)', kind: 'text', placeholder: '10.1.0.14' },
+              { name: 'source', label: 'Reroute IP (blank: your own)', kind: 'text', placeholder: '10.1.0.14', optional: true },
               { name: 'proxy', label: 'Proxy', kind: 'text', placeholder: '10.1.0.77' },
               { name: 'seconds', label: 'Seconds (1-60)', kind: 'text', placeholder: '10' },
             ],
@@ -369,10 +369,10 @@ export const SYSTEMS: SystemDef[] = [
             [
               { name: 'customer', label: 'From customer', kind: 'text', placeholder: 'Tanaka Holdings or CU3' },
               { name: 'kind', label: 'Asking for', kind: 'select', options: ['PAYMENT', 'SET_PRIMARY', 'ADD_AND_PRIMARY', 'ADD_ACCOUNT', 'REMOVE_ACCOUNT'] },
-              { name: 'account', label: 'Account (5 digits, account requests)', kind: 'text', placeholder: '18392' },
-              { name: 'payee', label: 'Pay to (payment)', kind: 'text', placeholder: 'Northwind Freight or CU7' },
-              { name: 'amount', label: 'Amount (payment)', kind: 'text', placeholder: '400000' },
-              { name: 'urgent', label: 'Urgent (payment)', kind: 'select', options: ['NO', 'YES'] },
+              { name: 'account', label: 'Account (5 digits, account requests)', kind: 'text', placeholder: '18392', optional: true },
+              { name: 'payee', label: 'Pay to (payment)', kind: 'text', placeholder: 'Northwind Freight or CU7', optional: true },
+              { name: 'amount', label: 'Amount (payment)', kind: 'text', placeholder: '400000', optional: true },
+              { name: 'urgent', label: 'Urgent (payment)', kind: 'select', options: ['NO', 'YES'], optional: true },
             ],
           ),
         ],

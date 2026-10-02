@@ -13,7 +13,7 @@ over Firebase Realtime Database where the host's browser runs the engine.
 
 ```bash
 npm run dev          # start page at http://localhost:5173 (?seed=7: offline sandbox; &net=local: online play between tabs)
-npm test             # engine and network tests (node:test via tsx)
+npm test             # engine, network and console tests (node:test via tsx)
 npm run typecheck    # tsc --noEmit (strict)
 npx tsx --test --test-name-pattern="time of day" src/engine/engine.test.ts   # one test by name
 ```
@@ -82,7 +82,11 @@ records (`s.requests`, `s.customers`...): a test greps for it. Bot randomness ha
 **Game screen and sandbox (`src/sandbox/main.ts`).** The yellow bar at the top is dev tooling (seat switcher, speed,
 player count, seed, Ground truth); everything below it is the player's screen. Module pages come from
 the `MODULE_PAGES` registry (`commands` renders cards, `run` executes). The unregistered host's windows
-get a dark theme and its tool kits a purple one via the `host`/`kit` classes.
+get a dark theme and its tool kits a purple one via the `host`/`kit` classes. The console (the ` key) is
+one command line for every catalog function: terminal.ts parses a line against `view().systems` into the
+same `EXECUTE` a page sends (pure; terminal.test.ts runs every catalog function through it), console.ts
+draws it. A catalog function's `params` must list every value its handler reads, with `optional` on any a
+page may leave blank, or the console cannot send it.
 
 **Online play (`src/net/`, `src/play/`).** The host's browser holds the `GameState` and runs the engine;
 there are no Cloud Functions (free Spark plan). `HostSession` reads actions from `games/{code}/actions`,
@@ -104,7 +108,8 @@ release and never mentioned in player-facing text.
 
 - **Manual lookup and typing is gameplay.** No dropdowns, autocomplete or quick-fill for game data
   (customers, accounts, amounts, IPs, log ids). Selects are fine for the app's own structure (modules,
-  roles, modes, durations).
+  roles, modes, durations). One agreed exception: the console's keyring fills in your own codes (never
+  someone else's: those still have to be typed with `-c`).
 - Personal Bankers change only their own customers and read only their own requests (they can view every
   customer); every other role sees all (`ownCustomersOnly` in handlers.ts).
 - Job descriptions (jobs.ts) derive their numbers from the config; keep them in sync when a rule

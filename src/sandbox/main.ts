@@ -29,6 +29,7 @@ import {
 import type { Action, ActionResult, Countdown, EndMember, EndTeam, GameState, Pace, PlayerId, PlayerView, ScenarioKind, StageAutomation, SystemId, TutorialView, WorkstationView } from '../engine';
 import type { ArPart } from '../engine/tutorial';
 import { downloadState } from './dump';
+import { mountConsole } from './console';
 import { mountSettings } from './settings';
 import { boot } from './mode';
 import { HostSession, startTicker } from '../net/host';
@@ -128,6 +129,7 @@ app.innerHTML = `
           <footer id="taskbar" class="taskbar"></footer>
           <div id="tutorial"></div>
           <div id="toasts" class="toasts" aria-live="polite"></div>
+          <div id="console" class="console" hidden></div>
           <div id="endscreen" class="endscreen" hidden></div>
         </div>
       </div>
@@ -181,6 +183,9 @@ async function act(action: Action): Promise<ActionResult> {
   hostSession?.publish();
   return r.result;
 }
+
+/** The console (the ` key): every function of every loaded system on one command line. */
+const terminal = mountConsole({ host: $('console'), view, seat: () => selected, act, refresh });
 
 const ICONS: Record<SystemId, string> = {
   SECURITY: '<path d="M24 5 8 11v11c0 10 7 17 16 21 9-4 16-11 16-21V11z"/><path d="m17 24 5 5 9-10"/>',
@@ -594,6 +599,7 @@ function updateKitJobs(): void {
   const seen = (kitSeen[selected] ??= {});
   for (const j of v.kitJobs) {
     if (seen[j.id] === false && j.done && j.result) { // seen running, now ended
+      terminal.printJob(`[${fmtClock(v.t)}] ${j.result}`, j.ok !== false);
       for (const w of wins()) {
         const r = route(w);
         // The page its result is printed on: a Security write's is its own (SYSTEM.MODULE.FN).
@@ -2410,6 +2416,7 @@ function renderTaskbar(): void {
 
 // ---- Render orchestration -------------------------------------------------------------------
 function renderAll(): void {
+  terminal.render();
   renderDev();
   renderScenario();
   renderStatus();

@@ -601,3 +601,13 @@ fieldset.seg { border: 0; padding: 0; margin: 0; min-width: 0; }
 .cmd-btn.st.green.current { background: #22a356; border-color: #22a356; }
 .cmd-btn.st.blue.current { background: #3a6fe0; border-color: #3a6fe0; }
 .tile:has(.mod-light) > b { padding-right: 16px; } /* the name never runs under the light */
+
+/* ---- Console (the ` key): drops down over the desk ---- */
+.console { position: absolute; top: 0; left: 0; right: 0; height: 55%; z-index: 100000; display: flex; flex-direction: column; background: var(--term-bg); color: var(--term-text); border-bottom: 2px solid var(--gold); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); font: 13px/1.5 var(--mono); }
+.console[hidden] { display: none; }
+.console-head { display: flex; justify-content: space-between; gap: 12px; padding: 6px 12px; border-bottom: 1px solid #23324d; color: var(--term-dim); font-size: 12px; }
+.console-head b { color: var(--gold); font-weight: 600; }
+.console-out.out { flex: 1; min-height: 0; border-radius: 0; white-space: pre-wrap; }
+.console-line { display: flex; align-items: center; gap: 8px; padding: 6px 12px 8px; border-top: 1px solid #23324d; }
+.console-prompt { color: var(--gold); white-space: nowrap; }
+.console-in { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; color: var(--term-text); font: inherit; caret-color: var(--gold); }
